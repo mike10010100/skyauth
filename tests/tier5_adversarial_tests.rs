@@ -55,8 +55,9 @@ fn craft_custom_proof(
         "jwk": key.public_jwk()
     });
 
+    let jti = format!("custom-adversarial-jti-{}", rand::random::<u64>());
     let mut payload = serde_json::json!({
-        "jti": "custom-adversarial-jti-123",
+        "jti": jti,
         "htm": htm,
         "htu": htu,
         "iat": iat
@@ -308,14 +309,17 @@ fn test_dpop_header_typ_tampering() {
     let verifier = DPoPVerifier::new();
 
     // Valid case-insensitive variations
-    for valid_typ in ["dpop+jwt", "DPOP+JWT", "dPoP+jWt", "DPoP+jwt"] {
+    for (i, valid_typ) in ["dpop+jwt", "DPOP+JWT", "dPoP+jWt", "DPoP+jwt"]
+        .into_iter()
+        .enumerate()
+    {
         let header = serde_json::json!({
             "typ": valid_typ,
             "alg": "ES256",
             "jwk": key.public_jwk()
         });
         let payload = serde_json::json!({
-            "jti": "jti-1",
+            "jti": format!("jti-valid-typ-{i}"),
             "htm": "POST",
             "htu": "https://example.com/token",
             "iat": 1000

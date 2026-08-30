@@ -8,6 +8,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use http::{header, HeaderValue, Request, Response, StatusCode};
 use tower_layer::Layer;
@@ -15,18 +16,23 @@ use tower_service::Service;
 
 use super::validator::{AccessTokenValidator, InMemoryTokenValidator, JwtAccessTokenValidator};
 use super::OAuthSessionExtension;
-use crate::dpop::{compute_access_token_hash, DPoPVerifier};
+use crate::dpop::{
+    compute_access_token_hash, DPoPServerNonceSource, DPoPVerifier, InMemoryServerNonceSource,
+};
+use crate::error::DPoPError;
 
 /// Tower layer that enforces AT Protocol DPoP OAuth authentication on inbound HTTP requests.
 ///
 /// Inspects the `Authorization: DPoP <access_token>` and `DPoP: <proof_jwt>` headers,
 /// verifies the cryptographic DPoP proof against the HTTP method and URI, validates
 /// the access token and its `cnf.jkt` binding via the configured [`AccessTokenValidator`],
-/// and attaches [`OAuthSessionExtension`] and [`AuthenticatedUser`] to request extensions.
+/// prevents proof replay attacks via [`crate::dpop::DPoPReplayCache`], and attaches
+/// [`OAuthSessionExtension`] and [`super::AuthenticatedUser`] to request extensions.
 #[derive(Clone)]
 pub struct OAuthAuthLayer {
     verifier: Arc<DPoPVerifier>,
     token_validator: Arc<dyn AccessTokenValidator>,
+    nonce_source: Option<Arc<dyn DPoPServerNonceSource>>,
     require_ath: bool,
 }
 
@@ -49,6 +55,7 @@ impl OAuthAuthLayer {
         Self {
             verifier,
             token_validator,
+            nonce_source: None,
             require_ath: true,
         }
     }
@@ -80,6 +87,20 @@ impl OAuthAuthLayer {
         Self::new(verifier, Arc::new(validator))
     }
 
+    /// Configures an optional [`DPoPServerNonceSource`] to enforce server-provided challenge nonces per RFC 9449 § 8.
+    #[must_use]
+    pub fn with_nonce_source(mut self, nonce_source: Arc<dyn DPoPServerNonceSource>) -> Self {
+        self.nonce_source = Some(nonce_source);
+        self
+    }
+
+    /// Configures in-memory server challenge nonces with the specified time-to-live per RFC 9449 § 8.
+    #[must_use]
+    pub fn with_server_nonces(mut self, ttl: Duration) -> Self {
+        self.nonce_source = Some(Arc::new(InMemoryServerNonceSource::new(ttl)));
+        self
+    }
+
     /// Configures whether the access token hash (`ath`) claim is strictly required in DPoP proofs.
     #[must_use]
     pub fn with_require_ath(mut self, require_ath: bool) -> Self {
@@ -96,6 +117,7 @@ impl<S> Layer<S> for OAuthAuthLayer {
             inner,
             verifier: Arc::clone(&self.verifier),
             token_validator: Arc::clone(&self.token_validator),
+            nonce_source: self.nonce_source.clone(),
             require_ath: self.require_ath,
         }
     }
@@ -107,6 +129,7 @@ pub struct OAuthAuthService<S> {
     inner: S,
     verifier: Arc<DPoPVerifier>,
     token_validator: Arc<dyn AccessTokenValidator>,
+    nonce_source: Option<Arc<dyn DPoPServerNonceSource>>,
     require_ath: bool,
 }
 
@@ -131,8 +154,23 @@ impl<S> OAuthAuthService<S> {
             inner,
             verifier,
             token_validator,
+            nonce_source: None,
             require_ath: true,
         }
+    }
+
+    /// Configures an optional [`DPoPServerNonceSource`] to enforce server challenge nonces.
+    #[must_use]
+    pub fn with_nonce_source(mut self, nonce_source: Arc<dyn DPoPServerNonceSource>) -> Self {
+        self.nonce_source = Some(nonce_source);
+        self
+    }
+
+    /// Configures in-memory server challenge nonces with the specified time-to-live.
+    #[must_use]
+    pub fn with_server_nonces(mut self, ttl: Duration) -> Self {
+        self.nonce_source = Some(Arc::new(InMemoryServerNonceSource::new(ttl)));
+        self
     }
 
     /// Configures whether the access token hash (`ath`) is strictly required in DPoP proofs.
@@ -163,9 +201,15 @@ where
         let auth_header = match req.headers().get(header::AUTHORIZATION) {
             Some(h) => match h.to_str() {
                 Ok(s) => s,
-                Err(_) => return Box::pin(async { Ok(unauthorized_response("invalid_token")) }),
+                Err(_) => {
+                    return Box::pin(async {
+                        Ok(unauthorized_response("invalid_token", None, None))
+                    })
+                }
             },
-            None => return Box::pin(async { Ok(unauthorized_response("missing_token")) }),
+            None => {
+                return Box::pin(async { Ok(unauthorized_response("missing_token", None, None)) })
+            }
         };
 
         let access_token = if let Some(token) = auth_header.strip_prefix("DPoP ") {
@@ -173,7 +217,7 @@ where
         } else if let Some(token) = auth_header.strip_prefix("dpop ") {
             token.trim()
         } else {
-            return Box::pin(async { Ok(unauthorized_response("invalid_scheme")) });
+            return Box::pin(async { Ok(unauthorized_response("invalid_scheme", None, None)) });
         };
 
         // 2. Extract DPoP proof header
@@ -185,10 +229,21 @@ where
             Some(h) => match h.to_str() {
                 Ok(s) => s,
                 Err(_) => {
-                    return Box::pin(async { Ok(unauthorized_response("invalid_dpop_proof")) })
+                    return Box::pin(async {
+                        Ok(unauthorized_response("invalid_dpop_proof", None, None))
+                    })
                 }
             },
-            None => return Box::pin(async { Ok(unauthorized_response("missing_dpop_proof")) }),
+            None => {
+                let fresh_nonce = self.nonce_source.as_ref().map(|s| s.generate_nonce());
+                return Box::pin(async move {
+                    Ok(unauthorized_response(
+                        "missing_dpop_proof",
+                        None,
+                        fresh_nonce.as_deref(),
+                    ))
+                });
+            }
         };
 
         // 3. Compute expected values
@@ -200,18 +255,55 @@ where
             None
         };
 
-        // 4. Verify DPoP proof
-        let (_claims, jwk) =
-            match self
-                .verifier
-                .verify_proof(dpop_header, htm, &htu, None, ath.as_deref(), None)
-            {
-                Ok(res) => res,
-                Err(err) => {
-                    tracing::debug!("DPoP proof verification failed in Tower middleware: {err}");
-                    return Box::pin(async { Ok(unauthorized_response("invalid_dpop_proof")) });
-                }
-            };
+        // 4. Verify DPoP proof with anti-replay check
+        let verification_result =
+            self.verifier
+                .verify_proof(dpop_header, htm, &htu, None, ath.as_deref(), None);
+
+        let (claims, jwk) = match verification_result {
+            Ok(res) => res,
+            Err(DPoPError::ReplayDetected { jti }) => {
+                tracing::debug!("DPoP proof replay detected in Tower middleware for jti: {jti}");
+                return Box::pin(async move {
+                    Ok(unauthorized_response(
+                        "invalid_dpop_proof",
+                        Some("DPoP proof replay detected"),
+                        None,
+                    ))
+                });
+            }
+            Err(err) => {
+                tracing::debug!("DPoP proof verification failed in Tower middleware: {err}");
+                let fresh_nonce = self.nonce_source.as_ref().map(|s| s.generate_nonce());
+                return Box::pin(async move {
+                    Ok(unauthorized_response(
+                        "invalid_dpop_proof",
+                        None,
+                        fresh_nonce.as_deref(),
+                    ))
+                });
+            }
+        };
+
+        // 5. Server Nonce Validation (RFC 9449 § 8)
+        if let Some(ref nonce_source) = self.nonce_source {
+            let valid_nonce = claims
+                .nonce
+                .as_deref()
+                .map(|n| nonce_source.verify_nonce(n))
+                .unwrap_or(false);
+
+            if !valid_nonce {
+                let fresh_nonce = nonce_source.generate_nonce();
+                return Box::pin(async move {
+                    Ok(unauthorized_response(
+                        "use_dpop_nonce",
+                        Some("Resource server requires fresh DPoP nonce"),
+                        Some(&fresh_nonce),
+                    ))
+                });
+            }
+        }
 
         let dpop_thumbprint = jwk.thumbprint();
         let validator = Arc::clone(&self.token_validator);
@@ -219,7 +311,7 @@ where
         let mut inner = self.inner.clone();
 
         Box::pin(async move {
-            // 5. Independently validate access token and its cnf.jkt binding to the DPoP key
+            // 6. Independently validate access token and its cnf.jkt binding to the DPoP key
             let user = match validator
                 .validate_access_token(&access_token_owned, &dpop_thumbprint)
                 .await
@@ -227,7 +319,7 @@ where
                 Ok(u) => u,
                 Err(err) => {
                     tracing::debug!("Access token validation failed in Tower middleware: {err}");
-                    return Ok(unauthorized_response("invalid_token"));
+                    return Ok(unauthorized_response("invalid_token", None, None));
                 }
             };
 
@@ -235,19 +327,34 @@ where
             req.extensions_mut().insert(ext);
             req.extensions_mut().insert(user);
 
-            // 6. Forward to inner service
+            // 7. Forward to inner service
             inner.call(req).await
         })
     }
 }
 
-/// Helper generating standard HTTP 401 Unauthorized responses with DPoP WWW-Authenticate header.
-fn unauthorized_response<ResBody: Default>(error_code: &str) -> Response<ResBody> {
+/// Helper generating standard HTTP 401 Unauthorized responses with DPoP WWW-Authenticate and optional DPoP-Nonce header.
+fn unauthorized_response<ResBody: Default>(
+    error_code: &str,
+    description: Option<&str>,
+    nonce: Option<&str>,
+) -> Response<ResBody> {
     let mut resp = Response::new(ResBody::default());
     *resp.status_mut() = StatusCode::UNAUTHORIZED;
-    let auth_header_val = format!("DPoP error=\"{error_code}\"");
+
+    let auth_header_val = match description {
+        Some(desc) => format!("DPoP error=\"{error_code}\", error_description=\"{desc}\""),
+        None => format!("DPoP error=\"{error_code}\""),
+    };
     if let Ok(val) = HeaderValue::from_str(&auth_header_val) {
         resp.headers_mut().insert(header::WWW_AUTHENTICATE, val);
+    }
+    if let Some(n) = nonce {
+        if let Ok(val) = HeaderValue::from_str(n) {
+            if let Ok(hdr) = http::header::HeaderName::from_lowercase(b"dpop-nonce") {
+                resp.headers_mut().insert(hdr, val);
+            }
+        }
     }
     resp
 }
@@ -332,6 +439,130 @@ mod tests {
         let resp = service.call(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(resp.body(), "OK");
+    }
+
+    #[tokio::test]
+    async fn test_tower_rejects_replayed_dpop_proof() {
+        let key = DPoPKey::generate();
+        let jkt = key.jwk_thumbprint();
+        let access_token = "valid_replay_test_token_xyz";
+        let ath = compute_access_token_hash(access_token);
+        let uri = "https://pds.example.com/xrpc/test";
+
+        let proof = key.create_proof("GET", uri, None, Some(&ath)).unwrap();
+
+        let store = InMemoryTokenValidator::new();
+        store.register_token(
+            access_token,
+            "did:plc:alice123",
+            &jkt,
+            Some("atproto".to_string()),
+            None,
+        );
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let layer = OAuthAuthLayer::from_token_store(verifier, store);
+
+        let inner_service = service_fn(|_req: Request<()>| async move {
+            Ok::<Response<String>, Infallible>(Response::new("OK".to_string()))
+        });
+
+        let mut service = layer.layer(inner_service);
+
+        // First presentation succeeds
+        let req1 = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {access_token}"))
+            .header("DPoP", proof.clone())
+            .body(())
+            .unwrap();
+
+        let resp1 = service.call(req1).await.unwrap();
+        assert_eq!(resp1.status(), StatusCode::OK);
+
+        // Second presentation of the exact same proof (replay) fails with 401
+        let req2 = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {access_token}"))
+            .header("DPoP", proof)
+            .body(())
+            .unwrap();
+
+        let resp2 = service.call(req2).await.unwrap();
+        assert_eq!(resp2.status(), StatusCode::UNAUTHORIZED);
+        let www_auth = resp2
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(www_auth.contains("invalid_dpop_proof"));
+        assert!(www_auth.contains("replay detected"));
+    }
+
+    #[tokio::test]
+    async fn test_tower_server_nonce_challenge_workflow() {
+        let key = DPoPKey::generate();
+        let jkt = key.jwk_thumbprint();
+        let access_token = "valid_nonce_test_token_456";
+        let ath = compute_access_token_hash(access_token);
+        let uri = "https://pds.example.com/xrpc/test";
+
+        let store = InMemoryTokenValidator::new();
+        store.register_token(
+            access_token,
+            "did:plc:alice123",
+            &jkt,
+            Some("atproto".to_string()),
+            None,
+        );
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let layer = OAuthAuthLayer::from_token_store(verifier, store)
+            .with_server_nonces(Duration::from_secs(60));
+
+        let inner_service = service_fn(|_req: Request<()>| async move {
+            Ok::<Response<String>, Infallible>(Response::new("OK".to_string()))
+        });
+
+        let mut service = layer.layer(inner_service);
+
+        // 1. Initial request without server nonce receives 401 with DPoP-Nonce
+        let proof_no_nonce = key.create_proof("GET", uri, None, Some(&ath)).unwrap();
+        let req1 = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {access_token}"))
+            .header("DPoP", proof_no_nonce)
+            .body(())
+            .unwrap();
+
+        let resp1 = service.call(req1).await.unwrap();
+        assert_eq!(resp1.status(), StatusCode::UNAUTHORIZED);
+        let issued_nonce = resp1
+            .headers()
+            .get("dpop-nonce")
+            .expect("Must return DPoP-Nonce header")
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        // 2. Client retries with the issued challenge nonce
+        let proof_with_nonce = key
+            .create_proof("GET", uri, Some(&issued_nonce), Some(&ath))
+            .unwrap();
+        let req2 = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {access_token}"))
+            .header("DPoP", proof_with_nonce)
+            .body(())
+            .unwrap();
+
+        let resp2 = service.call(req2).await.unwrap();
+        assert_eq!(resp2.status(), StatusCode::OK);
     }
 
     #[tokio::test]

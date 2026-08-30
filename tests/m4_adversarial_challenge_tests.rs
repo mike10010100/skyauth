@@ -827,6 +827,171 @@ mod tower_adversarial_tests {
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(resp.body(), "OK:did:plc:alice123");
     }
+
+    #[tokio::test]
+    async fn test_tower_adversarial_replay_attack_rejected() {
+        let auth_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let auth_verifying_key = *auth_key.verifying_key();
+
+        let client_dpop_key = DPoPKey::generate();
+        let client_jkt = client_dpop_key.jwk_thumbprint();
+        let uri = "https://pds.example.com/xrpc/app.bsky.actor.getProfile";
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let claims = skyauth::integrations::JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now + 3600,
+            &client_jkt,
+        )
+        .with_audience("https://pds.example.com");
+
+        let valid_jwt = claims.sign_jwt(&auth_key, None).unwrap();
+        let ath = compute_access_token_hash(&valid_jwt);
+
+        let proof = client_dpop_key
+            .create_proof("GET", uri, None, Some(&ath))
+            .unwrap();
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let jwt_validator = skyauth::integrations::JwtAccessTokenValidator::new()
+            .with_verifying_key(auth_verifying_key)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
+
+        let layer = OAuthAuthLayer::from_jwt_validator(verifier, jwt_validator);
+        let mut service = layer.layer(MockService);
+
+        // 1. Initial valid request succeeds
+        let req1 = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {valid_jwt}"))
+            .header("DPoP", proof.clone())
+            .body(())
+            .unwrap();
+
+        let resp1 = service.call(req1).await.unwrap();
+        assert_eq!(resp1.status(), StatusCode::OK);
+        assert_eq!(resp1.body(), "OK:did:plc:alice123");
+
+        // 2. Attacker replays the exact same proof during the validity window -> MUST be rejected (RFC 9449 § 4.3 / § 11.1)
+        let req2 = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {valid_jwt}"))
+            .header("DPoP", proof)
+            .body(())
+            .unwrap();
+
+        let resp2 = service.call(req2).await.unwrap();
+        assert_eq!(resp2.status(), StatusCode::UNAUTHORIZED);
+        let auth_hdr = resp2
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth_hdr.contains("invalid_dpop_proof"));
+        assert!(auth_hdr.contains("replay detected"));
+    }
+
+    #[tokio::test]
+    async fn test_tower_adversarial_server_nonce_challenge_and_enforcement() {
+        let auth_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let auth_verifying_key = *auth_key.verifying_key();
+
+        let client_dpop_key = DPoPKey::generate();
+        let client_jkt = client_dpop_key.jwk_thumbprint();
+        let uri = "https://pds.example.com/xrpc/app.bsky.actor.getProfile";
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let claims = skyauth::integrations::JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now + 3600,
+            &client_jkt,
+        )
+        .with_audience("https://pds.example.com");
+
+        let valid_jwt = claims.sign_jwt(&auth_key, None).unwrap();
+        let ath = compute_access_token_hash(&valid_jwt);
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let jwt_validator = skyauth::integrations::JwtAccessTokenValidator::new()
+            .with_verifying_key(auth_verifying_key)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
+
+        // Layer configured to enforce server-provided nonces with 60s TTL
+        let layer = OAuthAuthLayer::from_jwt_validator(verifier, jwt_validator)
+            .with_server_nonces(std::time::Duration::from_secs(60));
+        let mut service = layer.layer(MockService);
+
+        // 1. Initial request without nonce receives 401 with DPoP-Nonce
+        let proof_no_nonce = client_dpop_key
+            .create_proof("GET", uri, None, Some(&ath))
+            .unwrap();
+
+        let req1 = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {valid_jwt}"))
+            .header("DPoP", proof_no_nonce)
+            .body(())
+            .unwrap();
+
+        let resp1 = service.call(req1).await.unwrap();
+        assert_eq!(resp1.status(), StatusCode::UNAUTHORIZED);
+        let issued_nonce = resp1
+            .headers()
+            .get("dpop-nonce")
+            .expect("Must return DPoP-Nonce header")
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        // 2. Attacker tries an invented/bogus nonce
+        let proof_bogus_nonce = client_dpop_key
+            .create_proof("GET", uri, Some("bogus_nonce_attack"), Some(&ath))
+            .unwrap();
+
+        let req_bogus = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {valid_jwt}"))
+            .header("DPoP", proof_bogus_nonce)
+            .body(())
+            .unwrap();
+
+        let resp_bogus = service.call(req_bogus).await.unwrap();
+        assert_eq!(resp_bogus.status(), StatusCode::UNAUTHORIZED);
+
+        // 3. Client presents proof with the server-issued challenge nonce -> succeeds
+        let proof_valid_nonce = client_dpop_key
+            .create_proof("GET", uri, Some(&issued_nonce), Some(&ath))
+            .unwrap();
+
+        let req_valid = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {valid_jwt}"))
+            .header("DPoP", proof_valid_nonce)
+            .body(())
+            .unwrap();
+
+        let resp_valid = service.call(req_valid).await.unwrap();
+        assert_eq!(resp_valid.status(), StatusCode::OK);
+        assert_eq!(resp_valid.body(), "OK:did:plc:alice123");
+    }
 }
 
 // =========================================================================

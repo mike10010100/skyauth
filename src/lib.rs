@@ -109,7 +109,8 @@ pub use discovery::{
 };
 pub use dpop::{
     compute_access_token_hash, extract_dpop_nonce, normalize_htu, DPoPKey, DPoPNonceCache,
-    DPoPProofClaims, DPoPVerifier, JwkEc, DEFAULT_CLOCK_SKEW_LEEWAY, DEFAULT_MAX_PROOF_AGE,
+    DPoPProofClaims, DPoPReplayCache, DPoPServerNonceSource, DPoPVerifier,
+    InMemoryServerNonceSource, JwkEc, DEFAULT_CLOCK_SKEW_LEEWAY, DEFAULT_MAX_PROOF_AGE,
 };
 pub use error::{
     AtprotoOAuthError, CryptoError, DPoPError, DiscoveryError, IdentityError, IntegrationError,
