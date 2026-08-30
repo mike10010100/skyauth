@@ -586,7 +586,6 @@ pub fn proof_constant_time_eq_soundness() {
 /// - `custom_port_preserved_success`: Custom port 8443 is preserved.
 /// - `uppercase_host_lowercased_success`: Uppercase host `EXAMPLE.COM` is lowercased.
 /// - `invalid_scheme_rejected`: Non-http(s) scheme (e.g. `ftp://`) is rejected.
-#[cfg_attr(kani, kani::proof)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 pub fn proof_dpop_htu_normalization_invariants() {
     #[cfg(kani)]
