@@ -1,29 +1,41 @@
 name: Mutation Testing
 
 on:
+  # Weekly sweep only. Full cargo-mutants coverage is ~864 mutants (~8 CPU-hours);
+  # sharding across 4 parallel runners keeps each job ~1.5-2h, within GitHub's 6h
+  # job cap without monopolizing runner capacity.
   schedule:
-    - cron: '0 4 * * 1'  # weekly, Monday 06:00 UTC
+    - cron: "0 4 * * 1" # Monday 04:00 UTC
   workflow_dispatch:
-    inputs:
-      scope:
-        description: 'Mutation scope: security-core (default) or full'
-        required: false
-        default: 'security-core'
-        type: choice
-        options:
-          - security-core
-          - full
 
 permissions:
   contents: read
 
+env:
+  KILL_RATE_FLOOR: "0.70"
+
 jobs:
-  mutation:
-    name: Mutation Testing (cargo-mutants ≥ 70% kill)
+  sweep:
+    name: Mutation Sweep (${{ matrix.shard }})
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 200
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+        shard:
+          - name: primitives
+            files: --file src/crypto.rs --file src/pkce.rs --file src/session.rs
+          - name: dpop
+            files: --file src/dpop.rs
+          - name: ssrf-identity
+            files: --file src/ssrf.rs --file src/identity.rs
+          - name: flows
+            files: --file src/client.rs --file src/par.rs --file src/discovery.rs --file src/store.rs
+          - name: integrations
+            files: --file src/integrations
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -51,45 +63,36 @@ jobs:
         with:
           tool: cargo-mutants
 
-      - name: Run mutation testing (security-core scope)
-        if: github.event_name == 'push' || github.event.inputs.scope != 'full'
-        run: |
-          cargo mutants -j4 --timeout 300 --no-shuffle \
-            --exclude src/verification/formal_models.rs \
-            --exclude src/verification/kani_harnesses.rs
+      - name: Run mutation sweep (${{ matrix.shard.name }})
+        run: >
+          cargo mutants -j2 --timeout 300 --no-shuffle
+          ${{ matrix.shard.files }}
 
-      - name: Run mutation testing (full scope)
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'full'
-        run: cargo mutants -j4 --timeout 300 --no-shuffle
-
-      - name: Enforce kill-rate floor (≥ 70%)
+      - name: Enforce kill-rate floor
         run: |
-          python3 - <<'PY'
-          import json, glob, sys
-          outcomes = json.load(open("mutants.out/outcomes.json"))
-          caught = sum(1 for o in outcomes if o.get("caught"))
-          unviable = sum(1 for o in outcomes if o.get("unviable"))
+          python3 -c "
+          import json, sys, os
+          name = '${{ matrix.shard.name }}'
+          floor = float(os.environ['KILL_RATE_FLOOR'])
+          outcomes = json.load(open('mutants.out/outcomes.json'))
+          caught = sum(1 for o in outcomes if o.get('caught'))
+          unviable = sum(1 for o in outcomes if o.get('unviable'))
           viable = len(outcomes) - unviable
           rate = caught / viable if viable else 0.0
-          summary = f"Mutation kill rate: {caught}/{viable} = {rate:.1%}".rstrip()
-          print(summary)
-          with open("mutants.out/summary.txt", "w") as f:
-              f.write(summary + "\n")
-          survivors = [o for o in outcomes if not o.get("caught") and not o.get("unviable")]
-          if survivors:
-              print("Survivors (test gaps):")
-              for s in survivors:
-                  mut = s.get("mutant", {})
-                  print(f"  - {mut.get('file')}:{mut.get('line')} — {mut.get('replacement')}")
-          if rate < 0.70:
-              print("::error::kill rate below 70% floor")
+          print(f\"Shard '{name}' kill rate: {caught}/{viable} = {rate:.1%}\")
+          survivors = [o for o in outcomes if not o.get('caught') and not o.get('unviable')]
+          for s in survivors:
+              mut = s.get('mutant', {})
+              print(f\"  survivor: {mut.get('file')}:{mut.get('line')} - {mut.get('replacement')}\")
+          if rate < floor:
+              print('::error::shard kill rate below floor')
               sys.exit(1)
-          PY
+          "
 
-      - name: Upload mutation report
+      - name: Upload shard report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mutation-report
+          name: mutation-report-${{ matrix.shard.name }}
           path: mutants.out/
           retention-days: 30
