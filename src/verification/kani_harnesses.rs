@@ -19,17 +19,29 @@
 //! 4. [`proof_constant_time_eq_soundness`]: Bitwise equality correctness of `constant_time_eq`.
 //! 5. [`proof_dpop_htu_normalization_invariants`]: Target URI normalization invariants per RFC 9449.
 
+// Imports are partitioned by cfg context so neither crate configuration
+// (kani / not-kani) carries unused imports under `-D warnings`.
+#[cfg(not(kani))]
+mod ctx_not_kani {
+    pub(crate) use crate::dpop::normalize_htu;
+    pub(crate) use crate::pkce::{derive_s256_challenge, validate_verifier};
+    pub(crate) use crate::ssrf::{is_restricted_ip, is_restricted_ipv6};
+    pub(crate) use crate::verification::formal_models::{
+        DPoPHtuFormalSpec, OAuthStateTransitionModel,
+    };
+    pub(crate) use std::net::Ipv6Addr;
+}
+#[cfg(not(kani))]
+use ctx_not_kani::*;
+
 use std::collections::HashSet;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::crypto::constant_time_eq;
-use crate::dpop::normalize_htu;
-use crate::pkce::{derive_s256_challenge, validate_verifier};
-use crate::ssrf::{is_restricted_ip, is_restricted_ipv4, is_restricted_ipv6, SsrfFilter};
+use crate::ssrf::{is_restricted_ipv4, SsrfFilter};
 use crate::verification::formal_models::{
-    ConstantTimeEqSpec, DPoPHtuFormalSpec, OAuthStateTransitionModel, PkceFormalSpec,
-    SsrfFormalSpec,
+    ConstantTimeEqSpec, PkceFormalSpec, SsrfFormalSpec,
 };
 
 /// Thread-safe coverage tracker ensuring all formal reachability branches are hit.
