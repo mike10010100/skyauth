@@ -41,6 +41,7 @@ impl MockAuthServer {
             "dpop_signing_alg_values_supported": ["ES256"],
             "require_pushed_authorization_requests": true,
             "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
+            "token_endpoint_auth_signing_alg_values_supported": ["ES256"],
             "scopes_supported": ["atproto", "transition:generic"],
             "authorization_response_iss_parameter_supported": true,
             "client_id_metadata_document_supported": true

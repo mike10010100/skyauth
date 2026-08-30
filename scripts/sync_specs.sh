@@ -86,6 +86,7 @@ format_json() {
             mv "${tmp}" "${file}"
         else
             rm -f "${tmp}"
+            return 1
         fi
     elif command -v python3 &>/dev/null; then
         local tmp="${file}.tmp.$$"
@@ -93,6 +94,7 @@ format_json() {
             mv "${tmp}" "${file}"
         else
             rm -f "${tmp}"
+            return 1
         fi
     fi
 }

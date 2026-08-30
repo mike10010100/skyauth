@@ -485,6 +485,7 @@ async fn test_discovery_oidc_fallback() {
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
+        "token_endpoint_auth_signing_alg_values_supported": ["ES256"],
         "scopes_supported": ["atproto"],
         "authorization_response_iss_parameter_supported": true,
         "client_id_metadata_document_supported": true
@@ -532,14 +533,14 @@ fn test_auth_server_capability_violations() {
             "none".to_string(),
             "private_key_jwt".to_string(),
         ],
-        token_endpoint_auth_signing_alg_values_supported: vec![],
+        token_endpoint_auth_signing_alg_values_supported: vec!["ES256".to_string()],
         scopes_supported: vec!["atproto".to_string()],
         authorization_response_iss_parameter_supported: true,
         client_id_metadata_document_supported: true,
     };
     assert!(validate_auth_server_capabilities(&valid_base, "https://auth.example.com").is_ok());
 
-    // Missing ES256
+    // Missing ES256 DPoP
     let no_es256 = AuthorizationServerMetadata {
         dpop_signing_alg_values_supported: vec!["RS256".to_string()],
         ..valid_base.clone()
@@ -609,6 +610,29 @@ fn test_auth_server_capability_violations() {
         Err(DiscoveryError::MissingTokenAuthMethod(_))
     ));
 
+    // Missing ES256 in token_endpoint_auth_signing_alg_values_supported
+    let no_signing_alg = AuthorizationServerMetadata {
+        token_endpoint_auth_signing_alg_values_supported: vec!["RS256".to_string()],
+        ..valid_base.clone()
+    };
+    assert!(matches!(
+        validate_auth_server_capabilities(&no_signing_alg, "https://auth.example.com"),
+        Err(DiscoveryError::MissingTokenAuthSigningAlg(_))
+    ));
+
+    // Advertised "none" in token_endpoint_auth_signing_alg_values_supported
+    let none_signing_alg = AuthorizationServerMetadata {
+        token_endpoint_auth_signing_alg_values_supported: vec![
+            "ES256".to_string(),
+            "none".to_string(),
+        ],
+        ..valid_base.clone()
+    };
+    assert!(matches!(
+        validate_auth_server_capabilities(&none_signing_alg, "https://auth.example.com"),
+        Err(DiscoveryError::InvalidTokenAuthSigningAlg(_))
+    ));
+
     // Missing "atproto" scope
     let no_atproto_scope = AuthorizationServerMetadata {
         scopes_supported: vec!["email".to_string(), "profile".to_string()],
@@ -652,10 +676,20 @@ fn test_auth_server_capability_violations() {
     // Issuer with subpath (not origin-only)
     let issuer_subpath = AuthorizationServerMetadata {
         issuer: "https://auth.example.com/oauth".to_string(),
-        ..valid_base
+        ..valid_base.clone()
     };
     assert!(matches!(
         validate_auth_server_capabilities(&issuer_subpath, "https://auth.example.com/oauth"),
+        Err(DiscoveryError::InvalidAuthorizationServerUrl(_))
+    ));
+
+    // Issuer with explicit default port 443
+    let issuer_port = AuthorizationServerMetadata {
+        issuer: "https://auth.example.com:443".to_string(),
+        ..valid_base
+    };
+    assert!(matches!(
+        validate_auth_server_capabilities(&issuer_port, "https://auth.example.com"),
         Err(DiscoveryError::InvalidAuthorizationServerUrl(_))
     ));
 }
@@ -738,5 +772,31 @@ async fn test_protected_resource_capability_violations() {
     assert!(
         matches!(res_mismatch, Err(DiscoveryError::ResourceMismatch { .. })),
         "Mismatched resource must fail with ResourceMismatch"
+    );
+
+    // 4. Authorization server URL with explicit default port 443
+    mock_pds.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/oauth-protected-resource"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(serde_json::json!({
+                    "resource": mock_pds.uri(),
+                    "authorization_servers": [
+                        "https://auth.example.com:443"
+                    ]
+                })),
+        )
+        .mount(&mock_pds)
+        .await;
+
+    let res_port = fetch_protected_resource_metadata(&filter, &mock_pds.uri()).await;
+    assert!(
+        matches!(
+            res_port,
+            Err(DiscoveryError::InvalidAuthorizationServerUrl(_))
+        ),
+        "AS URL with explicit :443 must fail with InvalidAuthorizationServerUrl"
     );
 }

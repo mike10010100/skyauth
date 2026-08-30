@@ -97,9 +97,12 @@ else
     fi
 fi
 
+VERUS_LOG=$(mktemp 2>/dev/null || mktemp -t 'verus_err')
+trap 'rm -f "${VERUS_LOG}"; rm -rf "${TMP_DIR:-}"' EXIT
+
 log_info "Running Verus deductive formal verification on ${VERUS_FILE}..."
-if ! "${VERUS_CMD}" --crate-type=lib "${VERUS_FILE}" 2>/tmp/verus_err.log; then
-    VERUS_OUTPUT=$(cat /tmp/verus_err.log | sed -e 's/\x1b\[[0-9;]*m//g' | tr -d '\r')
+if ! "${VERUS_CMD}" --crate-type=lib "${VERUS_FILE}" 2>"${VERUS_LOG}"; then
+    VERUS_OUTPUT=$(cat "${VERUS_LOG}" | sed -e 's/\x1b\[[0-9;]*m//g' | tr -d '\r')
     echo "${VERUS_OUTPUT}" >&2
     if echo "${VERUS_OUTPUT}" | grep -q "rustup.*install" && command -v rustup &>/dev/null; then
         REQUIRED_TOOLCHAIN=$(echo "${VERUS_OUTPUT}" | grep -o 'rustup \(toolchain \)\?install [^ `]*' | head -n 1 | awk '{print $NF}' | tr -d '`')
@@ -119,5 +122,4 @@ if ! "${VERUS_CMD}" --crate-type=lib "${VERUS_FILE}" 2>/tmp/verus_err.log; then
         exit 1
     fi
 fi
-rm -f /tmp/verus_err.log
 log_success "All Verus deductive proofs and SMT invariants verified successfully."

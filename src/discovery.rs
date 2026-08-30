@@ -106,7 +106,10 @@ pub struct DiscoveredAuthEndpoints {
     pub auth_server_metadata: AuthorizationServerMetadata,
 }
 
-/// Checks whether a URL is an origin-only URL (scheme + host + optional port, no path/query/fragment).
+/// Checks whether a URL is an origin-only URL (scheme + host + optional non-default port, no path/query/fragment).
+///
+/// Rejects explicit default HTTPS port (`:443`) or explicit default HTTP port (`:80`),
+/// as well as userinfo, paths (other than empty or `/`), query parameters, and fragments.
 fn is_origin_only(url_str: &str) -> bool {
     if let Ok(parsed) = Url::parse(url_str) {
         let scheme = parsed.scheme();
@@ -117,6 +120,13 @@ fn is_origin_only(url_str: &str) -> bool {
             return false;
         }
         if !parsed.username().is_empty() || parsed.password().is_some() {
+            return false;
+        }
+        // Reject explicit default port :443 for https or :80 for non-loopback http
+        if url_str.contains(":443") {
+            return false;
+        }
+        if scheme == "http" && !is_loopback && url_str.contains(":80") {
             return false;
         }
         let path = parsed.path();
@@ -264,6 +274,16 @@ pub fn validate_auth_server_capabilities(
     auth_server_url: &str,
 ) -> Result<(), DiscoveryError> {
     // 1. Issuer Origin Equality & Origin-only Check
+    if !is_origin_only(auth_server_url) {
+        return Err(DiscoveryError::InvalidAuthorizationServerUrl(
+            auth_server_url.to_string(),
+        ));
+    }
+    if !is_origin_only(&meta.issuer) {
+        return Err(DiscoveryError::InvalidAuthorizationServerUrl(
+            meta.issuer.clone(),
+        ));
+    }
     let expected_origin = normalize_origin(auth_server_url);
     let actual_origin = normalize_origin(&meta.issuer);
     if expected_origin != actual_origin {
@@ -271,11 +291,6 @@ pub fn validate_auth_server_capabilities(
             expected: auth_server_url.to_string(),
             actual: meta.issuer.clone(),
         });
-    }
-    if !is_origin_only(&meta.issuer) {
-        return Err(DiscoveryError::InvalidAuthorizationServerUrl(
-            meta.issuer.clone(),
-        ));
     }
 
     // 2. PAR Endpoint Validation
@@ -362,6 +377,26 @@ pub fn validate_auth_server_capabilities(
         .any(|m| m == "private_key_jwt");
     if !has_none || !has_private_key_jwt {
         return Err(DiscoveryError::MissingTokenAuthMethod(
+            auth_server_url.to_string(),
+        ));
+    }
+
+    // 8b. Token Endpoint Auth Signing Alg Values Supported (mandates "ES256", rejects "none")
+    if !meta
+        .token_endpoint_auth_signing_alg_values_supported
+        .iter()
+        .any(|alg| alg == "ES256")
+    {
+        return Err(DiscoveryError::MissingTokenAuthSigningAlg(
+            auth_server_url.to_string(),
+        ));
+    }
+    if meta
+        .token_endpoint_auth_signing_alg_values_supported
+        .iter()
+        .any(|alg| alg == "none")
+    {
+        return Err(DiscoveryError::InvalidTokenAuthSigningAlg(
             auth_server_url.to_string(),
         ));
     }
@@ -542,5 +577,61 @@ mod tests {
             validate_auth_server_capabilities(&meta, "https://auth.example.com"),
             Err(DiscoveryError::IssuerMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn test_validate_auth_server_capabilities_missing_token_auth_signing_alg() {
+        let meta = AuthorizationServerMetadata {
+            token_endpoint_auth_signing_alg_values_supported: vec!["RS256".to_string()],
+            ..valid_test_metadata()
+        };
+
+        assert!(matches!(
+            validate_auth_server_capabilities(&meta, "https://auth.example.com"),
+            Err(DiscoveryError::MissingTokenAuthSigningAlg(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_auth_server_capabilities_invalid_token_auth_signing_alg_none() {
+        let meta = AuthorizationServerMetadata {
+            token_endpoint_auth_signing_alg_values_supported: vec![
+                "ES256".to_string(),
+                "none".to_string(),
+            ],
+            ..valid_test_metadata()
+        };
+
+        assert!(matches!(
+            validate_auth_server_capabilities(&meta, "https://auth.example.com"),
+            Err(DiscoveryError::InvalidTokenAuthSigningAlg(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_auth_server_capabilities_explicit_443_rejected() {
+        let meta = AuthorizationServerMetadata {
+            issuer: "https://auth.example.com:443".to_string(),
+            ..valid_test_metadata()
+        };
+
+        assert!(matches!(
+            validate_auth_server_capabilities(&meta, "https://auth.example.com"),
+            Err(DiscoveryError::InvalidAuthorizationServerUrl(_))
+        ));
+
+        let valid_meta = valid_test_metadata();
+        assert!(matches!(
+            validate_auth_server_capabilities(&valid_meta, "https://auth.example.com:443"),
+            Err(DiscoveryError::InvalidAuthorizationServerUrl(_))
+        ));
+    }
+
+    #[test]
+    fn test_is_origin_only_rejects_explicit_443() {
+        assert!(is_origin_only("https://auth.example.com"));
+        assert!(!is_origin_only("https://auth.example.com:443"));
+        assert!(!is_origin_only("https://auth.example.com:443/"));
+        assert!(is_origin_only("https://auth.example.com:8443"));
     }
 }

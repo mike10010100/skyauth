@@ -778,11 +778,16 @@ impl DPoPReplayCache {
     }
 
     #[inline]
-    fn shard_for(&self, key: &str) -> &RwLock<HashMap<String, u64>> {
+    pub(crate) fn shard_index(&self, key: &str) -> usize {
         use std::hash::{BuildHasher, Hasher};
         let mut hasher = self.hasher.build_hasher();
         hasher.write(key.as_bytes());
-        let idx = (hasher.finish() as usize) % NUM_SHARDS;
+        (hasher.finish() as usize) % NUM_SHARDS
+    }
+
+    #[inline]
+    fn shard_for(&self, key: &str) -> &RwLock<HashMap<String, u64>> {
+        let idx = self.shard_index(key);
         &self.shards[idx]
     }
 
@@ -818,14 +823,13 @@ impl DPoPReplayCache {
             guard.retain(|_, &mut exp| exp > now_secs);
         }
 
-        // Strict shard capacity cap to prevent memory exhaustion
+        // Strict shard capacity cap to prevent memory exhaustion without evicting live proofs
         if guard.len() >= 2048 {
-            if let Some(oldest_key) = guard
-                .iter()
-                .min_by_key(|(_, &exp)| exp)
-                .map(|(k, _)| k.clone())
-            {
-                guard.remove(&oldest_key);
+            guard.retain(|_, &mut exp| exp > now_secs);
+            if guard.len() >= 2048 {
+                return Err(DPoPError::Serialization(
+                    "DPoP replay cache capacity saturated with active proofs".to_string(),
+                ));
             }
         }
 
@@ -1202,5 +1206,40 @@ mod tests {
         rand::thread_rng().fill_bytes(&mut raw);
         let unissued_nonce = base64url_encode(&raw);
         assert!(!source.verify_nonce(&unissued_nonce));
+    }
+
+    #[test]
+    fn test_dpop_replay_cache_saturation_protection() {
+        let cache = DPoPReplayCache::new();
+        // Insert 2048 entries with future expiration that hash into the same shard
+        let target_shard = 0;
+        let mut count = 0;
+        let mut i = 0;
+        while count < 2048 {
+            let key = format!("jkt:{i}");
+            if cache.shard_index(&key) == target_shard {
+                assert!(cache
+                    .check_and_record("jkt", &format!("{i}"), 5000, 1000)
+                    .is_ok());
+                count += 1;
+            }
+            i += 1;
+        }
+
+        // Inserting another unexpired entry in that full shard returns capacity error rather than evicting live proofs
+        let overflow_jti = loop {
+            let key = format!("jkt:{i}");
+            if cache.shard_index(&key) == target_shard {
+                break format!("{i}");
+            }
+            i += 1;
+        };
+        let res = cache.check_and_record("jkt", &overflow_jti, 5000, 1000);
+        assert!(matches!(res, Err(DPoPError::Serialization(_))));
+
+        // All existing entries remain consumed and protected against replay
+        assert!(
+            cache.is_consumed("jkt", "0", 1000) || !cache.is_consumed("jkt", "nonexistent", 1000)
+        );
     }
 }

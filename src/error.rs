@@ -695,6 +695,18 @@ pub enum DiscoveryError {
     )]
     MissingTokenAuthMethod(String),
 
+    /// Authorization server is missing required `ES256` token endpoint authentication signing algorithm support.
+    #[error(
+        "Authorization server '{0}' is missing required ES256 in token_endpoint_auth_signing_alg_values_supported"
+    )]
+    MissingTokenAuthSigningAlg(String),
+
+    /// Authorization server advertised forbidden 'none' in token_endpoint_auth_signing_alg_values_supported.
+    #[error(
+        "Authorization server '{0}' advertised forbidden 'none' in token_endpoint_auth_signing_alg_values_supported"
+    )]
+    InvalidTokenAuthSigningAlg(String),
+
     /// Authorization server metadata is missing required `atproto` scope in `scopes_supported`.
     #[error("Authorization server '{0}' is missing required 'atproto' scope in scopes_supported")]
     MissingAtprotoScope(String),
