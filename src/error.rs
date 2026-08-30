@@ -327,6 +327,29 @@ pub enum TokenError {
     #[error("Invalid token signature")]
     InvalidSignature,
 
+    /// The access token is missing the required confirmation (`cnf.jkt`) claim.
+    #[error("Missing cnf.jkt confirmation claim in access token")]
+    MissingCnf,
+
+    /// The access token `cnf.jkt` binding does not match the presented DPoP key thumbprint.
+    #[error(
+        "DPoP key thumbprint mismatch: token cnf.jkt '{expected_jkt}' does not match proof jkt '{actual_jkt}'"
+    )]
+    CnfThumbprintMismatch {
+        /// Expected JWK thumbprint declared in token `cnf.jkt`.
+        expected_jkt: String,
+        /// Actual JWK thumbprint computed from the DPoP proof public key.
+        actual_jkt: String,
+    },
+
+    /// The access token is missing a required audience (`aud`) claim.
+    #[error("Missing required audience (aud) claim in access token")]
+    MissingAudience,
+
+    /// The access token is missing a required issuer (`iss`) claim.
+    #[error("Missing required issuer (iss) claim in access token")]
+    MissingIssuer,
+
     /// The token is missing the required Decentralized Identifier (`did`) subject.
     #[error("Missing or invalid subject/issuer DID")]
     MissingDid,

@@ -24,6 +24,13 @@ pub mod actix;
 #[cfg(feature = "tower")]
 pub mod tower;
 
+pub mod validator;
+
+pub use validator::{
+    AccessTokenValidator, CnfClaim, InMemoryTokenValidator, JwtAccessTokenClaims,
+    JwtAccessTokenValidator, RegisteredToken,
+};
+
 /// Parsed query parameters received at the OAuth redirect URI callback endpoint.
 ///
 /// Handles both successful authorizations (providing `code` and `state`) and error

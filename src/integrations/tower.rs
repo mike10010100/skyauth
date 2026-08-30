@@ -1,7 +1,7 @@
 //! Tower middleware layer and service for DPoP-bound OAuth request authentication.
 //!
 //! Provides:
-//! - [`OAuthAuthLayer`]: Tower [`tower_layer::Layer`] applying DPoP authentication to any compatible service.
+//! - [`OAuthAuthLayer`]: Tower [`tower_layer::Layer`] applying DPoP and token authentication to any compatible service.
 //! - [`OAuthAuthService`]: Tower [`tower_service::Service`] extracting, validating, and injecting authenticated sessions.
 
 use std::future::Future;
@@ -13,28 +13,71 @@ use http::{header, HeaderValue, Request, Response, StatusCode};
 use tower_layer::Layer;
 use tower_service::Service;
 
-use super::{AuthenticatedUser, OAuthSessionExtension};
+use super::validator::{AccessTokenValidator, InMemoryTokenValidator, JwtAccessTokenValidator};
+use super::OAuthSessionExtension;
 use crate::dpop::{compute_access_token_hash, DPoPVerifier};
 
 /// Tower layer that enforces AT Protocol DPoP OAuth authentication on inbound HTTP requests.
 ///
 /// Inspects the `Authorization: DPoP <access_token>` and `DPoP: <proof_jwt>` headers,
-/// verifies the cryptographic proof against the HTTP method and URI, and attaches
-/// [`OAuthSessionExtension`] to request extensions before forwarding to the inner service.
-#[derive(Debug, Clone)]
+/// verifies the cryptographic DPoP proof against the HTTP method and URI, validates
+/// the access token and its `cnf.jkt` binding via the configured [`AccessTokenValidator`],
+/// and attaches [`OAuthSessionExtension`] and [`AuthenticatedUser`] to request extensions.
+#[derive(Clone)]
 pub struct OAuthAuthLayer {
     verifier: Arc<DPoPVerifier>,
+    token_validator: Arc<dyn AccessTokenValidator>,
     require_ath: bool,
 }
 
+impl std::fmt::Debug for OAuthAuthLayer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthAuthLayer")
+            .field("verifier", &self.verifier)
+            .field("require_ath", &self.require_ath)
+            .finish()
+    }
+}
+
 impl OAuthAuthLayer {
-    /// Creates a new `OAuthAuthLayer` with the provided [`DPoPVerifier`].
+    /// Creates a new `OAuthAuthLayer` with the provided [`DPoPVerifier`] and [`AccessTokenValidator`].
     #[must_use]
-    pub fn new(verifier: Arc<DPoPVerifier>) -> Self {
+    pub fn new(
+        verifier: Arc<DPoPVerifier>,
+        token_validator: Arc<dyn AccessTokenValidator>,
+    ) -> Self {
         Self {
             verifier,
+            token_validator,
             require_ath: true,
         }
+    }
+
+    /// Creates a new `OAuthAuthLayer` using a [`JwtAccessTokenValidator`].
+    #[must_use]
+    pub fn from_jwt_validator(
+        verifier: Arc<DPoPVerifier>,
+        jwt_validator: JwtAccessTokenValidator,
+    ) -> Self {
+        Self::new(verifier, Arc::new(jwt_validator))
+    }
+
+    /// Creates a new `OAuthAuthLayer` using an [`InMemoryTokenValidator`].
+    #[must_use]
+    pub fn from_token_store(
+        verifier: Arc<DPoPVerifier>,
+        token_validator: InMemoryTokenValidator,
+    ) -> Self {
+        Self::new(verifier, Arc::new(token_validator))
+    }
+
+    /// Creates a new `OAuthAuthLayer` with a concrete validator implementing [`AccessTokenValidator`].
+    #[must_use]
+    pub fn from_validator<V: AccessTokenValidator>(
+        verifier: Arc<DPoPVerifier>,
+        validator: V,
+    ) -> Self {
+        Self::new(verifier, Arc::new(validator))
     }
 
     /// Configures whether the access token hash (`ath`) claim is strictly required in DPoP proofs.
@@ -52,25 +95,42 @@ impl<S> Layer<S> for OAuthAuthLayer {
         OAuthAuthService {
             inner,
             verifier: Arc::clone(&self.verifier),
+            token_validator: Arc::clone(&self.token_validator),
             require_ath: self.require_ath,
         }
     }
 }
 
-/// Tower service that validates DPoP authentication headers on inbound requests.
-#[derive(Debug, Clone)]
+/// Tower service that validates DPoP authentication headers and access tokens on inbound requests.
+#[derive(Clone)]
 pub struct OAuthAuthService<S> {
     inner: S,
     verifier: Arc<DPoPVerifier>,
+    token_validator: Arc<dyn AccessTokenValidator>,
     require_ath: bool,
 }
 
+impl<S: std::fmt::Debug> std::fmt::Debug for OAuthAuthService<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthAuthService")
+            .field("inner", &self.inner)
+            .field("verifier", &self.verifier)
+            .field("require_ath", &self.require_ath)
+            .finish()
+    }
+}
+
 impl<S> OAuthAuthService<S> {
-    /// Creates a new `OAuthAuthService` wrapping an inner service.
-    pub fn new(inner: S, verifier: Arc<DPoPVerifier>) -> Self {
+    /// Creates a new `OAuthAuthService` wrapping an inner service with a DPoP verifier and token validator.
+    pub fn new(
+        inner: S,
+        verifier: Arc<DPoPVerifier>,
+        token_validator: Arc<dyn AccessTokenValidator>,
+    ) -> Self {
         Self {
             inner,
             verifier,
+            token_validator,
             require_ath: true,
         }
     }
@@ -153,22 +213,31 @@ where
                 }
             };
 
-        // 5. Build AuthenticatedUser and inject into extensions
-        let thumbprint = jwk.thumbprint();
-        let user = AuthenticatedUser {
-            did: format!("did:key:{thumbprint}"),
-            access_token: access_token.to_string(),
-            dpop_thumbprint: thumbprint,
-            scope: None,
-        };
+        let dpop_thumbprint = jwk.thumbprint();
+        let validator = Arc::clone(&self.token_validator);
+        let access_token_owned = access_token.to_string();
+        let mut inner = self.inner.clone();
 
-        let ext = OAuthSessionExtension::new(user.clone());
-        req.extensions_mut().insert(ext);
-        req.extensions_mut().insert(user);
+        Box::pin(async move {
+            // 5. Independently validate access token and its cnf.jkt binding to the DPoP key
+            let user = match validator
+                .validate_access_token(&access_token_owned, &dpop_thumbprint)
+                .await
+            {
+                Ok(u) => u,
+                Err(err) => {
+                    tracing::debug!("Access token validation failed in Tower middleware: {err}");
+                    return Ok(unauthorized_response("invalid_token"));
+                }
+            };
 
-        // 6. Forward to inner service
-        let fut = self.inner.call(req);
-        Box::pin(fut)
+            let ext = OAuthSessionExtension::new(user.clone());
+            req.extensions_mut().insert(ext);
+            req.extensions_mut().insert(user);
+
+            // 6. Forward to inner service
+            inner.call(req).await
+        })
     }
 }
 
@@ -188,32 +257,64 @@ fn unauthorized_response<ResBody: Default>(error_code: &str) -> Response<ResBody
 mod tests {
     use super::*;
     use crate::dpop::DPoPKey;
+    use crate::integrations::validator::JwtAccessTokenClaims;
+    use crate::integrations::AuthenticatedUser;
+    use p256::ecdsa::SigningKey;
+    use rand::thread_rng;
     use std::convert::Infallible;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use tower::service_fn;
     use tower_service::Service;
 
     #[tokio::test]
-    async fn test_tower_dpop_auth_success() {
-        let key = DPoPKey::generate();
-        let expected_thumbprint = key.jwk_thumbprint();
-        let access_token = "valid_access_token_123";
-        let ath = compute_access_token_hash(access_token);
+    async fn test_tower_jwt_dpop_auth_success() {
+        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_verifying_key = *auth_key.verifying_key();
+
+        let client_key = DPoPKey::generate();
+        let client_jkt = client_key.jwk_thumbprint();
         let uri = "https://pds.example.com/xrpc/app.bsky.actor.getProfile";
 
-        let proof = key.create_proof("GET", uri, None, Some(&ath)).unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Mint valid JWT access token bound to client_jkt
+        let claims = JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now + 3600,
+            &client_jkt,
+        )
+        .with_audience("https://pds.example.com")
+        .with_scope("atproto transition:generic");
+
+        let access_token = claims.sign_jwt(&auth_key, None).unwrap();
+        let ath = compute_access_token_hash(&access_token);
+
+        let proof = client_key
+            .create_proof("GET", uri, None, Some(&ath))
+            .unwrap();
 
         let verifier = Arc::new(DPoPVerifier::new());
-        let layer = OAuthAuthLayer::new(verifier);
+        let token_validator = JwtAccessTokenValidator::new()
+            .with_verifying_key(auth_verifying_key)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
 
-        let target_jkt = expected_thumbprint.clone();
+        let layer = OAuthAuthLayer::from_jwt_validator(verifier, token_validator);
+
+        let target_jkt = client_jkt.clone();
         let inner_service = service_fn(move |req: Request<()>| {
             let expected_jkt = target_jkt.clone();
             async move {
                 let user = req.extensions().get::<AuthenticatedUser>().cloned();
                 assert!(user.is_some());
                 let user = user.unwrap();
-                assert_eq!(user.access_token, "valid_access_token_123");
+                assert_eq!(user.did, "did:plc:alice123");
                 assert_eq!(user.dpop_thumbprint, expected_jkt);
+                assert_eq!(user.scope.as_deref(), Some("atproto transition:generic"));
                 Ok::<Response<String>, Infallible>(Response::new("OK".to_string()))
             }
         });
@@ -234,9 +335,158 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_tower_rejects_invented_token_credentials() {
+        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_verifying_key = *auth_key.verifying_key();
+
+        // Attacker creates a fresh DPoP key and invents a token string
+        let attacker_key = DPoPKey::generate();
+        let invented_token = "fabricated_random_access_token_12345";
+        let ath = compute_access_token_hash(invented_token);
+        let uri = "https://pds.example.com/xrpc/app.bsky.actor.getProfile";
+
+        // DPoP proof signed with attacker's key hashing the invented token
+        let proof = attacker_key
+            .create_proof("GET", uri, None, Some(&ath))
+            .unwrap();
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let token_validator = JwtAccessTokenValidator::new().with_verifying_key(auth_verifying_key);
+        let layer = OAuthAuthLayer::from_jwt_validator(verifier, token_validator);
+
+        let inner_service = service_fn(|_req: Request<()>| async move {
+            Ok::<Response<String>, Infallible>(Response::new("SHOULD_NOT_REACH".to_string()))
+        });
+
+        let mut service = layer.layer(inner_service);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {invented_token}"))
+            .header("DPoP", proof)
+            .body(())
+            .unwrap();
+
+        let resp = service.call(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let www_auth = resp
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(www_auth.contains("invalid_token"));
+    }
+
+    #[tokio::test]
+    async fn test_tower_rejects_stolen_token_with_attacker_dpop_proof_cnf_mismatch() {
+        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_verifying_key = *auth_key.verifying_key();
+
+        let alice_key = DPoPKey::generate();
+        let alice_jkt = alice_key.jwk_thumbprint();
+
+        let attacker_key = DPoPKey::generate();
+        let uri = "https://pds.example.com/xrpc/app.bsky.actor.getProfile";
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Legitimate token issued to Alice
+        let claims = JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now + 3600,
+            &alice_jkt,
+        )
+        .with_audience("https://pds.example.com");
+
+        let alice_token = claims.sign_jwt(&auth_key, None).unwrap();
+        let ath = compute_access_token_hash(&alice_token);
+
+        // Attacker presents Alice's token, but signs DPoP proof with Attacker's key
+        let attacker_proof = attacker_key
+            .create_proof("GET", uri, None, Some(&ath))
+            .unwrap();
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let token_validator = JwtAccessTokenValidator::new()
+            .with_verifying_key(auth_verifying_key)
+            .with_expected_audience("https://pds.example.com");
+        let layer = OAuthAuthLayer::from_jwt_validator(verifier, token_validator);
+
+        let inner_service = service_fn(|_req: Request<()>| async move {
+            Ok::<Response<String>, Infallible>(Response::new("SHOULD_NOT_REACH".to_string()))
+        });
+
+        let mut service = layer.layer(inner_service);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {alice_token}"))
+            .header("DPoP", attacker_proof)
+            .body(())
+            .unwrap();
+
+        let resp = service.call(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_tower_in_memory_token_store_lifecycle() {
+        let key = DPoPKey::generate();
+        let jkt = key.jwk_thumbprint();
+        let access_token = "registered_opaque_token_987";
+        let ath = compute_access_token_hash(access_token);
+        let uri = "https://pds.example.com/xrpc/test";
+
+        let proof = key.create_proof("GET", uri, None, Some(&ath)).unwrap();
+
+        let store = InMemoryTokenValidator::new();
+        store.register_token(
+            access_token,
+            "did:plc:bob456",
+            &jkt,
+            Some("atproto".to_string()),
+            None,
+        );
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let layer = OAuthAuthLayer::from_token_store(verifier, store);
+
+        let inner_service = service_fn(move |req: Request<()>| async move {
+            let user = req
+                .extensions()
+                .get::<AuthenticatedUser>()
+                .cloned()
+                .unwrap();
+            assert_eq!(user.did, "did:plc:bob456");
+            Ok::<Response<String>, Infallible>(Response::new("OK".to_string()))
+        });
+
+        let mut service = layer.layer(inner_service);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {access_token}"))
+            .header("DPoP", proof)
+            .body(())
+            .unwrap();
+
+        let resp = service.call(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn test_tower_missing_dpop_proof_returns_401() {
         let verifier = Arc::new(DPoPVerifier::new());
-        let layer = OAuthAuthLayer::new(verifier);
+        let validator = InMemoryTokenValidator::new();
+        let layer = OAuthAuthLayer::from_token_store(verifier, validator);
 
         let inner_service = service_fn(|_req: Request<()>| async move {
             Ok::<Response<String>, Infallible>(Response::new("OK".to_string()))

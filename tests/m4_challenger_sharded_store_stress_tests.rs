@@ -599,8 +599,17 @@ mod tower_stress_tests {
         let ath = compute_access_token_hash(access_token);
         let uri = "https://pds.example.com/xrpc/app.bsky.feed.getFeedSkeleton";
 
+        let store = skyauth::integrations::InMemoryTokenValidator::new();
+        store.register_token(
+            access_token,
+            "did:plc:concurrent_user",
+            &jkt,
+            Some("atproto".to_string()),
+            None,
+        );
+
         let verifier = Arc::new(DPoPVerifier::new());
-        let layer = OAuthAuthLayer::new(verifier).with_require_ath(true);
+        let layer = OAuthAuthLayer::from_token_store(verifier, store).with_require_ath(true);
 
         let target_jkt = jkt.clone();
         let inner = service_fn(move |req: Request<()>| {

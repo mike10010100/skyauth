@@ -294,8 +294,17 @@ mod tower_tests {
         // Generate valid DPoP proof for GET uri with ath
         let proof = key.create_proof("GET", uri, None, Some(&ath)).unwrap();
 
+        let store = skyauth::integrations::InMemoryTokenValidator::new();
+        store.register_token(
+            access_token,
+            "did:plc:alice123",
+            &jkt,
+            Some("atproto".to_string()),
+            None,
+        );
+
         let verifier = Arc::new(DPoPVerifier::new());
-        let layer = OAuthAuthLayer::new(verifier).with_require_ath(true);
+        let layer = OAuthAuthLayer::from_token_store(verifier, store).with_require_ath(true);
 
         let target_jkt = jkt.clone();
         let inner = service_fn(move |req: Request<()>| {

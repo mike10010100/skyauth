@@ -120,7 +120,11 @@ pub use identity::{
     IdentityResolver, IdentityResolverBuilder, ResolvedIdentity, StandardDnsResolver,
     VerificationMethod, DEFAULT_PLC_DIRECTORY,
 };
-pub use integrations::{AuthenticatedUser, OAuthCallbackQuery, OAuthSessionExtension};
+pub use integrations::{
+    AccessTokenValidator, AuthenticatedUser, CnfClaim, InMemoryTokenValidator,
+    JwtAccessTokenClaims, JwtAccessTokenValidator, OAuthCallbackQuery, OAuthSessionExtension,
+    RegisteredToken,
+};
 pub use par::{build_authorization_url, execute_par_request, ParParameters, ParResponse};
 pub use pkce::{derive_s256_challenge, validate_verifier, verify_pkce, PkceMethod, PkcePair};
 pub use session::OAuthSession;

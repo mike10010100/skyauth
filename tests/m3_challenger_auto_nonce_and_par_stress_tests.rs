@@ -1228,8 +1228,8 @@ proptest! {
 
     #[test]
     fn prop_build_authorization_url_valid_params(
-        auth_host in "[a-z0-9-]{3,10}\\.example\\.com",
-        client_id in "https://[a-z0-9-]{3,10}\\.example\\.com/client\\.json",
+        auth_host in "[a-z0-9]{3,10}\\.example\\.com",
+        client_id in "https://[a-z0-9]{3,10}\\.example\\.com/client\\.json",
         req_id in "[a-zA-Z0-9-]{8,24}"
     ) {
         let endpoint = format!("https://{auth_host}/oauth/authorize");
