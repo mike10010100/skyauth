@@ -1,6 +1,6 @@
 [package]
 name = "skyauth"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Mike <mike@example.com>"]
 description = "High-assurance, formally verified OAuth 2.1 and RFC 9449 DPoP authentication engine for the AT Protocol (Bluesky)"

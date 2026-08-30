@@ -14,8 +14,23 @@ permissions:
   contents: read
 
 jobs:
-  lint-and-format:
-    name: Code Quality & Linting
+  version-bump-check:
+    name: Enforce Semantic Version Bump & CHANGELOG on PRs
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout repository with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify Semantic Version Bump & CHANGELOG Entry
+        run: |
+          chmod +x ./scripts/check_version_bump.sh
+          ./scripts/check_version_bump.sh
+
+  fmt-and-clippy:
+    name: Code Formatting & Strict Clippy Safety Guards
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -46,7 +61,7 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   test:
-    name: Test Suite & Spec Verification
+    name: Full Test Suite, RFC Vectors & Spec Drift Verification
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -71,8 +86,20 @@ jobs:
       - name: Run all tests
         run: cargo test --all-targets --all-features
 
-      - name: Verify specification drift against upstream
-        run: bash scripts/sync_specs.sh --verify
+      - name: Verify ATProto Lexicon & RFC Schema Synchronization
+        run: |
+          chmod +x ./scripts/sync_specs.sh
+          ./scripts/sync_specs.sh --verify
+
+  security-audit:
+    name: Supply Chain & License Audit (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run cargo-deny security checks
+        uses: EmbarkStudios/cargo-deny-action@v2
 
   kani:
     name: Kani Bounded Model Checking
