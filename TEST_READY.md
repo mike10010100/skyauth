@@ -46,7 +46,7 @@ All tests follow strict **opaque-box methodology**, deriving expectations direct
 | **F19** | Bundled Lexicons & RFC Schemas | `test_f19_01`..`05` (5) | `test_b19_01`..`05` (5) | `test_p5_01`..`04` | ✅ Verified |
 | **F20** | Runtime AST Schema Validation | `test_f20_01`..`05` (5) | `test_b20_01`..`05` (5) | `test_p5_01`..`06` | ✅ Verified |
 | **F21** | Upstream Spec Drift Verification | `test_f21_01`..`05` (5) | `test_b21_01`..`05` (5) | `test_p5_05`, `test_p5_06` | ✅ Verified |
-| **F22** | Verus Deductive Verification | `test_f22_01`..`05` (5) | `test_b22_01`..`05` (5) | Formal invariant specs | ✅ Verified |
+| **F22** | Executable Formal State Models | `test_f22_01`..`05` (5) | `test_b22_01`..`05` (5) | Formal invariant specs | ✅ Verified |
 | **F23** | Kani Anti-Vacuity Checking | `test_f23_01`..`05` (5) | `test_b23_01`..`05` (5) | Model checking covers | ✅ Verified |
 | **F24** | E2E Opaque-Box Suite | `test_f24_01`..`05` (5) | `test_b24_01`..`05` (5) | `test_w1`, `test_w2`, `test_w3` | ✅ Verified |
 | **F25** | Adversarial Hardening | `test_f25_01`..`05` (5) | `test_b25_01`..`05` (5) | `test_w4`, `test_p2_03` | ✅ Verified |

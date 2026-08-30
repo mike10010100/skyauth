@@ -1,6 +1,6 @@
-//! Formal Verification & Anti-Vacuity Test Suite for `atproto-oauth`.
+//! Formal Specification & Mathematical Invariant Test Suite for `skyauth`.
 //!
-//! Executes deductive Verus contracts, Kani model checking proof harnesses,
+//! Executes formal transition models, Kani model checking proof harnesses,
 //! and anti-vacuity reachability checks under standard `cargo test`.
 
 #![allow(
@@ -21,24 +21,24 @@ use skyauth::dpop::normalize_htu;
 use skyauth::pkce::validate_verifier;
 use skyauth::ssrf::{is_restricted_ipv4, is_restricted_ipv6, SsrfFilter};
 use skyauth::store::OAuthStateStore;
+use skyauth::verification::formal_models::{
+    ConstantTimeEqSpec, DPoPHtuFormalSpec, OAuthStateTransitionModel, PkceFormalSpec,
+    SsrfFormalSpec, StateTransitionStatus,
+};
 use skyauth::verification::kani_harnesses::{
     global_coverage, proof_constant_time_eq_soundness, proof_dpop_htu_normalization_invariants,
     proof_pkce_s256_verifier_bounds, proof_single_use_state_consumption,
     proof_ssrf_restricted_ip_rejection,
 };
-use skyauth::verification::verus_contracts::{
-    ConstantTimeEqSpec, DPoPHtuFormalSpec, OAuthStateTransitionModel, PkceFormalSpec,
-    SsrfFormalSpec, StateTransitionStatus,
-};
 
 // =========================================================================
-// SECTION 1: Verus Deductive Contracts & Mathematical Invariant Tests
+// SECTION 1: Executable Formal Models & Mathematical Invariant Tests
 // =========================================================================
 
 #[test]
-fn test_verus_state_machine_transition_invariants() {
+fn test_formal_state_machine_transition_invariants() {
     let mut model = OAuthStateTransitionModel::new();
-    let state = "verus_contract_test_state_1";
+    let state = "formal_contract_test_state_1";
 
     // 1. Uninitialized state take returns None
     assert!(model.take_state(state, 0).is_none());

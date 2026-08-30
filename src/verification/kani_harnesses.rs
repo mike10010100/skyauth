@@ -27,7 +27,7 @@ use crate::crypto::constant_time_eq;
 use crate::dpop::normalize_htu;
 use crate::pkce::{derive_s256_challenge, validate_verifier};
 use crate::ssrf::{is_restricted_ip, is_restricted_ipv4, is_restricted_ipv6, SsrfFilter};
-use crate::verification::verus_contracts::{
+use crate::verification::formal_models::{
     ConstantTimeEqSpec, DPoPHtuFormalSpec, OAuthStateTransitionModel, PkceFormalSpec,
     SsrfFormalSpec,
 };

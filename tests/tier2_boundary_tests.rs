@@ -1062,7 +1062,7 @@ fn test_b21_05_array_items_change_diff() {
 }
 
 // =========================================================================
-// FEATURE 22 (Boundary): Verus Deductive Verification Contracts (5 Tests)
+// FEATURE 22 (Boundary): Executable Formal Transition Models (5 Tests)
 // =========================================================================
 
 #[test]

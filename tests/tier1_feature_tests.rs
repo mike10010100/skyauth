@@ -1637,7 +1637,7 @@ fn test_f21_05_schema_diff_detector() {
 }
 
 // =========================================================================
-// FEATURE 22: Verus Deductive Verification Contracts (5 Tests)
+// FEATURE 22: Executable Formal Transition Models (5 Tests)
 // =========================================================================
 
 #[test]
