@@ -20,7 +20,7 @@
 - **Strict SSRF & DNS Rebinding Security**: Full IP boundary filtering blocking RFC 1918 private IPs, loopback, link-local, cloud metadata (`169.254.169.254`), IPv6 ULA, and DNS socket pinning.
 - **64-Shard Partitioned State Store**: Lock-free scaling state storage across 64 independent `RwLock` shards with atomic single-use state consumption ([`OAuthStore::take_state`]) and drift-free background TTL pruning.
 - **Web Framework Integrations**: Ready-to-use extractors, response generators, and middleware for **Axum 0.7**, **Actix-Web 4**, and **Tower**.
-- **Formal Mathematical Verification**: Verified using **Verus** (deductive contracts) and **Kani** (bounded model checking with 36 mandatory anti-vacuity reachability checks).
+- **Formal Mathematical Verification**: Verified using executable formal contracts and **Kani** bounded model checking with 36 mandatory anti-vacuity reachability checks.
 - **Dynamic Schema Invariants**: Bundled official ATProto Lexicons and RFC schemas with continuous automated upstream drift detection.
 
 ---
@@ -113,25 +113,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 🛡️ Formal Verification & Mathematical Invariants
 
-`skyauth` incorporates a multi-layered formal verification hierarchy to eliminate security vulnerabilities:
+`skyauth` incorporates a formal verification hierarchy to eliminate security vulnerabilities:
 
-1. **Verus Deductive Contracts (`verus!`)**: Mathematical proofs for session state transitions, constant-time comparisons, and PKCE deterministic bounds.
-2. **Kani Bounded Model Checking (`kani::proof`)**: 5 exhaustive verification harnesses checking all symbolic byte inputs.
-3. **Anti-Vacuity Coverage (`kani::cover!`)**: 36 mandatory reachability checks ensuring harnesses actually exercise functional code paths.
+1. **Executable Formal Contracts**: Pure mathematical models and Hoare-logic specifications (preconditions `requires`, postconditions `ensures`, and inductive loop invariants) modeling session state transitions, constant-time comparisons, and PKCE deterministic bounds.
+2. **Kani Bounded Model Checking (`kani::proof`)**: Exhaustive symbolic proof harnesses using `kani::any()` and `kani::assume()` for symbolic input verification.
+3. **Anti-Vacuity Coverage (`kani::cover!`)**: 36 mandatory reachability checks ensuring harnesses actively exercise functional and error-handling code paths.
 
 ---
 
-## 🧪 Running Tests & Formal Proofs
+## 🧪 Running Tests, CI & Formal Proofs
 
 ```bash
-# Run unit, integration, and RFC vector test suites (730+ tests)
+# Run unit, integration, and RFC vector test suites
 cargo test --all-targets --all-features
 
 # Verify strict clippy compliance (0 warnings)
 cargo clippy --all-targets --all-features -- -D warnings
 
-# Verify specification drift against official ATProto Lexicons & RFC schemas
+# Verify specification drift against upstream canonical Lexicons & RFC schemas
 bash scripts/sync_specs.sh --verify
+
+# Run Kani bounded model checking harnesses
+cargo kani --harness "proof_*"
 ```
 
 ---

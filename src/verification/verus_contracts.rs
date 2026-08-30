@@ -1,8 +1,8 @@
-//! Deductive Verification Contracts & Hoare-Logic Specifications.
+//! Executable Formal Contracts & Hoare-Logic State Transition Specifications.
 //!
-//! This module provides mathematical models, inductive invariant proofs, and Hoare-logic
+//! This module provides mathematical models, inductive invariant models, and Hoare-logic
 //! specifications (preconditions `requires`, postconditions `ensures`, and inductive
-//! state invariants) designed for deductive verification under Verus / Viper / Prusti.
+//! state invariants) modeling security boundaries and state transition correctness in pure Rust.
 //!
 //! ## Mathematical Models
 //!

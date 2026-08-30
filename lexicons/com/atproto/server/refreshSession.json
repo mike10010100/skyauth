@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "Refresh an authentication session. Requires auth using the 'refreshJwt' token.",
+      "description": "Refresh an authentication session. Requires auth using the 'refreshJwt' (not the 'accessJwt').",
       "output": {
         "encoding": "application/json",
         "schema": {
@@ -17,42 +17,55 @@
           ],
           "properties": {
             "accessJwt": {
-              "type": "string",
-              "description": "Access JWT token."
+              "type": "string"
             },
             "refreshJwt": {
-              "type": "string",
-              "description": "Refresh JWT token."
+              "type": "string"
             },
             "handle": {
               "type": "string",
-              "format": "handle",
-              "description": "User handle."
+              "format": "handle"
             },
             "did": {
               "type": "string",
-              "format": "did",
-              "description": "User DID."
+              "format": "did"
             },
             "didDoc": {
-              "type": "unknown",
-              "description": "Optional DID document."
+              "type": "unknown"
+            },
+            "email": {
+              "type": "string"
+            },
+            "emailConfirmed": {
+              "type": "boolean"
+            },
+            "emailAuthFactor": {
+              "type": "boolean"
             },
             "active": {
-              "type": "boolean",
-              "description": "Whether the account is active."
+              "type": "boolean"
             },
             "status": {
               "type": "string",
-              "description": "Account status string."
+              "description": "Hosting status of the account. If not specified, then assume 'active'.",
+              "knownValues": [
+                "takendown",
+                "suspended",
+                "deactivated"
+              ]
             }
           }
         }
       },
       "errors": [
         {
-          "name": "AccountTakedown",
-          "description": "Account has been taken down."
+          "name": "AccountTakedown"
+        },
+        {
+          "name": "InvalidToken"
+        },
+        {
+          "name": "ExpiredToken"
         }
       ]
     }

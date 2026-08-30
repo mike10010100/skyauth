@@ -125,64 +125,101 @@ macro_rules! anti_vacuity_cover {
 #[cfg_attr(kani, kani::unwind(10))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 pub fn proof_single_use_state_consumption() {
-    let mut model = OAuthStateTransitionModel::new();
-    let state_token = "symbolic_state_token_123";
-    let client_id = "https://app.example.com/client-metadata.json";
-    let ttl_ticks = 100u64;
+    #[cfg(kani)]
+    {
+        let mut model = OAuthStateTransitionModel::new();
+        let state_token = "symbolic_state_token_123";
+        let client_id = "https://app.example.com/client-metadata.json";
+        let ttl_ticks: u64 = kani::any();
+        kani::assume(ttl_ticks > 0 && ttl_ticks <= 1000);
+        let insert_tick: u64 = kani::any();
+        kani::assume(insert_tick <= 100);
 
-    // 1. Initial State: Uninitialized
-    let initial_take = model.take_state(state_token, 0);
-    assert!(initial_take.is_none());
-    anti_vacuity_cover!("uninitialized_state_rejected", initial_take.is_none());
+        let initial_take = model.take_state(state_token, 0);
+        assert!(initial_take.is_none());
 
-    // 2. State Insertion
-    let inserted = model.insert(state_token, client_id, ttl_ticks, 10);
-    assert!(inserted);
-    anti_vacuity_cover!("state_inserted", inserted);
-    assert!(model.verify_global_store_invariants());
+        let inserted = model.insert(state_token, client_id, ttl_ticks, insert_tick);
+        assert!(inserted);
 
-    // 3. First Take (Active TTL): MUST succeed
-    let first_take = model.take_state(state_token, 20);
-    assert!(first_take.is_some());
-    if let Some(entry) = &first_take {
-        assert_eq!(entry.state_id, state_token);
-        assert_eq!(entry.client_id, client_id);
+        let take1_tick: u64 = kani::any();
+        kani::assume(take1_tick >= insert_tick && take1_tick <= insert_tick + 2000);
+        let take1 = model.take_state(state_token, take1_tick);
+
+        if take1_tick < insert_tick.saturating_add(ttl_ticks) {
+            assert!(take1.is_some());
+            let take2_tick: u64 = kani::any();
+            kani::assume(take2_tick >= take1_tick && take2_tick <= take1_tick + 2000);
+            let take2 = model.take_state(state_token, take2_tick);
+            assert!(take2.is_none(), "Consumed state cannot be consumed again");
+            kani::cover!(take1.is_some(), "first_take_success");
+        } else {
+            assert!(take1.is_none(), "Expired state returns None");
+            kani::cover!(take1.is_none(), "expired_state_rejected");
+        }
+        assert!(model.verify_single_use_invariant(state_token));
     }
-    anti_vacuity_cover!("first_take_success", first_take.is_some());
-    assert!(model.verify_single_use_invariant(state_token));
 
-    // 4. Second Take: MUST fail (Single-Use Guarantee)
-    let second_take = model.take_state(state_token, 25);
-    assert!(second_take.is_none());
-    anti_vacuity_cover!("second_take_rejected", second_take.is_none());
-    assert!(model.verify_single_use_invariant(state_token));
+    #[cfg(not(kani))]
+    {
+        let mut model = OAuthStateTransitionModel::new();
+        let state_token = "symbolic_state_token_123";
+        let client_id = "https://app.example.com/client-metadata.json";
+        let ttl_ticks = 100u64;
 
-    // 5. Subsequent Take: MUST still fail
-    let third_take = model.take_state(state_token, 30);
-    assert!(third_take.is_none());
-    assert!(model.verify_single_use_invariant(state_token));
+        // 1. Initial State: Uninitialized
+        let initial_take = model.take_state(state_token, 0);
+        assert!(initial_take.is_none());
+        anti_vacuity_cover!("uninitialized_state_rejected", initial_take.is_none());
 
-    // 6. Expired State Behavior
-    let expired_token = "symbolic_expired_state";
-    let exp_inserted = model.insert(expired_token, client_id, 50, 0);
-    assert!(exp_inserted);
-    // Take at tick 60 (elapsed 60 >= 50 TTL)
-    let exp_take = model.take_state(expired_token, 60);
-    assert!(exp_take.is_none());
-    anti_vacuity_cover!("expired_state_rejected", exp_take.is_none());
+        // 2. State Insertion
+        let inserted = model.insert(state_token, client_id, ttl_ticks, 10);
+        assert!(inserted);
+        anti_vacuity_cover!("state_inserted", inserted);
+        assert!(model.verify_global_store_invariants());
 
-    // 7. Concurrent Race Simulation (50 racers)
-    let race_token = "symbolic_race_state";
-    assert!(model.insert(race_token, client_id, 100, 0));
-    let (winners, losers) = model.simulate_concurrent_consumption_race(race_token, 50, 10);
-    assert_eq!(winners, 1);
-    assert_eq!(losers, 49);
-    anti_vacuity_cover!(
-        "concurrent_race_single_winner",
-        winners == 1 && losers == 49
-    );
-    assert!(model.verify_single_use_invariant(race_token));
-    assert!(model.verify_global_store_invariants());
+        // 3. First Take (Active TTL): MUST succeed
+        let first_take = model.take_state(state_token, 20);
+        assert!(first_take.is_some());
+        if let Some(entry) = &first_take {
+            assert_eq!(entry.state_id, state_token);
+            assert_eq!(entry.client_id, client_id);
+        }
+        anti_vacuity_cover!("first_take_success", first_take.is_some());
+        assert!(model.verify_single_use_invariant(state_token));
+
+        // 4. Second Take: MUST fail (Single-Use Guarantee)
+        let second_take = model.take_state(state_token, 25);
+        assert!(second_take.is_none());
+        anti_vacuity_cover!("second_take_rejected", second_take.is_none());
+        assert!(model.verify_single_use_invariant(state_token));
+
+        // 5. Subsequent Take: MUST still fail
+        let third_take = model.take_state(state_token, 30);
+        assert!(third_take.is_none());
+        assert!(model.verify_single_use_invariant(state_token));
+
+        // 6. Expired State Behavior
+        let expired_token = "symbolic_expired_state";
+        let exp_inserted = model.insert(expired_token, client_id, 50, 0);
+        assert!(exp_inserted);
+        // Take at tick 60 (elapsed 60 >= 50 TTL)
+        let exp_take = model.take_state(expired_token, 60);
+        assert!(exp_take.is_none());
+        anti_vacuity_cover!("expired_state_rejected", exp_take.is_none());
+
+        // 7. Concurrent Race Simulation (50 racers)
+        let race_token = "symbolic_race_state";
+        assert!(model.insert(race_token, client_id, 100, 0));
+        let (winners, losers) = model.simulate_concurrent_consumption_race(race_token, 50, 10);
+        assert_eq!(winners, 1);
+        assert_eq!(losers, 49);
+        anti_vacuity_cover!(
+            "concurrent_race_single_winner",
+            winners == 1 && losers == 49
+        );
+        assert!(model.verify_single_use_invariant(race_token));
+        assert!(model.verify_global_store_invariants());
+    }
 }
 
 /// # Proof 2: SSRF Restricted IP Rejection Non-Bypassability
@@ -205,90 +242,121 @@ pub fn proof_single_use_state_consumption() {
 #[cfg_attr(kani, kani::proof)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 pub fn proof_ssrf_restricted_ip_rejection() {
-    let filter = SsrfFilter::new(false);
+    #[cfg(kani)]
+    {
+        let octets: [u8; 4] = kani::any();
+        let ip = Ipv4Addr::from(octets);
+        let filter = SsrfFilter::new(false);
 
-    // 1. RFC 1918: 10.0.0.0/8
-    let ip_10 = Ipv4Addr::new(10, 254, 1, 2);
-    assert!(is_restricted_ip(IpAddr::V4(ip_10)));
-    assert!(is_restricted_ipv4(&ip_10));
-    assert!(SsrfFormalSpec::spec_is_restricted_ipv4(&ip_10));
-    assert!(filter.validate_ip(IpAddr::V4(ip_10)).is_err());
-    anti_vacuity_cover!("rfc1918_10_blocked", is_restricted_ipv4(&ip_10));
+        let is_10 = octets[0] == 10;
+        let is_172 = octets[0] == 172 && (octets[1] >= 16 && octets[1] <= 31);
+        let is_192 = octets[0] == 192 && octets[1] == 168;
+        let is_loop = octets[0] == 127;
+        let is_meta = octets[0] == 169 && octets[1] == 254;
+        let is_cgnat = octets[0] == 100 && (octets[1] >= 64 && octets[1] <= 127);
+        let is_multi = octets[0] >= 224 && octets[0] <= 239;
+        let is_res = octets[0] >= 240;
 
-    // 2. RFC 1918: 172.16.0.0/12
-    let ip_172 = Ipv4Addr::new(172, 31, 255, 254);
-    assert!(is_restricted_ip(IpAddr::V4(ip_172)));
-    assert!(is_restricted_ipv4(&ip_172));
-    assert!(SsrfFormalSpec::spec_is_restricted_ipv4(&ip_172));
-    assert!(filter.validate_ip(IpAddr::V4(ip_172)).is_err());
-    anti_vacuity_cover!("rfc1918_172_blocked", is_restricted_ipv4(&ip_172));
+        let should_block =
+            is_10 || is_172 || is_192 || is_loop || is_meta || is_cgnat || is_multi || is_res;
+        if should_block {
+            assert!(is_restricted_ipv4(&ip));
+            assert!(filter.validate_ip(IpAddr::V4(ip)).is_err());
+        }
+        kani::cover!(is_10, "rfc1918_10_blocked");
+        kani::cover!(is_172, "rfc1918_172_blocked");
+        kani::cover!(is_192, "rfc1918_192_blocked");
+        kani::cover!(is_meta, "cloud_metadata_169_254_blocked");
+        kani::cover!(is_loop, "loopback_127_blocked");
+    }
 
-    // 3. RFC 1918: 192.168.0.0/16
-    let ip_192 = Ipv4Addr::new(192, 168, 100, 1);
-    assert!(is_restricted_ip(IpAddr::V4(ip_192)));
-    assert!(is_restricted_ipv4(&ip_192));
-    assert!(SsrfFormalSpec::spec_is_restricted_ipv4(&ip_192));
-    assert!(filter.validate_ip(IpAddr::V4(ip_192)).is_err());
-    anti_vacuity_cover!("rfc1918_192_blocked", is_restricted_ipv4(&ip_192));
+    #[cfg(not(kani))]
+    {
+        let filter = SsrfFilter::new(false);
 
-    // 4. Cloud Metadata: 169.254.169.254
-    let ip_meta = Ipv4Addr::new(169, 254, 169, 254);
-    assert!(is_restricted_ip(IpAddr::V4(ip_meta)));
-    assert!(is_restricted_ipv4(&ip_meta));
-    assert!(SsrfFormalSpec::spec_is_restricted_ipv4(&ip_meta));
-    assert!(filter.validate_ip(IpAddr::V4(ip_meta)).is_err());
-    anti_vacuity_cover!(
-        "cloud_metadata_169_254_blocked",
-        is_restricted_ipv4(&ip_meta)
-    );
+        // 1. RFC 1918: 10.0.0.0/8
+        let ip_10 = Ipv4Addr::new(10, 254, 1, 2);
+        assert!(is_restricted_ip(IpAddr::V4(ip_10)));
+        assert!(is_restricted_ipv4(&ip_10));
+        assert!(SsrfFormalSpec::spec_is_restricted_ipv4(&ip_10));
+        assert!(filter.validate_ip(IpAddr::V4(ip_10)).is_err());
+        anti_vacuity_cover!("rfc1918_10_blocked", is_restricted_ipv4(&ip_10));
 
-    // 5. Loopback: 127.0.0.1
-    let ip_loop = Ipv4Addr::new(127, 0, 0, 1);
-    assert!(is_restricted_ip(IpAddr::V4(ip_loop)));
-    assert!(is_restricted_ipv4(&ip_loop));
-    assert!(SsrfFormalSpec::spec_is_restricted_ipv4(&ip_loop));
-    assert!(filter.validate_ip(IpAddr::V4(ip_loop)).is_err());
-    anti_vacuity_cover!("loopback_127_blocked", is_restricted_ipv4(&ip_loop));
+        // 2. RFC 1918: 172.16.0.0/12
+        let ip_172 = Ipv4Addr::new(172, 31, 255, 254);
+        assert!(is_restricted_ip(IpAddr::V4(ip_172)));
+        assert!(is_restricted_ipv4(&ip_172));
+        assert!(SsrfFormalSpec::spec_is_restricted_ipv4(&ip_172));
+        assert!(filter.validate_ip(IpAddr::V4(ip_172)).is_err());
+        anti_vacuity_cover!("rfc1918_172_blocked", is_restricted_ipv4(&ip_172));
 
-    // 6. CGNAT: 100.64.0.1
-    let ip_cgnat = Ipv4Addr::new(100, 64, 0, 1);
-    assert!(is_restricted_ip(IpAddr::V4(ip_cgnat)));
-    assert!(is_restricted_ipv4(&ip_cgnat));
-    assert!(SsrfFormalSpec::spec_is_restricted_ipv4(&ip_cgnat));
-    assert!(filter.validate_ip(IpAddr::V4(ip_cgnat)).is_err());
-    anti_vacuity_cover!("cgnat_100_64_blocked", is_restricted_ipv4(&ip_cgnat));
+        // 3. RFC 1918: 192.168.0.0/16
+        let ip_192 = Ipv4Addr::new(192, 168, 100, 1);
+        assert!(is_restricted_ip(IpAddr::V4(ip_192)));
+        assert!(is_restricted_ipv4(&ip_192));
+        assert!(SsrfFormalSpec::spec_is_restricted_ipv4(&ip_192));
+        assert!(filter.validate_ip(IpAddr::V4(ip_192)).is_err());
+        anti_vacuity_cover!("rfc1918_192_blocked", is_restricted_ipv4(&ip_192));
 
-    // 7. IPv6 ULA: fc00::/7
-    let ip_ula = Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 1);
-    assert!(is_restricted_ip(IpAddr::V6(ip_ula)));
-    assert!(is_restricted_ipv6(&ip_ula));
-    assert!(SsrfFormalSpec::spec_is_restricted_ipv6(&ip_ula));
-    assert!(filter.validate_ip(IpAddr::V6(ip_ula)).is_err());
-    anti_vacuity_cover!("ipv6_ula_fc00_blocked", is_restricted_ipv6(&ip_ula));
+        // 4. Cloud Metadata: 169.254.169.254
+        let ip_meta = Ipv4Addr::new(169, 254, 169, 254);
+        assert!(is_restricted_ip(IpAddr::V4(ip_meta)));
+        assert!(is_restricted_ipv4(&ip_meta));
+        assert!(SsrfFormalSpec::spec_is_restricted_ipv4(&ip_meta));
+        assert!(filter.validate_ip(IpAddr::V4(ip_meta)).is_err());
+        anti_vacuity_cover!(
+            "cloud_metadata_169_254_blocked",
+            is_restricted_ipv4(&ip_meta)
+        );
 
-    // 8. IPv6 Link-Local: fe80::/10
-    let ip_fe80 = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
-    assert!(is_restricted_ip(IpAddr::V6(ip_fe80)));
-    assert!(is_restricted_ipv6(&ip_fe80));
-    assert!(SsrfFormalSpec::spec_is_restricted_ipv6(&ip_fe80));
-    assert!(filter.validate_ip(IpAddr::V6(ip_fe80)).is_err());
-    anti_vacuity_cover!("ipv6_link_local_fe80_blocked", is_restricted_ipv6(&ip_fe80));
+        // 5. Loopback: 127.0.0.1
+        let ip_loop = Ipv4Addr::new(127, 0, 0, 1);
+        assert!(is_restricted_ip(IpAddr::V4(ip_loop)));
+        assert!(is_restricted_ipv4(&ip_loop));
+        assert!(SsrfFormalSpec::spec_is_restricted_ipv4(&ip_loop));
+        assert!(filter.validate_ip(IpAddr::V4(ip_loop)).is_err());
+        anti_vacuity_cover!("loopback_127_blocked", is_restricted_ipv4(&ip_loop));
 
-    // 9. IPv4-mapped IPv6: ::ffff:10.0.0.1
-    let mapped_priv = Ipv4Addr::new(10, 0, 0, 1).to_ipv6_mapped();
-    assert!(is_restricted_ip(IpAddr::V6(mapped_priv)));
-    assert!(is_restricted_ipv6(&mapped_priv));
-    assert!(SsrfFormalSpec::spec_is_restricted_ipv6(&mapped_priv));
-    assert!(filter.validate_ip(IpAddr::V6(mapped_priv)).is_err());
-    anti_vacuity_cover!("ipv4_mapped_ipv6_blocked", is_restricted_ipv6(&mapped_priv));
+        // 6. CGNAT: 100.64.0.1
+        let ip_cgnat = Ipv4Addr::new(100, 64, 0, 1);
+        assert!(is_restricted_ip(IpAddr::V4(ip_cgnat)));
+        assert!(is_restricted_ipv4(&ip_cgnat));
+        assert!(SsrfFormalSpec::spec_is_restricted_ipv4(&ip_cgnat));
+        assert!(filter.validate_ip(IpAddr::V4(ip_cgnat)).is_err());
+        anti_vacuity_cover!("cgnat_100_64_blocked", is_restricted_ipv4(&ip_cgnat));
 
-    // 10. Public IP: 8.8.8.8 (MUST be allowed)
-    let ip_pub = Ipv4Addr::new(8, 8, 8, 8);
-    assert!(!is_restricted_ip(IpAddr::V4(ip_pub)));
-    assert!(!is_restricted_ipv4(&ip_pub));
-    assert!(!SsrfFormalSpec::spec_is_restricted_ipv4(&ip_pub));
-    assert!(filter.validate_ip(IpAddr::V4(ip_pub)).is_ok());
-    anti_vacuity_cover!("public_ip_allowed", !is_restricted_ipv4(&ip_pub));
+        // 7. IPv6 ULA: fc00::/7
+        let ip_ula = Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 1);
+        assert!(is_restricted_ip(IpAddr::V6(ip_ula)));
+        assert!(is_restricted_ipv6(&ip_ula));
+        assert!(SsrfFormalSpec::spec_is_restricted_ipv6(&ip_ula));
+        assert!(filter.validate_ip(IpAddr::V6(ip_ula)).is_err());
+        anti_vacuity_cover!("ipv6_ula_fc00_blocked", is_restricted_ipv6(&ip_ula));
+
+        // 8. IPv6 Link-Local: fe80::/10
+        let ip_fe80 = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+        assert!(is_restricted_ip(IpAddr::V6(ip_fe80)));
+        assert!(is_restricted_ipv6(&ip_fe80));
+        assert!(SsrfFormalSpec::spec_is_restricted_ipv6(&ip_fe80));
+        assert!(filter.validate_ip(IpAddr::V6(ip_fe80)).is_err());
+        anti_vacuity_cover!("ipv6_link_local_fe80_blocked", is_restricted_ipv6(&ip_fe80));
+
+        // 9. IPv4-mapped IPv6: ::ffff:10.0.0.1
+        let mapped_priv = Ipv4Addr::new(10, 0, 0, 1).to_ipv6_mapped();
+        assert!(is_restricted_ip(IpAddr::V6(mapped_priv)));
+        assert!(is_restricted_ipv6(&mapped_priv));
+        assert!(SsrfFormalSpec::spec_is_restricted_ipv6(&mapped_priv));
+        assert!(filter.validate_ip(IpAddr::V6(mapped_priv)).is_err());
+        anti_vacuity_cover!("ipv4_mapped_ipv6_blocked", is_restricted_ipv6(&mapped_priv));
+
+        // 10. Public IP: 8.8.8.8 (MUST be allowed)
+        let ip_pub = Ipv4Addr::new(8, 8, 8, 8);
+        assert!(!is_restricted_ip(IpAddr::V4(ip_pub)));
+        assert!(!is_restricted_ipv4(&ip_pub));
+        assert!(!SsrfFormalSpec::spec_is_restricted_ipv4(&ip_pub));
+        assert!(filter.validate_ip(IpAddr::V4(ip_pub)).is_ok());
+        anti_vacuity_cover!("public_ip_allowed", !is_restricted_ipv4(&ip_pub));
+    }
 }
 
 /// # Proof 3: PKCE S256 Verifier Bounds & Character Domain
@@ -306,86 +374,120 @@ pub fn proof_ssrf_restricted_ip_rejection() {
 /// - `invalid_character_rejected`: Verifier with illegal char (e.g. space, `+`) rejected.
 /// - `challenge_length_is_43`: S256 challenge length is strictly 43.
 #[cfg_attr(kani, kani::proof)]
+#[cfg_attr(kani, kani::unwind(135))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 pub fn proof_pkce_s256_verifier_bounds() {
-    // 1. Min boundary: exactly 43 chars
-    let min_verifier = "a".repeat(43);
-    assert!(validate_verifier(&min_verifier).is_ok());
-    assert!(PkceFormalSpec::spec_validate_verifier(
-        min_verifier.as_bytes()
-    ));
-    let ch_min = derive_s256_challenge(&min_verifier);
-    assert_eq!(ch_min.len(), 43);
-    anti_vacuity_cover!(
-        "valid_min_length_43_verifier",
-        validate_verifier(&min_verifier).is_ok()
-    );
+    #[cfg(kani)]
+    {
+        let buf: [u8; 130] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= 130);
+        let slice = &buf[..len];
 
-    // 2. Max boundary: exactly 128 chars
-    let max_verifier = "z".repeat(128);
-    assert!(validate_verifier(&max_verifier).is_ok());
-    assert!(PkceFormalSpec::spec_validate_verifier(
-        max_verifier.as_bytes()
-    ));
-    let ch_max = derive_s256_challenge(&max_verifier);
-    assert_eq!(ch_max.len(), 43);
-    anti_vacuity_cover!(
-        "valid_max_length_128_verifier",
-        validate_verifier(&max_verifier).is_ok()
-    );
+        let all_unreserved = slice.iter().all(|&b| {
+            b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_' || b == b'~'
+        });
 
-    // 3. Mid length: 64 chars with unreserved symbols `-._~`
-    let mid_verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk.test~example-pkce-1234567";
-    let mid_verifier = &mid_verifier[..64];
-    assert!(validate_verifier(mid_verifier).is_ok());
-    assert!(PkceFormalSpec::spec_validate_verifier(
-        mid_verifier.as_bytes()
-    ));
-    anti_vacuity_cover!(
-        "valid_mid_length_verifier",
-        validate_verifier(mid_verifier).is_ok()
-    );
+        if let Ok(s) = std::str::from_utf8(slice) {
+            let res = validate_verifier(s);
+            if len >= 43 && len <= 128 && all_unreserved {
+                assert!(res.is_ok());
+                let ch = derive_s256_challenge(s);
+                assert_eq!(ch.len(), 43);
+            } else {
+                assert!(res.is_err());
+            }
+        }
+        kani::cover!(len == 43 && all_unreserved, "valid_min_length_43_verifier");
+        kani::cover!(
+            len == 128 && all_unreserved,
+            "valid_max_length_128_verifier"
+        );
+        kani::cover!(len < 43, "invalid_short_length_rejected");
+        kani::cover!(len > 128, "invalid_long_length_rejected");
+    }
 
-    // 4. Invalid short: 42 chars
-    let short_verifier = "a".repeat(42);
-    assert!(validate_verifier(&short_verifier).is_err());
-    assert!(!PkceFormalSpec::spec_validate_verifier(
-        short_verifier.as_bytes()
-    ));
-    anti_vacuity_cover!(
-        "invalid_short_length_rejected",
-        validate_verifier(&short_verifier).is_err()
-    );
+    #[cfg(not(kani))]
+    {
+        // 1. Min boundary: exactly 43 chars
+        let min_verifier = "a".repeat(43);
+        assert!(validate_verifier(&min_verifier).is_ok());
+        assert!(PkceFormalSpec::spec_validate_verifier(
+            min_verifier.as_bytes()
+        ));
+        let ch_min = derive_s256_challenge(&min_verifier);
+        assert_eq!(ch_min.len(), 43);
+        anti_vacuity_cover!(
+            "valid_min_length_43_verifier",
+            validate_verifier(&min_verifier).is_ok()
+        );
 
-    // 5. Invalid long: 129 chars
-    let long_verifier = "a".repeat(129);
-    assert!(validate_verifier(&long_verifier).is_err());
-    assert!(!PkceFormalSpec::spec_validate_verifier(
-        long_verifier.as_bytes()
-    ));
-    anti_vacuity_cover!(
-        "invalid_long_length_rejected",
-        validate_verifier(&long_verifier).is_err()
-    );
+        // 2. Max boundary: exactly 128 chars
+        let max_verifier = "z".repeat(128);
+        assert!(validate_verifier(&max_verifier).is_ok());
+        assert!(PkceFormalSpec::spec_validate_verifier(
+            max_verifier.as_bytes()
+        ));
+        let ch_max = derive_s256_challenge(&max_verifier);
+        assert_eq!(ch_max.len(), 43);
+        anti_vacuity_cover!(
+            "valid_max_length_128_verifier",
+            validate_verifier(&max_verifier).is_ok()
+        );
 
-    // 6. Invalid characters
-    let illegal_space = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEj k";
-    assert!(validate_verifier(illegal_space).is_err());
-    assert!(!PkceFormalSpec::spec_validate_verifier(
-        illegal_space.as_bytes()
-    ));
-    let illegal_plus = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEj+k";
-    assert!(validate_verifier(illegal_plus).is_err());
-    anti_vacuity_cover!(
-        "invalid_character_rejected",
-        validate_verifier(illegal_space).is_err()
-    );
+        // 3. Mid length: 64 chars with unreserved symbols `-._~`
+        let mid_verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk.test~example-pkce-1234567";
+        let mid_verifier = &mid_verifier[..64];
+        assert!(validate_verifier(mid_verifier).is_ok());
+        assert!(PkceFormalSpec::spec_validate_verifier(
+            mid_verifier.as_bytes()
+        ));
+        anti_vacuity_cover!(
+            "valid_mid_length_verifier",
+            validate_verifier(mid_verifier).is_ok()
+        );
 
-    // 7. Challenge length invariant
-    anti_vacuity_cover!(
-        "challenge_length_is_43",
-        ch_min.len() == 43 && ch_max.len() == 43
-    );
+        // 4. Invalid short: 42 chars
+        let short_verifier = "a".repeat(42);
+        assert!(validate_verifier(&short_verifier).is_err());
+        assert!(!PkceFormalSpec::spec_validate_verifier(
+            short_verifier.as_bytes()
+        ));
+        anti_vacuity_cover!(
+            "invalid_short_length_rejected",
+            validate_verifier(&short_verifier).is_err()
+        );
+
+        // 5. Invalid long: 129 chars
+        let long_verifier = "a".repeat(129);
+        assert!(validate_verifier(&long_verifier).is_err());
+        assert!(!PkceFormalSpec::spec_validate_verifier(
+            long_verifier.as_bytes()
+        ));
+        anti_vacuity_cover!(
+            "invalid_long_length_rejected",
+            validate_verifier(&long_verifier).is_err()
+        );
+
+        // 6. Invalid characters
+        let illegal_space = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEj k";
+        assert!(validate_verifier(illegal_space).is_err());
+        assert!(!PkceFormalSpec::spec_validate_verifier(
+            illegal_space.as_bytes()
+        ));
+        let illegal_plus = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEj+k";
+        assert!(validate_verifier(illegal_plus).is_err());
+        anti_vacuity_cover!(
+            "invalid_character_rejected",
+            validate_verifier(illegal_space).is_err()
+        );
+
+        // 7. Challenge length invariant
+        anti_vacuity_cover!(
+            "challenge_length_is_43",
+            ch_min.len() == 43 && ch_max.len() == 43
+        );
+    }
 }
 
 /// # Proof 4: Constant-Time Slice Equality Soundness
@@ -401,56 +503,71 @@ pub fn proof_pkce_s256_verifier_bounds() {
 /// - `mismatched_length_false`: Different length slices return `false`.
 /// - `empty_slices_true`: Empty slices return `true`.
 #[cfg_attr(kani, kani::proof)]
+#[cfg_attr(kani, kani::unwind(17))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 pub fn proof_constant_time_eq_soundness() {
-    let s1 = b"cryptographic_secret_token_1234";
-    let s2 = b"cryptographic_secret_token_1234";
+    #[cfg(kani)]
+    {
+        let a: [u8; 8] = kani::any();
+        let b: [u8; 8] = kani::any();
+        let res = constant_time_eq(&a, &b);
+        let expected = (a == b);
+        assert_eq!(res, expected);
+        kani::cover!(res, "equal_non_empty_slices_true");
+        kani::cover!(!res, "differing_first_byte_false");
+    }
 
-    // 1. Equal slices
-    assert!(constant_time_eq(s1, s2));
-    assert!(ConstantTimeEqSpec::verify_soundness(s1, s2));
-    anti_vacuity_cover!("equal_non_empty_slices_true", constant_time_eq(s1, s2));
+    #[cfg(not(kani))]
+    {
+        let s1 = b"cryptographic_secret_token_1234";
+        let s2 = b"cryptographic_secret_token_1234";
 
-    // 2. Differing first byte
-    let mut diff_first = *s1;
-    diff_first[0] ^= 0x01;
-    assert!(!constant_time_eq(s1, &diff_first));
-    assert!(ConstantTimeEqSpec::verify_soundness(s1, &diff_first));
-    anti_vacuity_cover!(
-        "differing_first_byte_false",
-        !constant_time_eq(s1, &diff_first)
-    );
+        // 1. Equal slices
+        assert!(constant_time_eq(s1, s2));
+        assert!(ConstantTimeEqSpec::verify_soundness(s1, s2));
+        anti_vacuity_cover!("equal_non_empty_slices_true", constant_time_eq(s1, s2));
 
-    // 3. Differing last byte
-    let mut diff_last = *s1;
-    diff_last[s1.len() - 1] ^= 0x01;
-    assert!(!constant_time_eq(s1, &diff_last));
-    assert!(ConstantTimeEqSpec::verify_soundness(s1, &diff_last));
-    anti_vacuity_cover!(
-        "differing_last_byte_false",
-        !constant_time_eq(s1, &diff_last)
-    );
+        // 2. Differing first byte
+        let mut diff_first = *s1;
+        diff_first[0] ^= 0x01;
+        assert!(!constant_time_eq(s1, &diff_first));
+        assert!(ConstantTimeEqSpec::verify_soundness(s1, &diff_first));
+        anti_vacuity_cover!(
+            "differing_first_byte_false",
+            !constant_time_eq(s1, &diff_first)
+        );
 
-    // 4. Differing middle byte
-    let mut diff_mid = *s1;
-    diff_mid[s1.len() / 2] ^= 0x01;
-    assert!(!constant_time_eq(s1, &diff_mid));
-    assert!(ConstantTimeEqSpec::verify_soundness(s1, &diff_mid));
-    anti_vacuity_cover!(
-        "differing_middle_byte_false",
-        !constant_time_eq(s1, &diff_mid)
-    );
+        // 3. Differing last byte
+        let mut diff_last = *s1;
+        diff_last[s1.len() - 1] ^= 0x01;
+        assert!(!constant_time_eq(s1, &diff_last));
+        assert!(ConstantTimeEqSpec::verify_soundness(s1, &diff_last));
+        anti_vacuity_cover!(
+            "differing_last_byte_false",
+            !constant_time_eq(s1, &diff_last)
+        );
 
-    // 5. Mismatched length
-    let short = &s1[..16];
-    assert!(!constant_time_eq(s1, short));
-    assert!(ConstantTimeEqSpec::verify_soundness(s1, short));
-    anti_vacuity_cover!("mismatched_length_false", !constant_time_eq(s1, short));
+        // 4. Differing middle byte
+        let mut diff_mid = *s1;
+        diff_mid[s1.len() / 2] ^= 0x01;
+        assert!(!constant_time_eq(s1, &diff_mid));
+        assert!(ConstantTimeEqSpec::verify_soundness(s1, &diff_mid));
+        anti_vacuity_cover!(
+            "differing_middle_byte_false",
+            !constant_time_eq(s1, &diff_mid)
+        );
 
-    // 6. Empty slices
-    assert!(constant_time_eq(b"", b""));
-    assert!(ConstantTimeEqSpec::verify_soundness(b"", b""));
-    anti_vacuity_cover!("empty_slices_true", constant_time_eq(b"", b""));
+        // 5. Mismatched length
+        let short = &s1[..16];
+        assert!(!constant_time_eq(s1, short));
+        assert!(ConstantTimeEqSpec::verify_soundness(s1, short));
+        anti_vacuity_cover!("mismatched_length_false", !constant_time_eq(s1, short));
+
+        // 6. Empty slices
+        assert!(constant_time_eq(b"", b""));
+        assert!(ConstantTimeEqSpec::verify_soundness(b"", b""));
+        anti_vacuity_cover!("empty_slices_true", constant_time_eq(b"", b""));
+    }
 }
 
 /// # Proof 5: DPoP Target URI (`htu`) Normalization Invariants
@@ -470,67 +587,90 @@ pub fn proof_constant_time_eq_soundness() {
 #[cfg_attr(kani, kani::proof)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 pub fn proof_dpop_htu_normalization_invariants() {
-    // 1. Query stripping
-    if let Ok(res_query) = normalize_htu("https://example.com/oauth/token?grant_type=code") {
-        assert_eq!(res_query, "https://example.com/oauth/token");
-        assert!(DPoPHtuFormalSpec::spec_has_no_query(&res_query));
-        anti_vacuity_cover!(
-            "query_stripped_success",
-            DPoPHtuFormalSpec::spec_has_no_query(&res_query)
-        );
+    #[cfg(kani)]
+    {
+        let port: u16 = kani::any();
+        let is_https: bool = kani::any();
+        let scheme = if is_https { "https" } else { "http" };
+        let url = format!("{scheme}://example.com:{port}/oauth/token");
+        if let Ok(res) = normalize_htu(&url) {
+            let is_default_port = (is_https && port == 443) || (!is_https && port == 80);
+            if is_default_port {
+                assert!(!res.contains(&format!(":{port}")));
+            }
+            assert!(DPoPHtuFormalSpec::spec_valid_scheme(&res));
+            assert!(DPoPHtuFormalSpec::spec_has_no_query(&res));
+            assert!(DPoPHtuFormalSpec::spec_has_no_fragment(&res));
+        }
+        kani::cover!(port == 443, "port_443_stripped_success");
+        kani::cover!(port == 80, "port_80_stripped_success");
+        kani::cover!(port == 8443, "custom_port_preserved_success");
     }
 
-    // 2. Fragment stripping
-    if let Ok(res_frag) = normalize_htu("https://example.com/oauth/token#frag") {
-        assert_eq!(res_frag, "https://example.com/oauth/token");
-        assert!(DPoPHtuFormalSpec::spec_has_no_fragment(&res_frag));
-        anti_vacuity_cover!(
-            "fragment_stripped_success",
-            DPoPHtuFormalSpec::spec_has_no_fragment(&res_frag)
-        );
-    }
+    #[cfg(not(kani))]
+    {
+        // 1. Query stripping
+        if let Ok(res_query) = normalize_htu("https://example.com/oauth/token?grant_type=code") {
+            assert_eq!(res_query, "https://example.com/oauth/token");
+            assert!(DPoPHtuFormalSpec::spec_has_no_query(&res_query));
+            anti_vacuity_cover!(
+                "query_stripped_success",
+                DPoPHtuFormalSpec::spec_has_no_query(&res_query)
+            );
+        }
 
-    // 3. Port 443 stripping
-    if let Ok(res_443) = normalize_htu("https://example.com:443/oauth/token") {
-        assert_eq!(res_443, "https://example.com/oauth/token");
-        assert!(DPoPHtuFormalSpec::spec_no_default_ports(&res_443));
-        anti_vacuity_cover!(
-            "port_443_stripped_success",
-            DPoPHtuFormalSpec::spec_no_default_ports(&res_443)
-        );
-    }
+        // 2. Fragment stripping
+        if let Ok(res_frag) = normalize_htu("https://example.com/oauth/token#frag") {
+            assert_eq!(res_frag, "https://example.com/oauth/token");
+            assert!(DPoPHtuFormalSpec::spec_has_no_fragment(&res_frag));
+            anti_vacuity_cover!(
+                "fragment_stripped_success",
+                DPoPHtuFormalSpec::spec_has_no_fragment(&res_frag)
+            );
+        }
 
-    // 4. Port 80 stripping
-    if let Ok(res_80) = normalize_htu("http://example.com:80/oauth/token") {
-        assert_eq!(res_80, "http://example.com/oauth/token");
-        assert!(DPoPHtuFormalSpec::spec_no_default_ports(&res_80));
-        anti_vacuity_cover!(
-            "port_80_stripped_success",
-            DPoPHtuFormalSpec::spec_no_default_ports(&res_80)
-        );
-    }
+        // 3. Port 443 stripping
+        if let Ok(res_443) = normalize_htu("https://example.com:443/oauth/token") {
+            assert_eq!(res_443, "https://example.com/oauth/token");
+            assert!(DPoPHtuFormalSpec::spec_no_default_ports(&res_443));
+            anti_vacuity_cover!(
+                "port_443_stripped_success",
+                DPoPHtuFormalSpec::spec_no_default_ports(&res_443)
+            );
+        }
 
-    // 5. Custom port preservation
-    if let Ok(res_custom) = normalize_htu("https://example.com:8443/oauth/token") {
-        assert_eq!(res_custom, "https://example.com:8443/oauth/token");
-        anti_vacuity_cover!(
-            "custom_port_preserved_success",
-            res_custom.contains(":8443")
-        );
-    }
+        // 4. Port 80 stripping
+        if let Ok(res_80) = normalize_htu("http://example.com:80/oauth/token") {
+            assert_eq!(res_80, "http://example.com/oauth/token");
+            assert!(DPoPHtuFormalSpec::spec_no_default_ports(&res_80));
+            anti_vacuity_cover!(
+                "port_80_stripped_success",
+                DPoPHtuFormalSpec::spec_no_default_ports(&res_80)
+            );
+        }
 
-    // 6. Uppercase host lowercasing
-    if let Ok(res_case) = normalize_htu("https://AUTH.EXAMPLE.COM/Token/Path") {
-        assert_eq!(res_case, "https://auth.example.com/Token/Path");
-        assert!(DPoPHtuFormalSpec::spec_valid_scheme(&res_case));
-        anti_vacuity_cover!(
-            "uppercase_host_lowercased_success",
-            res_case.starts_with("https://auth.example.com")
-        );
-    }
+        // 5. Custom port preservation
+        if let Ok(res_custom) = normalize_htu("https://example.com:8443/oauth/token") {
+            assert_eq!(res_custom, "https://example.com:8443/oauth/token");
+            anti_vacuity_cover!(
+                "custom_port_preserved_success",
+                res_custom.contains(":8443")
+            );
+        }
 
-    // 7. Invalid scheme rejection
-    let res_ftp = normalize_htu("ftp://example.com/token");
-    assert!(res_ftp.is_err());
-    anti_vacuity_cover!("invalid_scheme_rejected", res_ftp.is_err());
+        // 6. Uppercase host lowercasing
+        if let Ok(res_case) = normalize_htu("https://AUTH.EXAMPLE.COM/Token/Path") {
+            assert_eq!(res_case, "https://auth.example.com/Token/Path");
+            assert!(DPoPHtuFormalSpec::spec_valid_scheme(&res_case));
+            anti_vacuity_cover!(
+                "uppercase_host_lowercased_success",
+                res_case.starts_with("https://auth.example.com")
+            );
+        }
+
+        // 7. Invalid scheme rejection
+        let res_ftp = normalize_htu("ftp://example.com/token");
+        assert!(res_ftp.is_err());
+        anti_vacuity_cover!("invalid_scheme_rejected", res_ftp.is_err());
+    }
 }

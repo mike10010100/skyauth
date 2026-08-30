@@ -125,10 +125,11 @@ generate_manifest() {
     log_success "Checksum manifest updated successfully."
 }
 
-# Verify mode: Check existence, validity, and manifest checksums
+# Verify mode: Check existence, validity, manifest checksums, and compare against upstream
 verify_specs() {
-    log_info "Running upstream specification drift verification..."
+    log_info "Running specification drift verification..."
     local drift_detected=0
+    local curl_cmd="curl -fsSL --connect-timeout 4 --max-time 10"
 
     # 1. Verify existence and JSON validity
     while IFS= read -r rel_path; do
@@ -154,7 +155,7 @@ verify_specs() {
         return 0
     fi
 
-    log_info "Verifying SHA-256 checksums against manifest..."
+    log_info "Verifying SHA-256 checksums against local manifest..."
     while IFS= read -r line; do
         [[ -z "${line}" || "${line}" =~ ^# ]] && continue
         local expected_csum
@@ -173,7 +174,7 @@ verify_specs() {
         actual_csum=$(calc_sha256 "${full_path}")
 
         if [[ "${expected_csum}" != "${actual_csum}" ]]; then
-            log_error "DRIFT DETECTED in ${rel_path}!"
+            log_error "LOCAL DRIFT DETECTED in ${rel_path}!"
             log_error "  Expected SHA-256: ${expected_csum}"
             log_error "  Actual SHA-256:   ${actual_csum}"
             drift_detected=1
@@ -182,12 +183,51 @@ verify_specs() {
         fi
     done < "${MANIFEST_FILE}"
 
+    # 3. Check against upstream canonical endpoints (detect upstream drift)
+    log_info "Checking upstream canonical repositories for specification drift..."
+    check_upstream_drift() {
+        local url="$1"
+        local rel_path="$2"
+        local full_path="${ROOT_DIR}/${rel_path}"
+        local tmp_upstream="/tmp/upstream_spec_$$.json"
+
+        if ${curl_cmd} "${url}" -o "${tmp_upstream}" 2>/dev/null; then
+            if validate_json "${tmp_upstream}"; then
+                format_json "${tmp_upstream}"
+                local upstream_csum
+                local local_csum
+                upstream_csum=$(calc_sha256 "${tmp_upstream}")
+                local_csum=$(calc_sha256 "${full_path}")
+
+                if [[ "${upstream_csum}" != "${local_csum}" ]]; then
+                    log_error "UPSTREAM DRIFT DETECTED in ${rel_path}!"
+                    log_error "  Local SHA-256:    ${local_csum}"
+                    log_error "  Upstream SHA-256: ${upstream_csum}"
+                    log_error "  Run ./scripts/sync_specs.sh --sync to update local specs."
+                    drift_detected=1
+                else
+                    echo -e "  [UPSTREAM MATCH] ${rel_path} matches upstream canonical source."
+                fi
+            else
+                log_warn "Upstream returned non-JSON payload for ${rel_path}."
+            fi
+            rm -f "${tmp_upstream}"
+        else
+            log_info "  [OFFLINE / TIMEOUT] Upstream endpoint unreachable for ${rel_path}. Pinned manifest verified."
+            rm -f "${tmp_upstream}"
+        fi
+    }
+
+    check_upstream_drift "${RESOLVE_HANDLE_URL}" "lexicons/com/atproto/identity/resolveHandle.json"
+    check_upstream_drift "${CREATE_SESSION_URL}" "lexicons/com/atproto/server/createSession.json"
+    check_upstream_drift "${REFRESH_SESSION_URL}" "lexicons/com/atproto/server/refreshSession.json"
+
     if [[ ${drift_detected} -ne 0 ]]; then
-        log_error "Specification drift check FAILED! Local files have been modified or are corrupted."
+        log_error "Specification drift check FAILED! Local files differ from manifest or upstream."
         return 1
     fi
 
-    log_success "All canonical Lexicons and RFC schemas match manifest. Zero drift detected."
+    log_success "All canonical Lexicons and RFC schemas match manifest and upstream. Zero drift detected."
     return 0
 }
 
