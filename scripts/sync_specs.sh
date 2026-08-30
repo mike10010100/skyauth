@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# atproto-oauth-rs Upstream Specification & Lexicon Synchronization Script
+# skyauth Upstream Specification & Lexicon Synchronization Script
 # ==============================================================================
 # Verifies and synchronizes bundled AT Protocol Lexicons and RFC JSON Schemas
 # against canonical upstream sources with automated drift detection and offline fallback.
@@ -295,7 +295,7 @@ sync_specs() {
 
 show_help() {
     cat <<EOF
-atproto-oauth-rs Upstream Specification Drift Guard
+skyauth Upstream Specification Drift Guard
 
 Usage:
   $(basename "$0") [command]
