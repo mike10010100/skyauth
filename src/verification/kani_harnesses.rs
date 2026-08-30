@@ -129,36 +129,34 @@ macro_rules! anti_vacuity_cover {
 pub fn proof_single_use_state_consumption() {
     #[cfg(kani)]
     {
-        let mut model = OAuthStateTransitionModel::new();
-        let state_token = "symbolic_state_token_123";
-        let client_id = "https://app.example.com/client-metadata.json";
+        let mut model = crate::verification::formal_models::SingleStateModel::new();
         let ttl_ticks: u64 = kani::any();
         kani::assume(ttl_ticks > 0 && ttl_ticks <= 1000);
         let insert_tick: u64 = kani::any();
         kani::assume(insert_tick <= 100);
 
-        let initial_take = model.take_state(state_token, 0);
+        let initial_take = model.take_state(0);
         assert!(initial_take.is_none());
 
-        let inserted = model.insert(state_token, client_id, ttl_ticks, insert_tick);
+        let inserted = model.insert(ttl_ticks, insert_tick);
         assert!(inserted);
 
         let take1_tick: u64 = kani::any();
         kani::assume(take1_tick >= insert_tick && take1_tick <= insert_tick + 2000);
-        let take1 = model.take_state(state_token, take1_tick);
+        let take1 = model.take_state(take1_tick);
 
         if take1_tick < insert_tick.saturating_add(ttl_ticks) {
             assert!(take1.is_some());
             let take2_tick: u64 = kani::any();
             kani::assume(take2_tick >= take1_tick && take2_tick <= take1_tick + 2000);
-            let take2 = model.take_state(state_token, take2_tick);
+            let take2 = model.take_state(take2_tick);
             assert!(take2.is_none(), "Consumed state cannot be consumed again");
             kani::cover!(take1.is_some(), "first_take_success");
         } else {
             assert!(take1.is_none(), "Expired state returns None");
             kani::cover!(take1.is_none(), "expired_state_rejected");
         }
-        assert!(model.verify_single_use_invariant(state_token));
+        assert!(model.verify_single_use_invariant());
     }
 
     #[cfg(not(kani))]

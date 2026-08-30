@@ -59,6 +59,79 @@ pub struct ModelStoredEntry {
     pub ttl_ticks: u64,
 }
 
+/// Pure formal state transition model for a single state token.
+///
+/// Designed for symbolic model checking (Kani) and formal verification (Verus)
+/// without heap-allocated collections or dynamic hashing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SingleStateModel {
+    /// The current lifecycle status of the state token.
+    pub status: StateTransitionStatus,
+    /// The cumulative number of times this state has been consumed.
+    pub consumption_count: usize,
+}
+
+impl Default for SingleStateModel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SingleStateModel {
+    /// Creates an uninitialized single state model.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            status: StateTransitionStatus::Uninitialized,
+            consumption_count: 0,
+        }
+    }
+
+    /// Attempts to transition the state to `Pending`.
+    pub fn insert(&mut self, ttl_ticks: u64, current_tick: u64) -> bool {
+        match self.status {
+            StateTransitionStatus::Uninitialized => {
+                self.status = StateTransitionStatus::Pending {
+                    created_at_tick: current_tick,
+                    ttl_ticks,
+                };
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Attempts to consume the state at `current_tick`.
+    pub fn take_state(&mut self, current_tick: u64) -> Option<u64> {
+        match self.status {
+            StateTransitionStatus::Pending {
+                created_at_tick,
+                ttl_ticks,
+            } => {
+                if current_tick.saturating_sub(created_at_tick) >= ttl_ticks {
+                    self.status = StateTransitionStatus::Expired {
+                        expired_at_tick: current_tick,
+                    };
+                    None
+                } else {
+                    self.status = StateTransitionStatus::Consumed {
+                        consumed_at_tick: current_tick,
+                    };
+                    self.consumption_count = self.consumption_count.saturating_add(1);
+                    Some(created_at_tick)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Verifies the single-use invariant: consumption count is at most 1.
+    #[must_use]
+    pub const fn verify_single_use_invariant(&self) -> bool {
+        self.consumption_count <= 1
+    }
+}
+
 /// Deductive state machine model for single-use OAuth state storage.
 ///
 /// Implements the formal transition relations and invariants for [`crate::store::OAuthStateStore`].
