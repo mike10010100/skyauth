@@ -19,6 +19,8 @@
 //! 4. [`proof_constant_time_eq_soundness`]: Bitwise equality correctness of `constant_time_eq`.
 //! 5. [`proof_dpop_htu_normalization_invariants`]: Target URI normalization invariants per RFC 9449.
 
+#![allow(unused_imports, unused_parens)]
+
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -511,7 +513,7 @@ pub fn proof_constant_time_eq_soundness() {
         let a: [u8; 8] = kani::any();
         let b: [u8; 8] = kani::any();
         let res = constant_time_eq(&a, &b);
-        let expected = (a == b);
+        let expected = a == b;
         assert_eq!(res, expected);
         kani::cover!(res, "equal_non_empty_slices_true");
         kani::cover!(!res, "differing_first_byte_false");
