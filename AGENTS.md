@@ -77,4 +77,27 @@ cargo test --all-targets --all-features
 
 # 4. Verify specification drift
 bash scripts/sync_specs.sh --verify
+
+# 5. Run Verus deductive formal verification (SMT proofs)
+bash scripts/run_verus.sh
+
+# 6. Run Kani bounded model checking harnesses (must verify all harnesses with 0 failures
+#    and all anti-vacuity cover properties satisfied)
+cargo kani
 ```
+
+Steps 5–6 are **non-optional for this repository**: the crate's headline guarantee is formal
+verification, so changes to `src/verification/`, `src/crypto.rs`, `src/dpop.rs`, `src/ssrf.rs`,
+`src/store.rs`, or `src/pkce.rs` without re-proving the corresponding invariants are incomplete.
+
+### Formal Verification Toolchain Bootstrap
+
+Neither Verus nor Kani is preinstalled on a fresh machine. Both self-bootstrap:
+
+- **Verus**: `scripts/run_verus.sh` auto-downloads the latest release into `~/.verus` on first run.
+- **Kani**: `cargo install kani-verifier --locked` then `cargo kani setup` (installs a pinned
+  nightly toolchain). Only needed once per environment.
+
+If `cargo kani` cannot be run in an offline/CI-restricted environment, fall back to the
+executable formal-model tests (`cargo test --test formal_verification_tests`) and **explicitly
+state in the handoff report that the Kani gate could not run** — never silently skip it.
