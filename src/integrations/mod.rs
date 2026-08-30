@@ -116,18 +116,46 @@ impl OAuthCallbackQuery {
     }
 }
 
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
 /// An authenticated user extracted from an inbound DPoP-authenticated HTTP request.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthenticatedUser {
     /// The subject Decentralized Identifier (`did:plc:...` or `did:web:...`).
     pub did: String,
-    /// The DPoP-bound access token string.
+    /// The DPoP-bound access token string (skipped during serialization to prevent leakage).
+    #[serde(skip_serializing, default)]
     pub access_token: String,
     /// RFC 7638 JWK thumbprint (`jkt`) of the bound public key.
     pub dpop_thumbprint: String,
     /// Granted OAuth scopes, if known.
     pub scope: Option<String>,
 }
+
+impl std::fmt::Debug for AuthenticatedUser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthenticatedUser")
+            .field("did", &self.did)
+            .field("access_token", &"[REDACTED]")
+            .field("dpop_thumbprint", &self.dpop_thumbprint)
+            .field("scope", &self.scope)
+            .finish()
+    }
+}
+
+impl Zeroize for AuthenticatedUser {
+    fn zeroize(&mut self) {
+        self.access_token.zeroize();
+    }
+}
+
+impl Drop for AuthenticatedUser {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for AuthenticatedUser {}
 
 impl AuthenticatedUser {
     /// Creates a new `AuthenticatedUser`.

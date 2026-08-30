@@ -769,7 +769,7 @@ proptest! {
         let first_take = store.take_state_sync(&state_key);
         prop_assert!(first_take.is_some());
         let record = first_take.unwrap();
-        prop_assert_eq!(record.state, state_key.clone());
+        prop_assert_eq!(&record.state, &state_key);
 
         // Second take is None
         let second_take = store.take_state_sync(&state_key);

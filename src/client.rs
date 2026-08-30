@@ -19,8 +19,10 @@ use crate::session::OAuthSession;
 use crate::ssrf::{read_bounded_body, SsrfFilter};
 use crate::store::{OAuthStateStore, OAuthStore, DEFAULT_STATE_TTL};
 
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
 /// Client configuration and metadata for an AT Protocol OAuth client.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct OAuthClientMetadata {
     /// Canonical OAuth client ID (usually a Client Metadata Document URL).
     pub client_id: String,
@@ -32,6 +34,21 @@ pub struct OAuthClientMetadata {
     pub client_name: Option<String>,
     /// Optional client secret for confidential client authentication.
     pub client_secret: Option<String>,
+}
+
+impl std::fmt::Debug for OAuthClientMetadata {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthClientMetadata")
+            .field("client_id", &self.client_id)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("scope", &self.scope)
+            .field("client_name", &self.client_name)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 impl OAuthClientMetadata {
@@ -73,7 +90,7 @@ impl OAuthClientMetadata {
 ///
 /// Saved into the OAuth state store prior to user agent redirection, and consumed
 /// atomically upon callback receipt to guarantee single-use CSRF/replay protection.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct StoredStateEntry {
     /// The random state identifier token.
     pub state: String,
@@ -102,6 +119,40 @@ pub struct StoredStateEntry {
     /// State validity duration in seconds (defaults to 300s).
     pub expires_in_secs: u64,
 }
+
+impl std::fmt::Debug for StoredStateEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredStateEntry")
+            .field("state", &self.state)
+            .field("client_id", &self.client_id)
+            .field("code_verifier", &"[REDACTED]")
+            .field("dpop_key", &self.dpop_key)
+            .field("issuer", &self.issuer)
+            .field("did", &self.did)
+            .field("handle", &self.handle)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("pds_endpoint", &self.pds_endpoint)
+            .field("token_endpoint", &self.token_endpoint)
+            .field("scopes", &self.scopes)
+            .field("created_at", &self.created_at)
+            .field("expires_in_secs", &self.expires_in_secs)
+            .finish()
+    }
+}
+
+impl Zeroize for StoredStateEntry {
+    fn zeroize(&mut self) {
+        self.code_verifier.zeroize();
+    }
+}
+
+impl Drop for StoredStateEntry {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for StoredStateEntry {}
 
 impl StoredStateEntry {
     /// Checks whether this stored state entry has expired.

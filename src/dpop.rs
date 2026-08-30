@@ -16,6 +16,7 @@ use parking_lot::RwLock;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use url::Url;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::crypto::{
     base64url_decode, base64url_decode_fixed, base64url_encode, constant_time_eq,
@@ -177,15 +178,17 @@ impl DPoPKey {
     /// Exports the private key scalar as a raw 32-byte array.
     #[must_use]
     pub fn to_bytes(&self) -> [u8; 32] {
-        let mut out = [0u8; 32];
+        let mut out = Zeroizing::new([0u8; 32]);
         out.copy_from_slice(&self.signing_key.to_bytes());
-        out
+        *out
     }
 
     /// Exports the private key as an unpadded Base64URL string.
     #[must_use]
     pub fn to_bytes_b64(&self) -> String {
-        base64url_encode(&self.signing_key.to_bytes())
+        let mut raw = Zeroizing::new([0u8; 32]);
+        raw.copy_from_slice(&self.signing_key.to_bytes());
+        base64url_encode(&*raw)
     }
 
     /// Imports an ECDSA P-256 private key from raw 32-byte scalar bytes.
@@ -205,8 +208,10 @@ impl DPoPKey {
     ///
     /// Returns [`CryptoError`] if decoding or key parsing fails.
     pub fn from_bytes_b64(b64: &str) -> Result<Self, CryptoError> {
-        let bytes = base64url_decode(b64)?;
-        Self::from_slice(&bytes)
+        let mut bytes = base64url_decode(b64)?;
+        let res = Self::from_slice(&bytes);
+        bytes.zeroize();
+        res
     }
 
     /// Derives the public [`JwkEc`] representation corresponding to this keypair.
