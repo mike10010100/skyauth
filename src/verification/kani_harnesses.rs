@@ -40,9 +40,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::crypto::constant_time_eq;
 use crate::ssrf::{is_restricted_ipv4, SsrfFilter};
-use crate::verification::formal_models::{
-    ConstantTimeEqSpec, PkceFormalSpec, SsrfFormalSpec,
-};
+use crate::verification::formal_models::ConstantTimeEqSpec;
+use crate::verification::formal_models::PkceFormalSpec;
+use crate::verification::formal_models::SsrfFormalSpec;
 
 /// Thread-safe coverage tracker ensuring all formal reachability branches are hit.
 #[derive(Debug, Default)]
