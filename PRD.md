@@ -254,7 +254,37 @@ To prevent subtle schema divergence, naming errors, or casing bugs (e.g. `camelC
 
 ---
 
-## 7. Success Metrics & Performance SLAs
+## 7. Future Advancements & Accepted Trade-offs
+
+This section records deliberate engineering trade-offs made during 0.2.0 development, with the conditions under which each should be revisited.
+
+### 7.1 Per-Origin Pinned Client Pooling (Performance)
+
+**Current state**: `SsrfFilter::build_pinned_client` constructs a fresh `reqwest::Client` for every outbound request (and again per DPoP nonce retry), discarding connection pooling and TLS session reuse. A login flow pays 2-3 full TCP + TLS handshakes where a pooled client would pay one.
+
+**Why it is the right trade-off today**:
+- Skyauth's outbound traffic is low-volume, security-critical control flow (identity resolution, discovery, PAR, token exchange), not per-request fanout.
+- A shared client's connection pool outlives DNS re-validation: a pooled connection routed to a previously-approved IP silently bypasses the per-request `resolve()` pinning that defeats DNS rebinding. Simple, obviously-correct per-request pinning was preferred over pool-lifetime reasoning.
+- Costs are dominated by the same-path DPoP signing and state-store checks (all sub-millisecond), so handshake overhead only matters in already-fast network conditions.
+
+**Upgrade path (candidate for 0.3.0)**: implement a `PinnedClientCache` in `SsrfFilter`:
+- Keyed by origin, storing the verified `SocketAddr` alongside the pooled client.
+- TTL-based re-validation of resolved IPs on reuse, plus an explicit `invalidate(host)` hook.
+- Formal invariant to re-prove: pinned-IP stability across pool reuse (Kani/Verus property test that a cached client's socket address is re-validated, never stale).
+
+Opt-in via a builder knob; keep the current per-request behavior as the default until deployment profiling shows pooling matters more than audit simplicity.
+
+### 7.2 Shared Replay-Cache Backend (Horizontal Scale)
+
+**Current state**: `DPoPReplayCache` is per-process (`Arc`-sharded in-memory). Multi-replica deployments behind a load balancer have a wider replay exposure than the single-process guarantee implies — RFC 9449 § 11.1 bounds the exposure by the proof acceptance window, but strict multi-replica anti-replay needs a shared store (e.g. Redis) behind the `OAuthStore` trait's existing abstraction seam.
+
+### 7.3 Confidential-Client `private_key_jwt`
+
+Client metadata advertises `private_key_jwt` support (per the ATProto profile), and `ParParameters::with_client_assertion` carries the assertion fields, but the client never mints/attaches a signed client-assertion JWT automatically for confidential clients beyond `client_secret_post`. Auto-assertion generation (ES256-signed `client_assertion` bound to a registered JWKS) is a candidate for a 0.3.0 milestone.
+
+---
+
+## 8. Success Metrics & Performance SLAs
 
 - **Safety & Verification**: 100% `#![forbid(unsafe_code)]`, zero production panics, 100% passing Verus deductive contracts, and 100% passing Kani reachability proofs (`kani::cover`).
 - **Schema Conformity**: 100% pass rate on dynamic AST Lexicon & RFC schema validation tests with 0 schema drift in CI.

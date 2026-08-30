@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `DPoPKey` documents the `ecdsa` crate's `ZeroizeOnDrop` guarantee for the private scalar and the sensitivity of string exports.
 - `rust-version = "1.81"` MSRV declared in `Cargo.toml`.
 
+### Breaking Changes
+
+- **`DPoPKey` private-key exports return `Zeroizing` buffers**: `DPoPKey::to_bytes()` now returns `Zeroizing<[u8; 32]>` (previously `[u8; 32]`) and `DPoPKey::to_bytes_b64()` returns `Zeroizing<String>` (previously `String`). The returned buffers zeroize on drop, protecting copies of the private scalar from lingering in memory. Call sites that deref the value (`*buf`) or the string (`&*buf` / `buf.as_str()`) need no other change; code that stored the bare `[u8; 32]` or `String` type must now name the `Zeroizing<...>` wrapper. This lands together with the other 0.2.0 hardening before the release is consumed.
+
 ## [0.1.1] - 2026-08-30
 
 ### Fixed
