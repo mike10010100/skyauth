@@ -10,6 +10,8 @@ jobs:
   decommission:
     name: Publish Deprecation Forwarder Stub & Yank v0.1.0
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
