@@ -22,6 +22,9 @@
 
 pub use crate::verification::formal_models::*;
 
+#[cfg(verus)]
+use vstd::prelude::*;
+
 // When compiling under standard rustc (cargo build / cargo test), define a transparent
 // fallback macro so that Verus proof syntax is recognized without compilation errors.
 #[cfg(not(verus))]
