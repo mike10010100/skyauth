@@ -858,7 +858,18 @@ async fn test_par_endpoint_ssrf_and_redirect_blocked() {
         &cache,
     )
     .await;
-    assert!(res_ssrf.is_err());
+    assert!(
+        matches!(
+            res_ssrf,
+            Err(skyauth::error::AtprotoOAuthError::Par(
+                skyauth::error::ParError::Ssrf(
+                    skyauth::error::SsrfError::BlockedIp(_)
+                        | skyauth::error::SsrfError::BlockedHost(_)
+                )
+            ))
+        ),
+        "PAR endpoint on a link-local address must be rejected as a blocked IP or host, got {res_ssrf:?}"
+    );
 
     // 2. PAR endpoint returning 307 redirect is rejected
     let mock_server = MockServer::start().await;
@@ -873,10 +884,20 @@ async fn test_par_endpoint_ssrf_and_redirect_blocked() {
     let local_filter = SsrfFilter::new(true);
     let par_url = format!("{}/par_redirect", mock_server.uri());
     let res_redir = execute_par_request(&local_filter, &par_url, &params, &key, &cache).await;
-    assert!(
-        res_redir.is_err(),
-        "PAR request to endpoint returning 307 must be rejected"
-    );
+    match res_redir {
+        Err(skyauth::error::AtprotoOAuthError::Par(skyauth::error::ParError::RequestFailed {
+            status,
+            ref description,
+            ..
+        })) => {
+            assert_eq!(status, 307);
+            assert_eq!(
+                description.as_deref(),
+                Some("Redirects are not permitted for PAR endpoints")
+            );
+        }
+        other => panic!("PAR 307 must be rejected as a redirect, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -917,8 +938,20 @@ async fn test_token_endpoint_ssrf_and_redirect_blocked() {
     .unwrap();
 
     let res = client.refresh_session(&mut session).await;
-    assert!(
-        res.is_err(),
-        "Token refresh request returning 308 redirect must be rejected"
-    );
+    match res {
+        Err(skyauth::error::AtprotoOAuthError::Token(
+            skyauth::error::TokenError::RequestFailed {
+                status,
+                ref description,
+                ..
+            },
+        )) => {
+            assert_eq!(status, 308);
+            assert_eq!(
+                description.as_deref(),
+                Some("Redirects are not permitted for token endpoints")
+            );
+        }
+        other => panic!("Token refresh 308 must be rejected as a redirect, got {other:?}"),
+    }
 }
