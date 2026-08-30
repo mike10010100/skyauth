@@ -65,17 +65,19 @@ else
     trap 'rm -rf "${TMP_DIR}"' EXIT
     
     VERUS_ZIP="${TMP_DIR}/verus.zip"
-    VERUS_URL="https://github.com/verus-lang/verus/releases/latest/download/verus-${ARCH}-${PLATFORM}.zip"
+    VERUS_URL=$(curl -fsSL https://api.github.com/repos/verus-lang/verus/releases/latest 2>/dev/null | grep -o "https://github.com/verus-lang/verus/releases/download/[^\"]*${ARCH}-${PLATFORM}\\.zip" | head -n 1 || true)
+    if [[ -z "${VERUS_URL}" ]]; then
+        VERUS_URL="https://github.com/verus-lang/verus/releases/latest/download/verus-${ARCH}-${PLATFORM}.zip"
+    fi
     
     log_info "Downloading Verus from ${VERUS_URL}..."
-    if curl -fsSL --connect-timeout 8 --max-time 60 "${VERUS_URL}" -o "${VERUS_ZIP}" 2>/dev/null && [[ -s "${VERUS_ZIP}" ]]; then
-        unzip -q "${VERUS_ZIP}" -d "${TMP_DIR}/extracted" 2>/dev/null || unzip -q "${VERUS_ZIP}" -d "${VERUS_DIR}"
-        if [[ -d "${TMP_DIR}/extracted" ]]; then
-            find "${TMP_DIR}/extracted" -type f -name "verus" -exec cp {} "${VERUS_DIR}/verus" \;
-            find "${TMP_DIR}/extracted" -type f -name "z3" -exec cp {} "${VERUS_DIR}/z3" \; 2>/dev/null || true
-            find "${TMP_DIR}/extracted" -name "*vstd*" -exec cp -r {} "${VERUS_DIR}/" \; 2>/dev/null || true
+    if curl -fsSL --connect-timeout 15 --max-time 120 "${VERUS_URL}" -o "${VERUS_ZIP}" 2>/dev/null && [[ -s "${VERUS_ZIP}" ]]; then
+        unzip -q "${VERUS_ZIP}" -d "${TMP_DIR}/extracted" 2>/dev/null || true
+        VERUS_EXTRACTED_DIR=$(find "${TMP_DIR}/extracted" -type f -name "verus" -exec dirname {} \; | head -n 1)
+        if [[ -n "${VERUS_EXTRACTED_DIR}" && -d "${VERUS_EXTRACTED_DIR}" ]]; then
+            cp -R "${VERUS_EXTRACTED_DIR}/." "${VERUS_DIR}/"
         fi
-        chmod +x "${VERUS_DIR}/verus" 2>/dev/null || true
+        chmod +x "${VERUS_DIR}/verus" "${VERUS_DIR}/rust_verify" "${VERUS_DIR}/z3" 2>/dev/null || true
         if [[ -x "${VERUS_DIR}/verus" ]]; then
             VERUS_CMD="${VERUS_DIR}/verus"
             log_success "Verus downloaded and configured at ${VERUS_CMD}"
@@ -96,5 +98,22 @@ else
 fi
 
 log_info "Running Verus deductive formal verification on ${VERUS_FILE}..."
-"${VERUS_CMD}" "${VERUS_FILE}"
+if ! "${VERUS_CMD}" --crate-type=lib "${VERUS_FILE}" 2>/tmp/verus_err.log; then
+    VERUS_OUTPUT=$(cat /tmp/verus_err.log)
+    echo "${VERUS_OUTPUT}" >&2
+    if echo "${VERUS_OUTPUT}" | grep -q "rustup.*install" && command -v rustup &>/dev/null; then
+        REQUIRED_TOOLCHAIN=$(echo "${VERUS_OUTPUT}" | grep -o 'rustup \(toolchain \)\?install [^ ]*' | head -n 1 | awk '{print $NF}')
+        if [[ -n "${REQUIRED_TOOLCHAIN}" ]]; then
+            log_info "Installing required Rust toolchain ${REQUIRED_TOOLCHAIN} for Verus..."
+            rustup toolchain install "${REQUIRED_TOOLCHAIN}" --profile minimal || true
+            log_info "Retrying Verus verification..."
+            "${VERUS_CMD}" --crate-type=lib "${VERUS_FILE}"
+        else
+            exit 1
+        fi
+    else
+        exit 1
+    fi
+fi
+rm -f /tmp/verus_err.log
 log_success "All Verus deductive proofs and SMT invariants verified successfully."

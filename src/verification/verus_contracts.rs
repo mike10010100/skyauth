@@ -17,17 +17,15 @@
 //!    `theorem_pkce_valid_bounds_accepted`: Proves that PKCE S256 code verifiers are accepted
 //!    if and only if their length is strictly within $[43, 128]$ and all characters belong to
 //!    the unreserved ASCII character set.
-//! 5. `theorem_constant_time_eq_soundness`: Proves that constant-time slice equality holds
-//!    if and only if lengths match and all byte elements are bitwise identical.
-
-pub use crate::verification::formal_models::*;
-
-#[cfg(verus)]
+#[cfg(any(verus, verus_keep_ghost))]
 use vstd::prelude::*;
+
+#[cfg(not(any(verus, verus_keep_ghost)))]
+pub use crate::verification::formal_models::*;
 
 // When compiling under standard rustc (cargo build / cargo test), define a transparent
 // fallback macro so that Verus proof syntax is recognized without compilation errors.
-#[cfg(not(verus))]
+#[cfg(not(any(verus, verus_keep_ghost)))]
 #[doc(hidden)]
 macro_rules! verus {
     ($($tt:tt)*) => {};
@@ -43,7 +41,7 @@ verus! {
 pub open spec fn spec_is_restricted_ipv4(o0: u8, o1: u8, o2: u8, o3: u8) -> bool {
     o0 == 0
     || o0 == 10
-    || (o0 == 100 && (o1 & 0xC0) == 64)
+    || (o0 == 100 && o1 >= 64 && o1 <= 127)
     || o0 == 127
     || (o0 == 169 && o1 == 254)
     || (o0 == 172 && o1 >= 16 && o1 <= 31)
