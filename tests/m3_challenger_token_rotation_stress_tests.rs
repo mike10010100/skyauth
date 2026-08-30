@@ -753,6 +753,17 @@ async fn test_callback_issuer_tampering_variants() {
         );
     }
 
+    // Missing callback iss entirely (RFC 9207 mandatory)
+    let missing_iss_cb = CallbackParams::new("code_123", "valid_state_123");
+    let err_missing_iss = client.handle_callback(&missing_iss_cb, &state_entry).await;
+    assert!(
+        matches!(
+            err_missing_iss,
+            Err(AtprotoOAuthError::Token(TokenError::MissingCallbackIssuer))
+        ),
+        "Missing callback iss must fail with MissingCallbackIssuer"
+    );
+
     // Trailing slash normalization: https://auth.bsky.social/ vs https://auth.bsky.social
     // (Both normalize to the same authority/path)
     let trailing_slash_cb =
@@ -1078,6 +1089,51 @@ async fn test_token_response_missing_atproto_scope_variants() {
             "Scope '{bad_scope}' should be rejected with MissingAtprotoScope, got: {err:?}"
         );
     }
+
+    // Completely omitted scope field (ATProto requires mandatory scope in token response)
+    auth_server.reset().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({
+                    "access_token": "at_missing_scope",
+                    "token_type": "DPoP",
+                    "expires_in": 3600,
+                    "refresh_token": "rt_missing_scope",
+                    "sub": TEST_ALICE_DID
+                })),
+        )
+        .mount(&auth_server)
+        .await;
+
+    let state_entry_no_scope = StoredStateEntry {
+        state: "state_123".to_string(),
+        client_id: TEST_CLIENT_ID.to_string(),
+        code_verifier: "verifier_123".to_string(),
+        dpop_key: DPoPKey::generate(),
+        issuer: auth_server.uri(),
+        did: Some(TEST_ALICE_DID.to_string()),
+        handle: Some(TEST_ALICE_HANDLE.to_string()),
+        redirect_uri: TEST_REDIRECT_URI.to_string(),
+        pds_endpoint: "https://pds.example.com".to_string(),
+        token_endpoint: format!("{}/oauth/token", auth_server.uri()),
+        scopes: "atproto".to_string(),
+        created_at: SystemTime::now(),
+        expires_in_secs: 300,
+    };
+
+    let err_no_scope = client
+        .exchange_code("code_123", &state_entry_no_scope)
+        .await;
+    assert!(
+        matches!(
+            err_no_scope,
+            Err(AtprotoOAuthError::Token(TokenError::MissingScope))
+        ),
+        "Omitted scope must fail with MissingScope"
+    );
 
     // Valid scopes containing "atproto" as distinct whitespace token
     let valid_scopes = vec![

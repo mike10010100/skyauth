@@ -12,11 +12,11 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use url::Url;
 use wiremock::matchers::{method, path};
-use wiremock::{Mock, ResponseTemplate};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use skyauth::discovery::{
-    discover_oauth_endpoints, fetch_auth_server_metadata, validate_auth_server_capabilities,
-    AuthorizationServerMetadata,
+    discover_oauth_endpoints, fetch_auth_server_metadata, fetch_protected_resource_metadata,
+    validate_auth_server_capabilities, AuthorizationServerMetadata,
 };
 use skyauth::error::{DiscoveryError, IdentityError};
 use skyauth::identity::{
@@ -484,7 +484,10 @@ async fn test_discovery_oidc_fallback() {
         "code_challenge_methods_supported": ["S256"],
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
-        "scopes_supported": ["atproto"]
+        "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
+        "scopes_supported": ["atproto"],
+        "authorization_response_iss_parameter_supported": true,
+        "client_id_metadata_document_supported": true
     });
 
     Mock::given(method("GET"))
@@ -511,22 +514,32 @@ async fn test_discovery_oidc_fallback() {
 
 #[test]
 fn test_auth_server_capability_violations() {
-    // Missing ES256
-    let no_es256 = AuthorizationServerMetadata {
+    // Valid baseline
+    let valid_base = AuthorizationServerMetadata {
         issuer: "https://auth.example.com".to_string(),
         authorization_endpoint: "https://auth.example.com/oauth/authorize".to_string(),
         token_endpoint: "https://auth.example.com/oauth/token".to_string(),
         pushed_authorization_request_endpoint: "https://auth.example.com/oauth/par".to_string(),
         require_pushed_authorization_requests: true,
-        dpop_signing_alg_values_supported: vec!["RS256".to_string()],
+        dpop_signing_alg_values_supported: vec!["ES256".to_string()],
         code_challenge_methods_supported: vec!["S256".to_string()],
         response_types_supported: vec!["code".to_string()],
-        grant_types_supported: vec!["authorization_code".to_string()],
-        token_endpoint_auth_methods_supported: vec![],
+        grant_types_supported: vec![
+            "authorization_code".to_string(),
+            "refresh_token".to_string(),
+        ],
+        token_endpoint_auth_methods_supported: vec!["none".to_string()],
         token_endpoint_auth_signing_alg_values_supported: vec![],
         scopes_supported: vec!["atproto".to_string()],
         authorization_response_iss_parameter_supported: true,
         client_id_metadata_document_supported: true,
+    };
+    assert!(validate_auth_server_capabilities(&valid_base, "https://auth.example.com").is_ok());
+
+    // Missing ES256
+    let no_es256 = AuthorizationServerMetadata {
+        dpop_signing_alg_values_supported: vec!["RS256".to_string()],
+        ..valid_base.clone()
     };
     assert!(matches!(
         validate_auth_server_capabilities(&no_es256, "https://auth.example.com"),
@@ -535,9 +548,8 @@ fn test_auth_server_capability_violations() {
 
     // Missing S256 PKCE
     let no_s256 = AuthorizationServerMetadata {
-        dpop_signing_alg_values_supported: vec!["ES256".to_string()],
         code_challenge_methods_supported: vec!["plain".to_string()],
-        ..no_es256.clone()
+        ..valid_base.clone()
     };
     assert!(matches!(
         validate_auth_server_capabilities(&no_s256, "https://auth.example.com"),
@@ -546,26 +558,182 @@ fn test_auth_server_capability_violations() {
 
     // Missing PAR Endpoint
     let no_par = AuthorizationServerMetadata {
-        dpop_signing_alg_values_supported: vec!["ES256".to_string()],
-        code_challenge_methods_supported: vec!["S256".to_string()],
         pushed_authorization_request_endpoint: String::new(),
-        ..no_es256.clone()
+        ..valid_base.clone()
     };
     assert!(matches!(
         validate_auth_server_capabilities(&no_par, "https://auth.example.com"),
         Err(DiscoveryError::MissingParEndpoint(_))
     ));
 
+    // PAR not required
+    let par_false = AuthorizationServerMetadata {
+        require_pushed_authorization_requests: false,
+        ..valid_base.clone()
+    };
+    assert!(matches!(
+        validate_auth_server_capabilities(&par_false, "https://auth.example.com"),
+        Err(DiscoveryError::ParNotRequired(_))
+    ));
+
+    // Missing response type "code"
+    let no_code = AuthorizationServerMetadata {
+        response_types_supported: vec!["token".to_string()],
+        ..valid_base.clone()
+    };
+    assert!(matches!(
+        validate_auth_server_capabilities(&no_code, "https://auth.example.com"),
+        Err(DiscoveryError::MissingResponseType(_))
+    ));
+
+    // Missing grant type "authorization_code"
+    let no_auth_code = AuthorizationServerMetadata {
+        grant_types_supported: vec!["refresh_token".to_string()],
+        ..valid_base.clone()
+    };
+    assert!(matches!(
+        validate_auth_server_capabilities(&no_auth_code, "https://auth.example.com"),
+        Err(DiscoveryError::MissingGrantType { .. })
+    ));
+
+    // Missing token auth method
+    let no_auth_method = AuthorizationServerMetadata {
+        token_endpoint_auth_methods_supported: vec!["client_secret_basic".to_string()],
+        ..valid_base.clone()
+    };
+    assert!(matches!(
+        validate_auth_server_capabilities(&no_auth_method, "https://auth.example.com"),
+        Err(DiscoveryError::MissingTokenAuthMethod(_))
+    ));
+
+    // Missing "atproto" scope
+    let no_atproto_scope = AuthorizationServerMetadata {
+        scopes_supported: vec!["email".to_string(), "profile".to_string()],
+        ..valid_base.clone()
+    };
+    assert!(matches!(
+        validate_auth_server_capabilities(&no_atproto_scope, "https://auth.example.com"),
+        Err(DiscoveryError::MissingAtprotoScope(_))
+    ));
+
+    // Missing iss support
+    let no_iss = AuthorizationServerMetadata {
+        authorization_response_iss_parameter_supported: false,
+        ..valid_base.clone()
+    };
+    assert!(matches!(
+        validate_auth_server_capabilities(&no_iss, "https://auth.example.com"),
+        Err(DiscoveryError::MissingIssParameterSupport(_))
+    ));
+
+    // Missing client metadata support
+    let no_client_meta = AuthorizationServerMetadata {
+        client_id_metadata_document_supported: false,
+        ..valid_base.clone()
+    };
+    assert!(matches!(
+        validate_auth_server_capabilities(&no_client_meta, "https://auth.example.com"),
+        Err(DiscoveryError::MissingClientMetadataSupport(_))
+    ));
+
     // Issuer Mismatch
     let issuer_mismatch = AuthorizationServerMetadata {
         issuer: "https://imposter.example.com".to_string(),
-        dpop_signing_alg_values_supported: vec!["ES256".to_string()],
-        code_challenge_methods_supported: vec!["S256".to_string()],
-        pushed_authorization_request_endpoint: "https://auth.example.com/oauth/par".to_string(),
-        ..no_es256
+        ..valid_base.clone()
     };
     assert!(matches!(
         validate_auth_server_capabilities(&issuer_mismatch, "https://auth.example.com"),
         Err(DiscoveryError::IssuerMismatch { .. })
     ));
+
+    // Issuer with subpath (not origin-only)
+    let issuer_subpath = AuthorizationServerMetadata {
+        issuer: "https://auth.example.com/oauth".to_string(),
+        ..valid_base
+    };
+    assert!(matches!(
+        validate_auth_server_capabilities(&issuer_subpath, "https://auth.example.com/oauth"),
+        Err(DiscoveryError::InvalidAuthorizationServerUrl(_))
+    ));
+}
+
+#[tokio::test]
+async fn test_protected_resource_capability_violations() {
+    let mock_pds = MockServer::start().await;
+    let filter = SsrfFilter::new(true);
+
+    // 1. Multiple authorization servers (must be rejected, exactly 1 required)
+    Mock::given(method("GET"))
+        .and(path("/.well-known/oauth-protected-resource"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(serde_json::json!({
+                    "resource": mock_pds.uri(),
+                    "authorization_servers": [
+                        "https://auth1.example.com",
+                        "https://auth2.example.com"
+                    ]
+                })),
+        )
+        .mount(&mock_pds)
+        .await;
+
+    let res_multiple = fetch_protected_resource_metadata(&filter, &mock_pds.uri()).await;
+    assert!(
+        matches!(
+            res_multiple,
+            Err(DiscoveryError::MultipleAuthorizationServers(2))
+        ),
+        "Multiple authorization servers must fail with MultipleAuthorizationServers"
+    );
+
+    // 2. Authorization server URL with subpath (not origin-only)
+    mock_pds.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/oauth-protected-resource"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(serde_json::json!({
+                    "resource": mock_pds.uri(),
+                    "authorization_servers": [
+                        "https://auth.example.com/oauth/as"
+                    ]
+                })),
+        )
+        .mount(&mock_pds)
+        .await;
+
+    let res_subpath = fetch_protected_resource_metadata(&filter, &mock_pds.uri()).await;
+    assert!(
+        matches!(
+            res_subpath,
+            Err(DiscoveryError::InvalidAuthorizationServerUrl(_))
+        ),
+        "AS URL with subpath must fail with InvalidAuthorizationServerUrl"
+    );
+
+    // 3. Resource mismatch (resource does not match PDS origin)
+    mock_pds.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/oauth-protected-resource"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(serde_json::json!({
+                    "resource": "https://different-pds.example.com",
+                    "authorization_servers": [
+                        "https://auth.example.com"
+                    ]
+                })),
+        )
+        .mount(&mock_pds)
+        .await;
+
+    let res_mismatch = fetch_protected_resource_metadata(&filter, &mock_pds.uri()).await;
+    assert!(
+        matches!(res_mismatch, Err(DiscoveryError::ResourceMismatch { .. })),
+        "Mismatched resource must fail with ResourceMismatch"
+    );
 }

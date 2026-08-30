@@ -39,7 +39,11 @@ impl MockAuthServer {
             "grant_types_supported": ["authorization_code", "refresh_token"],
             "code_challenge_methods_supported": ["S256"],
             "dpop_signing_alg_values_supported": ["ES256"],
-            "require_pushed_authorization_requests": true
+            "require_pushed_authorization_requests": true,
+            "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
+            "scopes_supported": ["atproto", "transition:generic"],
+            "authorization_response_iss_parameter_supported": true,
+            "client_id_metadata_document_supported": true
         });
 
         Mock::given(method("GET"))

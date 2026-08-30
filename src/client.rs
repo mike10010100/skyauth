@@ -484,12 +484,12 @@ impl AtprotoOAuthClient {
             }
         }
 
-        // 3. Validate Scope contains "atproto"
-        if let Some(ref scope_str) = resp_json.scope {
-            let has_atproto = scope_str.split_whitespace().any(|s| s == "atproto");
-            if !has_atproto {
-                return Err(TokenError::MissingAtprotoScope(scope_str.clone()).into());
-            }
+        // 3. Validate Scope is present and contains "atproto"
+        let scope_str = resp_json.scope.as_deref().ok_or(TokenError::MissingScope)?;
+
+        let has_atproto = scope_str.split_whitespace().any(|s| s == "atproto");
+        if !has_atproto {
+            return Err(TokenError::MissingAtprotoScope(scope_str.to_string()).into());
         }
 
         OAuthSession::new(
@@ -510,6 +510,7 @@ impl AtprotoOAuthClient {
     ///
     /// # Errors
     /// - Returns [`TokenError::InvalidState`] if callback `state` does not match `state_entry.state`.
+    /// - Returns [`TokenError::MissingCallbackIssuer`] if callback `iss` is missing.
     /// - Returns [`TokenError::IssuerMismatch`] if callback `iss` does not match `state_entry.issuer`.
     pub async fn handle_callback(
         &self,
@@ -524,16 +525,19 @@ impl AtprotoOAuthClient {
             .into());
         }
 
-        if let Some(ref callback_iss) = callback_params.iss {
-            let norm_callback = callback_iss.trim().trim_end_matches('/');
-            let norm_expected = state_entry.issuer.trim().trim_end_matches('/');
-            if norm_callback != norm_expected {
-                return Err(TokenError::IssuerMismatch {
-                    expected: state_entry.issuer.clone(),
-                    actual: callback_iss.clone(),
-                }
-                .into());
+        let callback_iss = callback_params
+            .iss
+            .as_deref()
+            .ok_or(TokenError::MissingCallbackIssuer)?;
+
+        let norm_callback = callback_iss.trim().trim_end_matches('/');
+        let norm_expected = state_entry.issuer.trim().trim_end_matches('/');
+        if norm_callback != norm_expected {
+            return Err(TokenError::IssuerMismatch {
+                expected: state_entry.issuer.clone(),
+                actual: callback_iss.to_string(),
             }
+            .into());
         }
 
         self.exchange_code(&callback_params.code, state_entry).await
