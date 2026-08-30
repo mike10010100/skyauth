@@ -82,3 +82,13 @@ jobs:
         uses: model-checking/kani-github-action@v1
         with:
           args: "--enable-unstable --harness proof_*"
+
+  verus:
+    name: Verus Deductive Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Verus Verification
+        run: bash scripts/run_verus.sh

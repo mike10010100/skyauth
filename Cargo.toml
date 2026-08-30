@@ -73,7 +73,7 @@ http-body-util = "0.1"
 unsafe_code = "forbid"
 missing_docs = "deny"
 rust_2018_idioms = { level = "deny", priority = -1 }
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(verus)'] }
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }

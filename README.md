@@ -113,11 +113,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 🛡️ Formal Verification & Mathematical Invariants
 
-`skyauth` incorporates a formal verification hierarchy to eliminate security vulnerabilities:
+`skyauth` incorporates a multi-layered formal verification hierarchy:
 
-1. **Executable Formal Contracts**: Pure mathematical models and Hoare-logic specifications (preconditions `requires`, postconditions `ensures`, and inductive loop invariants) modeling session state transitions, constant-time comparisons, and PKCE deterministic bounds.
-2. **Kani Bounded Model Checking (`kani::proof`)**: Exhaustive symbolic proof harnesses using `kani::any()` and `kani::assume()` for symbolic input verification.
-3. **Anti-Vacuity Coverage (`kani::cover!`)**: 36 mandatory reachability checks ensuring harnesses actively exercise functional and error-handling code paths.
+1. **Verus Deductive Contracts (`verus!`)**: Deductive mathematical proofs in [`src/verification/verus_contracts.rs`](src/verification/verus_contracts.rs) using SMT solving (Z3) to prove single-use state transition safety, terminality, SSRF IP range isolation, and PKCE bounds.
+2. **Kani Bounded Model Checking (`kani::proof`)**: Exhaustive symbolic proof harnesses in [`src/verification/kani_harnesses.rs`](src/verification/kani_harnesses.rs) using symbolic `kani::any()` and `kani::assume()` inputs with 36 mandatory anti-vacuity reachability checks (`kani::cover!`).
+3. **Executable Formal State Models**: High-assurance transition models in [`src/verification/formal_models.rs`](src/verification/formal_models.rs) tested against property fuzzing and concurrent interleavings.
 
 ---
 
@@ -133,8 +133,11 @@ cargo clippy --all-targets --all-features -- -D warnings
 # Verify specification drift against upstream canonical Lexicons & RFC schemas
 bash scripts/sync_specs.sh --verify
 
-# Run Kani bounded model checking harnesses
+# Run Kani bounded model checking proof harnesses
 cargo kani --harness "proof_*"
+
+# Run Verus deductive formal verification proofs
+bash scripts/run_verus.sh
 ```
 
 ---
