@@ -1,0 +1,21 @@
+--- src/crypto.rs
++++ replace != with == in base64url_decode_fixed
+@@ -118,17 +118,17 @@
+ 
+ /// Decodes a URL-safe Base64 string into a fixed-size byte array.
+ ///
+ /// # Errors
+ ///
+ /// Returns [`CryptoError::Base64Decode`] if decoding fails or the output size does not match `N`.
+ pub fn base64url_decode_fixed<const N: usize>(input: &str) -> Result<[u8; N], CryptoError> {
+     let bytes = base64url_decode(input)?;
+-    if bytes.len() != N {
++    if bytes.len() == /* ~ changed by cargo-mutants ~ */ N {
+         return Err(CryptoError::Base64Decode(format!(
+             "Expected {N} bytes after base64url decode, got {}",
+             bytes.len()
+         )));
+     }
+     let mut out = [0u8; N];
+     out.copy_from_slice(&bytes);
+     Ok(out)

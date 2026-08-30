@@ -1,0 +1,50 @@
+--- src/discovery.rs
++++ replace discover_oauth_endpoints -> Result<DiscoveredAuthEndpoints, DiscoveryError> with Ok(Default::default())
+@@ -478,46 +478,17 @@
+ /// 5. Selects the primary Authorization Server URL from `authorization_servers[0]`.
+ /// 6. Fetches and validates RFC 8414 Authorization Server Metadata.
+ /// 7. Returns fully assembled [`DiscoveredAuthEndpoints`].
+ pub async fn discover_oauth_endpoints(
+     resolver: &IdentityResolver,
+     did_or_handle: &str,
+ ) -> Result<DiscoveredAuthEndpoints, DiscoveryError> {
+     // 1. Identity Resolution & Bidirectional Verification
+-    let identity = resolver.resolve_ident(did_or_handle).await?;
+-
+-    // 2. Protected Resource Discovery
+-    let pds_meta =
+-        fetch_protected_resource_metadata(resolver.ssrf_filter(), &identity.pds_endpoint).await?;
+-
+-    let auth_server_url = &pds_meta.authorization_servers[0];
+-
+-    // 3. Authorization Server Metadata Discovery
+-    let as_meta = fetch_auth_server_metadata(resolver.ssrf_filter(), auth_server_url).await?;
+-
+-    Ok(DiscoveredAuthEndpoints {
+-        did: identity.did,
+-        handle: identity.handle,
+-        pds_endpoint: identity.pds_endpoint,
+-        auth_server_issuer: as_meta.issuer.clone(),
+-        par_endpoint: as_meta.pushed_authorization_request_endpoint.clone(),
+-        authorization_endpoint: as_meta.authorization_endpoint.clone(),
+-        token_endpoint: as_meta.token_endpoint.clone(),
+-        dpop_algs: as_meta.dpop_signing_alg_values_supported.clone(),
+-        scopes: if !as_meta.scopes_supported.is_empty() {
+-            as_meta.scopes_supported.clone()
+-        } else if !pds_meta.scopes_supported.is_empty() {
+-            pds_meta.scopes_supported.clone()
+-        } else {
+-            vec!["atproto".to_string()]
+-        },
+-        protected_resource_metadata: pds_meta,
+-        auth_server_metadata: as_meta,
+-    })
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ impl IdentityResolver {
+     /// Executes the full OAuth discovery pipeline for a user handle or DID.
+     pub async fn discover_oauth_endpoints(
+         &self,
+         did_or_handle: &str,
+     ) -> Result<DiscoveredAuthEndpoints, DiscoveryError> {

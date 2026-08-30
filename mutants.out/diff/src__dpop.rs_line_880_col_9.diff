@@ -1,0 +1,24 @@
+--- src/dpop.rs
++++ replace DPoPReplayCache::prune_expired with ()
+@@ -872,20 +872,17 @@
+             exp > now_secs
+         } else {
+             false
+         }
+     }
+ 
+     /// Explicitly prunes all expired entries across all shards.
+     pub fn prune_expired(&self, now_secs: u64) {
+-        for shard in self.shards.iter() {
+-            let mut guard = shard.write();
+-            guard.retain(|_, &mut exp| exp > now_secs);
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Returns the total number of cached entries across all shards.
+     #[must_use]
+     pub fn len(&self) -> usize {
+         self.shards.iter().map(|s| s.read().len()).sum()
+     }
+ 

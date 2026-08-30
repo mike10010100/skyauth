@@ -1,0 +1,21 @@
+--- src/dpop.rs
++++ replace != with == in DPoPVerifier::verify_proof
+@@ -532,17 +532,17 @@
+                 expected: expected_htm.to_uppercase(),
+                 actual: claims.htm,
+             });
+         }
+ 
+         // URI verification (normalized comparison)
+         let norm_expected_htu = normalize_htu(expected_htu)?;
+         let norm_claims_htu = normalize_htu(&claims.htu)?;
+-        if norm_claims_htu != norm_expected_htu {
++        if norm_claims_htu == /* ~ changed by cargo-mutants ~ */ norm_expected_htu {
+             return Err(DPoPError::UriMismatch {
+                 expected: norm_expected_htu,
+                 actual: claims.htu,
+             });
+         }
+ 
+         // Nonce verification
+         if let Some(exp_nonce) = expected_nonce {

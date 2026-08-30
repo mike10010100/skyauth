@@ -1,0 +1,21 @@
+--- src/discovery.rs
++++ replace == with != in is_origin_only
+@@ -141,17 +141,17 @@
+         // Bracketed IPv6 hosts carry the port (if any) after `]`; unbracketed hosts
+         // use a simple `host:port` form where the last ':' separator is the port.
+         let has_explicit_port = match host_port.rfind(']') {
+             Some(bracket_end) => host_port[bracket_end..].contains(':'),
+             None => host_port.contains(':'),
+         };
+         if has_explicit_port {
+             let port_str = host_port.rsplit(':').next().unwrap_or("");
+-            if (scheme == "https" && port_str == "443") || (scheme == "http" && port_str == "80") {
++            if (scheme == "https" && port_str == "443") || (scheme == "http" && port_str != /* ~ changed by cargo-mutants ~ */ "80") {
+                 return false;
+             }
+         }
+         let path = parsed.path();
+         (path.is_empty() || path == "/") && parsed.query().is_none() && parsed.fragment().is_none()
+     } else {
+         false
+     }

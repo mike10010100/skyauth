@@ -1,0 +1,22 @@
+--- src/client.rs
++++ replace AtprotoOAuthClientBuilder::identity_resolver -> Self with Default::default()
+@@ -288,18 +288,17 @@
+     #[must_use]
+     pub fn metadata(self, metadata: OAuthClientMetadata) -> Self {
+         self.client_metadata(metadata)
+     }
+ 
+     /// Sets the identity resolver.
+     #[must_use]
+     pub fn identity_resolver(mut self, resolver: IdentityResolver) -> Self {
+-        self.resolver = Some(resolver);
+-        self
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Sets the shared DPoP nonce cache.
+     #[must_use]
+     pub fn nonce_cache(mut self, cache: DPoPNonceCache) -> Self {
+         self.nonce_cache = Some(cache);
+         self
+     }

@@ -1,0 +1,22 @@
+--- src/dpop.rs
++++ replace DPoPVerifier::with_max_proof_age -> Self with Default::default()
+@@ -392,18 +392,17 @@
+     pub fn with_max_clock_skew(mut self, skew: Duration) -> Self {
+         self.max_clock_skew = skew;
+         self
+     }
+ 
+     /// Sets the maximum allowable proof age.
+     #[must_use]
+     pub fn with_max_proof_age(mut self, age: Duration) -> Self {
+-        self.max_proof_age = age;
+-        self
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Sets a custom or shared [`DPoPReplayCache`].
+     #[must_use]
+     pub fn with_replay_cache(mut self, cache: DPoPReplayCache) -> Self {
+         self.replay_cache = Some(cache);
+         self
+     }

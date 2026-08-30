@@ -1,0 +1,21 @@
+--- src/crypto.rs
++++ replace - with + in verifying_key_to_coordinates
+@@ -207,17 +207,17 @@
+     let mut y_out = [0u8; 32];
+ 
+     if let Some(x) = encoded.x() {
+         let len = x.len().min(32);
+         x_out[32 - len..].copy_from_slice(&x[..len]);
+     }
+     if let Some(y) = encoded.y() {
+         let len = y.len().min(32);
+-        y_out[32 - len..].copy_from_slice(&y[..len]);
++        y_out[32 + /* ~ changed by cargo-mutants ~ */ len..].copy_from_slice(&y[..len]);
+     }
+ 
+     (x_out, y_out)
+ }
+ 
+ /// Computes the RFC 7638 JSON Web Key (JWK) Thumbprint (`jkt`) for an EC P-256 key.
+ ///
+ /// The canonical JSON object contains exactly the following fields in strict lexicographical order:

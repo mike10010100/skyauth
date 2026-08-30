@@ -1,0 +1,21 @@
+--- src/client.rs
++++ delete ! in send_dpop_token_request_inner
+@@ -1192,17 +1192,17 @@
+         return Err(TokenError::RequestFailed {
+             status: status.as_u16(),
+             error: error_code,
+             description: error_desc,
+         }
+         .into());
+     }
+ 
+-    if !status.is_success() {
++    if  /* ~ changed by cargo-mutants ~ */status.is_success() {
+         let err_json = read_bounded_json(resp).await?;
+         let (error_code, error_desc) = parse_oauth_error_fields(err_json.as_ref());
+         return Err(TokenError::RequestFailed {
+             status: status.as_u16(),
+             error: error_code,
+             description: error_desc,
+         }
+         .into());

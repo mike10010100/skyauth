@@ -1,0 +1,43 @@
+--- src/client.rs
++++ replace AtprotoOAuthClientBuilder::build -> Result<AtprotoOAuthClient, AtprotoOAuthError> with Ok(Default::default())
+@@ -333,39 +333,17 @@
+     }
+ 
+     /// Builds the configured [`AtprotoOAuthClient`].
+     ///
+     /// # Panics / Errors
+     ///
+     /// Returns error if client metadata is missing.
+     pub fn build(self) -> Result<AtprotoOAuthClient, AtprotoOAuthError> {
+-        let metadata = self
+-            .metadata
+-            .ok_or(ParError::MissingField("client_metadata"))?;
+-
+-        let resolver = self.resolver.unwrap_or_else(|| {
+-            IdentityResolverBuilder::new()
+-                .ssrf_filter(self.ssrf_filter)
+-                .build()
+-        });
+-
+-        let nonce_cache = self.nonce_cache.unwrap_or_default();
+-        let state_store = self
+-            .state_store
+-            .unwrap_or_else(|| Arc::new(OAuthStateStore::new(self.state_ttl)));
+-
+-        Ok(AtprotoOAuthClient {
+-            metadata,
+-            resolver,
+-            nonce_cache,
+-            ssrf_filter: self.ssrf_filter,
+-            state_store,
+-            state_ttl: self.state_ttl,
+-        })
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// High-level AT Protocol OAuth 2.1 Client.
+ ///
+ /// Orchestrates the entire lifecycle: identity resolution, discovery, PAR, code exchange,
+ /// token rotation, and transparent auto-nonce retry loops.
+ #[derive(Debug, Clone)]

@@ -1,0 +1,21 @@
+--- src/crypto.rs
++++ replace base64url_encode -> String with "xyzzy".into()
+@@ -87,17 +87,17 @@
+ /// ```
+ /// use skyauth::crypto::base64url_encode;
+ ///
+ /// let encoded = base64url_encode(&[0x00, 0x01, 0x02]);
+ /// assert_eq!(encoded, "AAEC");
+ /// ```
+ #[must_use]
+ pub fn base64url_encode(data: &[u8]) -> String {
+-    URL_SAFE_NO_PAD.encode(data)
++    "xyzzy".into() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Decodes an unpadded or padded URL-safe Base64 string into bytes.
+ ///
+ /// # Errors
+ ///
+ /// Returns [`CryptoError::Base64Decode`] if the string contains invalid Base64 characters.
+ ///

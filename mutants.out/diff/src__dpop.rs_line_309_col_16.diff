@@ -1,0 +1,21 @@
+--- src/dpop.rs
++++ delete ! in DPoPKey::create_proof_internal
+@@ -301,17 +301,17 @@
+         payload.insert("htm".to_string(), serde_json::Value::String(normalized_htm));
+         payload.insert("htu".to_string(), serde_json::Value::String(normalized_htu));
+         payload.insert(
+             "iat".to_string(),
+             serde_json::Value::Number(iat_secs.into()),
+         );
+ 
+         if let Some(n) = nonce {
+-            if !n.trim().is_empty() {
++            if  /* ~ changed by cargo-mutants ~ */n.trim().is_empty() {
+                 payload.insert(
+                     "nonce".to_string(),
+                     serde_json::Value::String(n.trim().to_string()),
+                 );
+             }
+         }
+ 
+         if let Some(a) = ath {

@@ -1,0 +1,21 @@
+--- src/client.rs
++++ replace AtprotoOAuthClientBuilder::metadata -> Self with Default::default()
+@@ -282,17 +282,17 @@
+     pub fn client_metadata(mut self, metadata: OAuthClientMetadata) -> Self {
+         self.metadata = Some(metadata);
+         self
+     }
+ 
+     /// Alias for [`Self::client_metadata`].
+     #[must_use]
+     pub fn metadata(self, metadata: OAuthClientMetadata) -> Self {
+-        self.client_metadata(metadata)
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Sets the identity resolver.
+     #[must_use]
+     pub fn identity_resolver(mut self, resolver: IdentityResolver) -> Self {
+         self.resolver = Some(resolver);
+         self
+     }

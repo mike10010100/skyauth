@@ -1,0 +1,21 @@
+--- src/dpop.rs
++++ replace > with >= in DPoPVerifier::verify_proof
+@@ -594,17 +594,17 @@
+             return Err(DPoPError::FutureProof {
+                 iat: claims.iat,
+                 now,
+                 leeway: skew_secs,
+             });
+         }
+ 
+         // Check proof age
+-        if now.saturating_sub(claims.iat) > max_age_secs {
++        if now.saturating_sub(claims.iat) >= /* ~ changed by cargo-mutants ~ */ max_age_secs {
+             return Err(DPoPError::ProofTooOld {
+                 iat: claims.iat,
+                 now,
+                 max_age_secs,
+             });
+         }
+ 
+         // Check optional exp claim

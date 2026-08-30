@@ -1,0 +1,31 @@
+--- src/crypto.rs
++++ replace sign_p256_raw -> Result<[u8; 64], CryptoError> with Ok([1; 64])
+@@ -137,27 +137,17 @@
+ /// Signs an arbitrary message using ECDSA P-256 and outputs a 64-byte raw IEEE P1363 signature ($R || S$).
+ ///
+ /// This format is mandated by RFC 7518 § 3.4 for the `ES256` algorithm.
+ ///
+ /// # Errors
+ ///
+ /// Returns [`CryptoError::EcdsaSign`] if signature creation fails.
+ pub fn sign_p256_raw(signing_key: &SigningKey, message: &[u8]) -> Result<[u8; 64], CryptoError> {
+-    let sig: Signature = signing_key.sign(message);
+-    let bytes = sig.to_bytes();
+-    if bytes.len() != 64 {
+-        return Err(CryptoError::EcdsaSign(format!(
+-            "Signature generated unexpected length {}, expected 64",
+-            bytes.len()
+-        )));
+-    }
+-    let mut out = [0u8; 64];
+-    out.copy_from_slice(&bytes);
+-    Ok(out)
++    Ok([1; 64]) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Verifies a 64-byte raw IEEE P1363 ECDSA P-256 signature ($R || S$) against a verifying key.
+ ///
+ /// # Errors
+ ///
+ /// Returns [`CryptoError::EcdsaVerify`] if the signature length is not 64 bytes or if
+ /// the signature is cryptographically invalid.

@@ -1,0 +1,2178 @@
+{
+  "outcomes": [
+    {
+      "scenario": "Baseline",
+      "summary": "Success",
+      "log_path": "log/baseline.log",
+      "diff_path": null,
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 22.824200666,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 48.192643917,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:32:5: replace constant_time_eq -> bool with true",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "constant_time_eq",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 18,
+                "column": 1
+              },
+              "end": {
+                "line": 36,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 32,
+              "column": 5
+            },
+            "end": {
+              "line": 35,
+              "column": 22
+            }
+          },
+          "replacement": "true",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_32_col_5.log",
+      "diff_path": "diff/src__crypto.rs_line_32_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 28.106478708,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.013394375,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:50:5: replace sha256_digest -> [u8; 32] with [1; 32]",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "sha256_digest",
+            "return_type": "-> [u8; 32]",
+            "span": {
+              "start": {
+                "line": 38,
+                "column": 1
+              },
+              "end": {
+                "line": 56,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 50,
+              "column": 5
+            },
+            "end": {
+              "line": 55,
+              "column": 8
+            }
+          },
+          "replacement": "[1; 32]",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_50_col_5_001.log",
+      "diff_path": "diff/src__crypto.rs_line_50_col_5_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 17.337779334,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.1331645,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:32:5: replace constant_time_eq -> bool with false",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "constant_time_eq",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 18,
+                "column": 1
+              },
+              "end": {
+                "line": 36,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 32,
+              "column": 5
+            },
+            "end": {
+              "line": 35,
+              "column": 22
+            }
+          },
+          "replacement": "false",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_32_col_5_001.log",
+      "diff_path": "diff/src__crypto.rs_line_32_col_5_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 59.564767875,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.619244083,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:32:16: replace != with == in constant_time_eq",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "constant_time_eq",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 18,
+                "column": 1
+              },
+              "end": {
+                "line": 36,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 32,
+              "column": 16
+            },
+            "end": {
+              "line": 32,
+              "column": 18
+            }
+          },
+          "replacement": "==",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_32_col_16.log",
+      "diff_path": "diff/src__crypto.rs_line_32_col_16.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 61.288479542,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.4528206670000001,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:73:5: replace hmac_sha256 -> Result<[u8; 32], CryptoError> with Ok([0; 32])",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "hmac_sha256",
+            "return_type": "-> Result<[u8; 32], CryptoError>",
+            "span": {
+              "start": {
+                "line": 58,
+                "column": 1
+              },
+              "end": {
+                "line": 81,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 73,
+              "column": 5
+            },
+            "end": {
+              "line": 80,
+              "column": 12
+            }
+          },
+          "replacement": "Ok([0; 32])",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_73_col_5.log",
+      "diff_path": "diff/src__crypto.rs_line_73_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 23.909987541,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.335356708,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:50:5: replace sha256_digest -> [u8; 32] with [0; 32]",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "sha256_digest",
+            "return_type": "-> [u8; 32]",
+            "span": {
+              "start": {
+                "line": 38,
+                "column": 1
+              },
+              "end": {
+                "line": 56,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 50,
+              "column": 5
+            },
+            "end": {
+              "line": 55,
+              "column": 8
+            }
+          },
+          "replacement": "[0; 32]",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_50_col_5.log",
+      "diff_path": "diff/src__crypto.rs_line_50_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 74.8669275,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.525414083,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:95:5: replace base64url_encode -> String with String::new()",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "base64url_encode",
+            "return_type": "-> String",
+            "span": {
+              "start": {
+                "line": 83,
+                "column": 1
+              },
+              "end": {
+                "line": 96,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 95,
+              "column": 5
+            },
+            "end": {
+              "line": 95,
+              "column": 33
+            }
+          },
+          "replacement": "String::new()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_95_col_5.log",
+      "diff_path": "diff/src__crypto.rs_line_95_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 14.783046583,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.1284372089999999,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:73:5: replace hmac_sha256 -> Result<[u8; 32], CryptoError> with Ok([1; 32])",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "hmac_sha256",
+            "return_type": "-> Result<[u8; 32], CryptoError>",
+            "span": {
+              "start": {
+                "line": 58,
+                "column": 1
+              },
+              "end": {
+                "line": 81,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 73,
+              "column": 5
+            },
+            "end": {
+              "line": 80,
+              "column": 12
+            }
+          },
+          "replacement": "Ok([1; 32])",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_73_col_5_001.log",
+      "diff_path": "diff/src__crypto.rs_line_73_col_5_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 18.294987625,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.296435542,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:95:5: replace base64url_encode -> String with \"xyzzy\".into()",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "base64url_encode",
+            "return_type": "-> String",
+            "span": {
+              "start": {
+                "line": 83,
+                "column": 1
+              },
+              "end": {
+                "line": 96,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 95,
+              "column": 5
+            },
+            "end": {
+              "line": 95,
+              "column": 33
+            }
+          },
+          "replacement": "\"xyzzy\".into()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_95_col_5_001.log",
+      "diff_path": "diff/src__crypto.rs_line_95_col_5_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 13.500965125,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 2.273338875,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:113:5: replace base64url_decode -> Result<Vec<u8>, CryptoError> with Ok(vec![])",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "base64url_decode",
+            "return_type": "-> Result<Vec<u8>, CryptoError>",
+            "span": {
+              "start": {
+                "line": 98,
+                "column": 1
+              },
+              "end": {
+                "line": 117,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 113,
+              "column": 5
+            },
+            "end": {
+              "line": 116,
+              "column": 88
+            }
+          },
+          "replacement": "Ok(vec![])",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_113_col_5.log",
+      "diff_path": "diff/src__crypto.rs_line_113_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 18.358771292,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 2.805930084,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:113:5: replace base64url_decode -> Result<Vec<u8>, CryptoError> with Ok(vec![0])",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "base64url_decode",
+            "return_type": "-> Result<Vec<u8>, CryptoError>",
+            "span": {
+              "start": {
+                "line": 98,
+                "column": 1
+              },
+              "end": {
+                "line": 117,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 113,
+              "column": 5
+            },
+            "end": {
+              "line": 116,
+              "column": 88
+            }
+          },
+          "replacement": "Ok(vec![0])",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_113_col_5_001.log",
+      "diff_path": "diff/src__crypto.rs_line_113_col_5_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 21.784699375,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 2.3580565829999998,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:113:5: replace base64url_decode -> Result<Vec<u8>, CryptoError> with Ok(vec![1])",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "base64url_decode",
+            "return_type": "-> Result<Vec<u8>, CryptoError>",
+            "span": {
+              "start": {
+                "line": 98,
+                "column": 1
+              },
+              "end": {
+                "line": 117,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 113,
+              "column": 5
+            },
+            "end": {
+              "line": 116,
+              "column": 88
+            }
+          },
+          "replacement": "Ok(vec![1])",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_113_col_5_002.log",
+      "diff_path": "diff/src__crypto.rs_line_113_col_5_002.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 22.785225667,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.504935083,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:125:5: replace base64url_decode_fixed -> Result<[u8; N], CryptoError> with Ok([0; N])",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "base64url_decode_fixed",
+            "return_type": "-> Result<[u8; N], CryptoError>",
+            "span": {
+              "start": {
+                "line": 119,
+                "column": 1
+              },
+              "end": {
+                "line": 135,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 125,
+              "column": 5
+            },
+            "end": {
+              "line": 134,
+              "column": 12
+            }
+          },
+          "replacement": "Ok([0; N])",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_125_col_5.log",
+      "diff_path": "diff/src__crypto.rs_line_125_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 16.467129125,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.565417041,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:125:5: replace base64url_decode_fixed -> Result<[u8; N], CryptoError> with Ok([1; N])",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "base64url_decode_fixed",
+            "return_type": "-> Result<[u8; N], CryptoError>",
+            "span": {
+              "start": {
+                "line": 119,
+                "column": 1
+              },
+              "end": {
+                "line": 135,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 125,
+              "column": 5
+            },
+            "end": {
+              "line": 134,
+              "column": 12
+            }
+          },
+          "replacement": "Ok([1; N])",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_125_col_5_001.log",
+      "diff_path": "diff/src__crypto.rs_line_125_col_5_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 14.617611958,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.1367460839999999,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:126:20: replace != with == in base64url_decode_fixed",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "base64url_decode_fixed",
+            "return_type": "-> Result<[u8; N], CryptoError>",
+            "span": {
+              "start": {
+                "line": 119,
+                "column": 1
+              },
+              "end": {
+                "line": 135,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 126,
+              "column": 20
+            },
+            "end": {
+              "line": 126,
+              "column": 22
+            }
+          },
+          "replacement": "==",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_126_col_20.log",
+      "diff_path": "diff/src__crypto.rs_line_126_col_20.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 16.749507166,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.722492,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:147:20: replace != with == in sign_p256_raw",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "sign_p256_raw",
+            "return_type": "-> Result<[u8; 64], CryptoError>",
+            "span": {
+              "start": {
+                "line": 137,
+                "column": 1
+              },
+              "end": {
+                "line": 156,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 147,
+              "column": 20
+            },
+            "end": {
+              "line": 147,
+              "column": 22
+            }
+          },
+          "replacement": "==",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_147_col_20.log",
+      "diff_path": "diff/src__crypto.rs_line_147_col_20.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 16.142482958,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.573341417,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:145:5: replace sign_p256_raw -> Result<[u8; 64], CryptoError> with Ok([1; 64])",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "sign_p256_raw",
+            "return_type": "-> Result<[u8; 64], CryptoError>",
+            "span": {
+              "start": {
+                "line": 137,
+                "column": 1
+              },
+              "end": {
+                "line": 156,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 145,
+              "column": 5
+            },
+            "end": {
+              "line": 155,
+              "column": 12
+            }
+          },
+          "replacement": "Ok([1; 64])",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_145_col_5_001.log",
+      "diff_path": "diff/src__crypto.rs_line_145_col_5_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 22.977363375,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 2.1503265,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:145:5: replace sign_p256_raw -> Result<[u8; 64], CryptoError> with Ok([0; 64])",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "sign_p256_raw",
+            "return_type": "-> Result<[u8; 64], CryptoError>",
+            "span": {
+              "start": {
+                "line": 137,
+                "column": 1
+              },
+              "end": {
+                "line": 156,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 145,
+              "column": 5
+            },
+            "end": {
+              "line": 155,
+              "column": 12
+            }
+          },
+          "replacement": "Ok([0; 64])",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_145_col_5.log",
+      "diff_path": "diff/src__crypto.rs_line_145_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 25.780157625,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.560168042,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:193:5: replace verifying_key_from_coordinates -> Result<VerifyingKey, CryptoError> with Ok(Default::default())",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "verifying_key_from_coordinates",
+            "return_type": "-> Result<VerifyingKey, CryptoError>",
+            "span": {
+              "start": {
+                "line": 184,
+                "column": 1
+              },
+              "end": {
+                "line": 200,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 193,
+              "column": 5
+            },
+            "end": {
+              "line": 199,
+              "column": 96
+            }
+          },
+          "replacement": "Ok(Default::default())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/src__crypto.rs_line_193_col_5.log",
+      "diff_path": "diff/src__crypto.rs_line_193_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 2.301212917,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:169:5: replace verify_p256_raw -> Result<(), CryptoError> with Ok(())",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "verify_p256_raw",
+            "return_type": "-> Result<(), CryptoError>",
+            "span": {
+              "start": {
+                "line": 158,
+                "column": 1
+              },
+              "end": {
+                "line": 182,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 169,
+              "column": 5
+            },
+            "end": {
+              "line": 181,
+              "column": 94
+            }
+          },
+          "replacement": "Ok(())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_169_col_5.log",
+      "diff_path": "diff/src__crypto.rs_line_169_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 15.43025025,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.242348417,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:169:30: replace != with == in verify_p256_raw",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "verify_p256_raw",
+            "return_type": "-> Result<(), CryptoError>",
+            "span": {
+              "start": {
+                "line": 158,
+                "column": 1
+              },
+              "end": {
+                "line": 182,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 169,
+              "column": 30
+            },
+            "end": {
+              "line": 169,
+              "column": 32
+            }
+          },
+          "replacement": "==",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_169_col_30.log",
+      "diff_path": "diff/src__crypto.rs_line_169_col_30.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 9.2308155,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.083643833,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:205:5: replace verifying_key_to_coordinates -> ([u8; 32], [u8; 32]) with ([0; 32], [0; 32])",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "verifying_key_to_coordinates",
+            "return_type": "-> ([u8; 32], [u8; 32])",
+            "span": {
+              "start": {
+                "line": 202,
+                "column": 1
+              },
+              "end": {
+                "line": 219,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 205,
+              "column": 5
+            },
+            "end": {
+              "line": 218,
+              "column": 19
+            }
+          },
+          "replacement": "([0; 32], [0; 32])",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_205_col_5.log",
+      "diff_path": "diff/src__crypto.rs_line_205_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 19.274831167,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.523053833,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:205:5: replace verifying_key_to_coordinates -> ([u8; 32], [u8; 32]) with ([0; 32], [1; 32])",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "verifying_key_to_coordinates",
+            "return_type": "-> ([u8; 32], [u8; 32])",
+            "span": {
+              "start": {
+                "line": 202,
+                "column": 1
+              },
+              "end": {
+                "line": 219,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 205,
+              "column": 5
+            },
+            "end": {
+              "line": 218,
+              "column": 19
+            }
+          },
+          "replacement": "([0; 32], [1; 32])",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_205_col_5_001.log",
+      "diff_path": "diff/src__crypto.rs_line_205_col_5_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 20.929500458,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.447015209,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:205:5: replace verifying_key_to_coordinates -> ([u8; 32], [u8; 32]) with ([1; 32], [1; 32])",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "verifying_key_to_coordinates",
+            "return_type": "-> ([u8; 32], [u8; 32])",
+            "span": {
+              "start": {
+                "line": 202,
+                "column": 1
+              },
+              "end": {
+                "line": 219,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 205,
+              "column": 5
+            },
+            "end": {
+              "line": 218,
+              "column": 19
+            }
+          },
+          "replacement": "([1; 32], [1; 32])",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_205_col_5_003.log",
+      "diff_path": "diff/src__crypto.rs_line_205_col_5_003.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 18.823864083,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 3.062897375,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:205:5: replace verifying_key_to_coordinates -> ([u8; 32], [u8; 32]) with ([1; 32], [0; 32])",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "verifying_key_to_coordinates",
+            "return_type": "-> ([u8; 32], [u8; 32])",
+            "span": {
+              "start": {
+                "line": 202,
+                "column": 1
+              },
+              "end": {
+                "line": 219,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 205,
+              "column": 5
+            },
+            "end": {
+              "line": 218,
+              "column": 19
+            }
+          },
+          "replacement": "([1; 32], [0; 32])",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_205_col_5_002.log",
+      "diff_path": "diff/src__crypto.rs_line_205_col_5_002.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 22.230941042,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 5.266998667,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:211:18: replace - with + in verifying_key_to_coordinates",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "verifying_key_to_coordinates",
+            "return_type": "-> ([u8; 32], [u8; 32])",
+            "span": {
+              "start": {
+                "line": 202,
+                "column": 1
+              },
+              "end": {
+                "line": 219,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 211,
+              "column": 18
+            },
+            "end": {
+              "line": 211,
+              "column": 19
+            }
+          },
+          "replacement": "+",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_211_col_18.log",
+      "diff_path": "diff/src__crypto.rs_line_211_col_18.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 10.374573584,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 2.554820583,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:211:18: replace - with / in verifying_key_to_coordinates",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "verifying_key_to_coordinates",
+            "return_type": "-> ([u8; 32], [u8; 32])",
+            "span": {
+              "start": {
+                "line": 202,
+                "column": 1
+              },
+              "end": {
+                "line": 219,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 211,
+              "column": 18
+            },
+            "end": {
+              "line": 211,
+              "column": 19
+            }
+          },
+          "replacement": "/",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_211_col_18_001.log",
+      "diff_path": "diff/src__crypto.rs_line_211_col_18_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 12.261057208,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.828336,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:215:18: replace - with + in verifying_key_to_coordinates",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "verifying_key_to_coordinates",
+            "return_type": "-> ([u8; 32], [u8; 32])",
+            "span": {
+              "start": {
+                "line": 202,
+                "column": 1
+              },
+              "end": {
+                "line": 219,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 215,
+              "column": 18
+            },
+            "end": {
+              "line": 215,
+              "column": 19
+            }
+          },
+          "replacement": "+",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_215_col_18.log",
+      "diff_path": "diff/src__crypto.rs_line_215_col_18.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 10.463371,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.550487916,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:239:5: replace jwk_thumbprint_ec_p256 -> String with String::new()",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "jwk_thumbprint_ec_p256",
+            "return_type": "-> String",
+            "span": {
+              "start": {
+                "line": 221,
+                "column": 1
+              },
+              "end": {
+                "line": 242,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 239,
+              "column": 5
+            },
+            "end": {
+              "line": 241,
+              "column": 30
+            }
+          },
+          "replacement": "String::new()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_239_col_5.log",
+      "diff_path": "diff/src__crypto.rs_line_239_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 12.400273958,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.868214083,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:215:18: replace - with / in verifying_key_to_coordinates",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "verifying_key_to_coordinates",
+            "return_type": "-> ([u8; 32], [u8; 32])",
+            "span": {
+              "start": {
+                "line": 202,
+                "column": 1
+              },
+              "end": {
+                "line": 219,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 215,
+              "column": 18
+            },
+            "end": {
+              "line": 215,
+              "column": 19
+            }
+          },
+          "replacement": "/",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_215_col_18_001.log",
+      "diff_path": "diff/src__crypto.rs_line_215_col_18_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 15.856670167,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.973662166,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:239:5: replace jwk_thumbprint_ec_p256 -> String with \"xyzzy\".into()",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "jwk_thumbprint_ec_p256",
+            "return_type": "-> String",
+            "span": {
+              "start": {
+                "line": 221,
+                "column": 1
+              },
+              "end": {
+                "line": 242,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 239,
+              "column": 5
+            },
+            "end": {
+              "line": 241,
+              "column": 30
+            }
+          },
+          "replacement": "\"xyzzy\".into()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_239_col_5_001.log",
+      "diff_path": "diff/src__crypto.rs_line_239_col_5_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 13.736091625,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.7680137089999999,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:262:5: replace jwk_thumbprint_rsa -> String with String::new()",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "jwk_thumbprint_rsa",
+            "return_type": "-> String",
+            "span": {
+              "start": {
+                "line": 244,
+                "column": 1
+              },
+              "end": {
+                "line": 265,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 262,
+              "column": 5
+            },
+            "end": {
+              "line": 264,
+              "column": 30
+            }
+          },
+          "replacement": "String::new()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_262_col_5.log",
+      "diff_path": "diff/src__crypto.rs_line_262_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 15.928374917,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.3210745,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/crypto.rs:262:5: replace jwk_thumbprint_rsa -> String with \"xyzzy\".into()",
+          "package": "skyauth",
+          "file": "src/crypto.rs",
+          "function": {
+            "function_name": "jwk_thumbprint_rsa",
+            "return_type": "-> String",
+            "span": {
+              "start": {
+                "line": 244,
+                "column": 1
+              },
+              "end": {
+                "line": 265,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 262,
+              "column": 5
+            },
+            "end": {
+              "line": 264,
+              "column": 30
+            }
+          },
+          "replacement": "\"xyzzy\".into()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__crypto.rs_line_262_col_5_001.log",
+      "diff_path": "diff/src__crypto.rs_line_262_col_5_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 11.023427875,
+          "process_status": "Success",
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.43837475,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/mike10010100/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=skyauth@0.2.0"
+          ]
+        }
+      ]
+    }
+  ],
+  "total_mutants": 33,
+  "missed": 0,
+  "caught": 32,
+  "timeout": 0,
+  "unviable": 1,
+  "success": 0,
+  "start_time": "2026-08-30T21:36:38.679992Z",
+  "end_time": "2026-08-30T21:41:12.164611Z",
+  "cargo_mutants_version": "27.1.0"
+}

@@ -1,0 +1,21 @@
+--- src/client.rs
++++ replace AtprotoOAuthClient::resolver -> &IdentityResolver with Box::leak(Box::new(Default::default()))
+@@ -408,17 +408,17 @@
+     #[must_use]
+     pub const fn metadata(&self) -> &OAuthClientMetadata {
+         &self.metadata
+     }
+ 
+     /// Returns a reference to the internal identity resolver.
+     #[must_use]
+     pub const fn resolver(&self) -> &IdentityResolver {
+-        &self.resolver
++        Box::leak(Box::new(Default::default())) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Returns a reference to the shared DPoP nonce cache.
+     #[must_use]
+     pub const fn nonce_cache(&self) -> &DPoPNonceCache {
+         &self.nonce_cache
+     }
+ 

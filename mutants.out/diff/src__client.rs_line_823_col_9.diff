@@ -1,0 +1,28 @@
+--- src/client.rs
++++ replace AtprotoOAuthClient::send_dpop_token_request -> Result<TokenResponse, AtprotoOAuthError> with Ok(Default::default())
+@@ -815,24 +815,17 @@
+ 
+     /// Internal helper for sending token endpoint requests with DPoP and transparent auto-nonce retry.
+     async fn send_dpop_token_request(
+         &self,
+         token_endpoint: &str,
+         dpop_key: &DPoPKey,
+         body_bytes: Vec<u8>,
+     ) -> Result<TokenResponse, AtprotoOAuthError> {
+-        send_dpop_token_request_inner(
+-            &self.ssrf_filter,
+-            &self.nonce_cache,
+-            token_endpoint,
+-            dpop_key,
+-            body_bytes,
+-        )
+-        .await
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Executes an arbitrary HTTP request authenticated with DPoP and automatic nonce retry handling.
+     ///
+     /// Used for calling protected XRPC endpoints on the user's Personal Data Server (PDS).
+     pub async fn send_dpop_request(
+         &self,
+         dpop_key: &DPoPKey,

@@ -1,0 +1,21 @@
+--- src/dpop.rs
++++ replace JwkEc::thumbprint -> String with "xyzzy".into()
+@@ -59,17 +59,17 @@
+     ///     crv: "P-256".to_string(),
+     ///     x: "l8tFrhx-34tV3hRICRDY9zCkDlpBhF42UQUfWVAWBFs".to_string(),
+     ///     y: "9VE4jf_Ok_o64zbTTlcuNJajHmt6v9TDVrU0CdvGRDA".to_string(),
+     /// };
+     /// assert_eq!(jwk.thumbprint(), "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I");
+     /// ```
+     #[must_use]
+     pub fn thumbprint(&self) -> String {
+-        jwk_thumbprint_ec_p256(&self.x, &self.y)
++        "xyzzy".into() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Reconstructs the [`VerifyingKey`] from the JWK (x, y) coordinates.
+     ///
+     /// # Errors
+     ///
+     /// Returns [`CryptoError::InvalidPoint`] or [`CryptoError::Base64Decode`] if the
+     /// coordinates are invalid.

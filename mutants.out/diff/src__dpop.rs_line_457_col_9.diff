@@ -1,0 +1,193 @@
+--- src/dpop.rs
++++ replace DPoPVerifier::verify_proof -> Result<(DPoPProofClaims, JwkEc), DPoPError> with Ok((Default::default(), Default::default()))
+@@ -449,189 +449,17 @@
+         &self,
+         proof_jwt: &str,
+         expected_htm: &str,
+         expected_htu: &str,
+         expected_nonce: Option<&str>,
+         expected_ath: Option<&str>,
+         now_override: Option<SystemTime>,
+     ) -> Result<(DPoPProofClaims, JwkEc), DPoPError> {
+-        let parts: Vec<&str> = proof_jwt.trim().split('.').collect();
+-        if parts.len() != 3 {
+-            return Err(DPoPError::MalformedJwt(format!(
+-                "Expected 3 parts in compact JWT, got {}",
+-                parts.len()
+-            )));
+-        }
+-
+-        let header_bytes = base64url_decode(parts[0])?;
+-        let payload_bytes = base64url_decode(parts[1])?;
+-        let signature_bytes = base64url_decode(parts[2])?;
+-
+-        // 1. Validate Header
+-        let header_val: serde_json::Value = serde_json::from_slice(&header_bytes)
+-            .map_err(|e| DPoPError::MalformedJwt(format!("Failed to parse header JSON: {e}")))?;
+-
+-        let typ = header_val
+-            .get("typ")
+-            .and_then(|v| v.as_str())
+-            .ok_or_else(|| DPoPError::InvalidHeaderTyp("Missing 'typ' header".to_string()))?;
+-
+-        if !typ.eq_ignore_ascii_case("dpop+jwt") {
+-            return Err(DPoPError::InvalidHeaderTyp(typ.to_string()));
+-        }
+-
+-        let alg = header_val
+-            .get("alg")
+-            .and_then(|v| v.as_str())
+-            .ok_or_else(|| DPoPError::UnsupportedAlgorithm("Missing 'alg' header".to_string()))?;
+-
+-        if alg != "ES256" {
+-            return Err(DPoPError::UnsupportedAlgorithm(alg.to_string()));
+-        }
+-
+-        let jwk_val = header_val.get("jwk").ok_or(DPoPError::MissingJwk)?;
+-
+-        // Ensure JWK does not contain private key material (RFC 9449 § 4.3 item 7)
+-        if jwk_val.get("d").is_some() {
+-            return Err(DPoPError::PrivateKeyInJwk);
+-        }
+-
+-        let jwk: JwkEc = serde_json::from_value(jwk_val.clone())
+-            .map_err(|e| DPoPError::InvalidJwk(e.to_string()))?;
+-
+-        if jwk.kty != "EC" {
+-            return Err(DPoPError::InvalidJwk(format!(
+-                "Expected kty 'EC', got '{}'",
+-                jwk.kty
+-            )));
+-        }
+-        if jwk.crv != "P-256" {
+-            return Err(DPoPError::InvalidJwk(format!(
+-                "Expected crv 'P-256', got '{}'",
+-                jwk.crv
+-            )));
+-        }
+-
+-        // 2. Verify Cryptographic Signature
+-        let verifying_key = jwk.to_verifying_key()?;
+-        let signing_input = format!("{}.{}", parts[0], parts[1]);
+-
+-        verify_p256_raw(&verifying_key, signing_input.as_bytes(), &signature_bytes)
+-            .map_err(|_| DPoPError::SignatureVerificationFailed)?;
+-
+-        // 3. Validate Payload Claims
+-        let claims: DPoPProofClaims = serde_json::from_slice(&payload_bytes)
+-            .map_err(|e| DPoPError::MalformedJwt(format!("Failed to parse payload JSON: {e}")))?;
+-
+-        if claims.jti.trim().is_empty() {
+-            return Err(DPoPError::MissingClaim("jti"));
+-        }
+-
+-        // Method verification (case-insensitive)
+-        if !claims.htm.eq_ignore_ascii_case(expected_htm) {
+-            return Err(DPoPError::MethodMismatch {
+-                expected: expected_htm.to_uppercase(),
+-                actual: claims.htm,
+-            });
+-        }
+-
+-        // URI verification (normalized comparison)
+-        let norm_expected_htu = normalize_htu(expected_htu)?;
+-        let norm_claims_htu = normalize_htu(&claims.htu)?;
+-        if norm_claims_htu != norm_expected_htu {
+-            return Err(DPoPError::UriMismatch {
+-                expected: norm_expected_htu,
+-                actual: claims.htu,
+-            });
+-        }
+-
+-        // Nonce verification
+-        if let Some(exp_nonce) = expected_nonce {
+-            match &claims.nonce {
+-                Some(actual_nonce) => {
+-                    if !constant_time_eq(exp_nonce.as_bytes(), actual_nonce.as_bytes()) {
+-                        return Err(DPoPError::NonceMismatch {
+-                            expected: exp_nonce.to_string(),
+-                            actual: actual_nonce.clone(),
+-                        });
+-                    }
+-                }
+-                None => return Err(DPoPError::MissingNonce),
+-            }
+-        }
+-
+-        // Access token hash (ath) verification
+-        if let Some(exp_ath) = expected_ath {
+-            match &claims.ath {
+-                Some(actual_ath) => {
+-                    if !constant_time_eq(exp_ath.as_bytes(), actual_ath.as_bytes()) {
+-                        return Err(DPoPError::AthMismatch {
+-                            expected: exp_ath.to_string(),
+-                            actual: actual_ath.clone(),
+-                        });
+-                    }
+-                }
+-                None => return Err(DPoPError::MissingAth),
+-            }
+-        }
+-
+-        // Timing validations
+-        let now = match now_override {
+-            Some(time) => time
+-                .duration_since(UNIX_EPOCH)
+-                .map_err(|e| DPoPError::ClockSkew(e.to_string()))?
+-                .as_secs(),
+-            None => SystemTime::now()
+-                .duration_since(UNIX_EPOCH)
+-                .map_err(|e| DPoPError::ClockSkew(e.to_string()))?
+-                .as_secs(),
+-        };
+-
+-        let skew_secs = self.max_clock_skew.as_secs();
+-        let max_age_secs = self.max_proof_age.as_secs();
+-
+-        // Check if iat is in future beyond clock skew leeway
+-        if claims.iat > now.saturating_add(skew_secs) {
+-            return Err(DPoPError::FutureProof {
+-                iat: claims.iat,
+-                now,
+-                leeway: skew_secs,
+-            });
+-        }
+-
+-        // Check proof age
+-        if now.saturating_sub(claims.iat) > max_age_secs {
+-            return Err(DPoPError::ProofTooOld {
+-                iat: claims.iat,
+-                now,
+-                max_age_secs,
+-            });
+-        }
+-
+-        // Check optional exp claim
+-        if let Some(exp) = claims.exp {
+-            if exp.saturating_add(skew_secs) < now {
+-                return Err(DPoPError::ExpiredProof { exp, now });
+-            }
+-        }
+-
+-        // Anti-Replay Check (RFC 9449 § 4.3 item 4 & § 11.1)
+-        if let Some(ref cache) = self.replay_cache {
+-            let jkt = jwk.thumbprint();
+-            // Cap the cache entry lifetime to the server's own acceptance window
+-            // (max_proof_age + skew), NEVER to the attacker-controlled `exp` claim.
+-            // An arbitrarily far-future `exp` would otherwise create immortal
+-            // entries that permanently saturate every shard (DoS).
+-            let expires_at = now.saturating_add(max_age_secs).saturating_add(skew_secs);
+-
+-            cache.check_and_record(&jkt, &claims.jti, expires_at, now)?;
+-        }
+-
+-        Ok((claims, jwk))
++        Ok((Default::default(), Default::default())) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Computes the RFC 9449 Access Token Hash (`ath`) claim.
+ ///
+ /// `ath` is the unpadded URL-safe Base64 encoding of the SHA-256 hash of the ASCII access token.
+ ///
+ /// # Examples

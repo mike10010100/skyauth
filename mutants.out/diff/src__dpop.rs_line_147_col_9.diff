@@ -1,0 +1,23 @@
+--- src/dpop.rs
++++ replace DPoPKey::generate -> Self with Default::default()
+@@ -139,19 +139,17 @@
+     ///
+     /// let key = DPoPKey::generate();
+     /// let jwk = key.public_jwk();
+     /// assert_eq!(jwk.kty, "EC");
+     /// assert_eq!(jwk.crv, "P-256");
+     /// ```
+     #[must_use]
+     pub fn generate() -> Self {
+-        Self {
+-            signing_key: SigningKey::random(&mut rand::thread_rng()),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Imports an ECDSA P-256 private key from PKCS#8 DER bytes.
+     ///
+     /// # Errors
+     ///
+     /// Returns [`CryptoError::InvalidKey`] if the bytes cannot be parsed.
+     pub fn from_pkcs8_der(der_bytes: &[u8]) -> Result<Self, CryptoError> {

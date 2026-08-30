@@ -1,0 +1,24 @@
+--- src/dpop.rs
++++ replace DPoPReplayCache::shard_index -> usize with 1
+@@ -796,20 +796,17 @@
+             shards: Arc::new(shards),
+             hasher: RandomState::new(),
+             prune_hints: Arc::new(prune_hints),
+         }
+     }
+ 
+     #[inline]
+     pub(crate) fn shard_index(&self, key: &str) -> usize {
+-        use std::hash::{BuildHasher, Hasher};
+-        let mut hasher = self.hasher.build_hasher();
+-        hasher.write(key.as_bytes());
+-        (hasher.finish() as usize) % NUM_SHARDS
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     #[inline]
+     fn shard_for(&self, key: &str) -> &RwLock<HashMap<String, u64>> {
+         let idx = self.shard_index(key);
+         &self.shards[idx]
+     }
+ 

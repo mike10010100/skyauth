@@ -1,0 +1,28 @@
+--- src/client.rs
++++ replace StoredStateEntry::is_expired -> bool with true
+@@ -165,24 +165,17 @@
+ 
+ impl StoredStateEntry {
+     /// Checks whether this stored state entry has expired.
+     ///
+     /// Fails closed: if the system clock is earlier than `created_at` (backward
+     /// step / NTP correction), the entry is treated as expired rather than valid.
+     #[must_use]
+     pub fn is_expired(&self) -> bool {
+-        let now = SystemTime::now();
+-        let max_age = Duration::from_secs(self.expires_in_secs);
+-        match now.duration_since(self.created_at) {
+-            // Normal path: elapsed time exceeds the configured maximum age.
+-            Ok(elapsed) => elapsed > max_age,
+-            // Clock moved backward below `created_at`: fail closed.
+-            Err(_) => true,
+-        }
++        true /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// The result of initiating an OAuth authorization flow.
+ #[derive(Debug, Clone)]
+ pub struct AuthorizationRequest {
+     /// The complete browser redirection URL pointing to the authorization server.
+     pub authorization_url: Url,

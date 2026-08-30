@@ -1,0 +1,78 @@
+--- src/dpop.rs
++++ replace DPoPKey::create_proof_internal -> Result<String, DPoPError> with Ok("xyzzy".into())
+@@ -273,74 +273,17 @@
+         &self,
+         htm: &str,
+         htu: &str,
+         nonce: Option<&str>,
+         ath: Option<&str>,
+         iat_secs: u64,
+         jti_override: Option<&str>,
+     ) -> Result<String, DPoPError> {
+-        let jti = match jti_override {
+-            Some(j) => j.to_string(),
+-            None => {
+-                let mut jti_bytes = [0u8; 16];
+-                rand::thread_rng().fill_bytes(&mut jti_bytes);
+-                base64url_encode(&jti_bytes)
+-            }
+-        };
+-
+-        let normalized_htm = htm.trim().to_uppercase();
+-        let normalized_htu = normalize_htu(htu)?;
+-
+-        let header = serde_json::json!({
+-            "typ": "dpop+jwt",
+-            "alg": "ES256",
+-            "jwk": self.public_jwk()
+-        });
+-
+-        let mut payload = serde_json::Map::new();
+-        payload.insert("jti".to_string(), serde_json::Value::String(jti));
+-        payload.insert("htm".to_string(), serde_json::Value::String(normalized_htm));
+-        payload.insert("htu".to_string(), serde_json::Value::String(normalized_htu));
+-        payload.insert(
+-            "iat".to_string(),
+-            serde_json::Value::Number(iat_secs.into()),
+-        );
+-
+-        if let Some(n) = nonce {
+-            if !n.trim().is_empty() {
+-                payload.insert(
+-                    "nonce".to_string(),
+-                    serde_json::Value::String(n.trim().to_string()),
+-                );
+-            }
+-        }
+-
+-        if let Some(a) = ath {
+-            if !a.trim().is_empty() {
+-                payload.insert(
+-                    "ath".to_string(),
+-                    serde_json::Value::String(a.trim().to_string()),
+-                );
+-            }
+-        }
+-
+-        let header_str =
+-            serde_json::to_string(&header).map_err(|e| DPoPError::Serialization(e.to_string()))?;
+-        let payload_str = serde_json::to_string(&serde_json::Value::Object(payload))
+-            .map_err(|e| DPoPError::Serialization(e.to_string()))?;
+-
+-        let header_b64 = base64url_encode(header_str.as_bytes());
+-        let payload_b64 = base64url_encode(payload_str.as_bytes());
+-
+-        let signing_input = format!("{header_b64}.{payload_b64}");
+-        let sig_bytes = sign_p256_raw(&self.signing_key, signing_input.as_bytes())?;
+-        let sig_b64 = base64url_encode(&sig_bytes);
+-
+-        Ok(format!("{signing_input}.{sig_b64}"))
++        Ok("xyzzy".into()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Decoded and validated claims from an RFC 9449 DPoP proof payload.
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ pub struct DPoPProofClaims {
+     /// Unique JWT identifier preventing replay attacks.
+     pub jti: String,

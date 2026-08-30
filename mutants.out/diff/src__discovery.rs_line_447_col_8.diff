@@ -1,0 +1,21 @@
+--- src/discovery.rs
++++ delete ! in validate_auth_server_capabilities
+@@ -439,17 +439,17 @@
+     // 11. Client ID Metadata Document Supported (Mandatory in ATProto)
+     if !meta.client_id_metadata_document_supported {
+         return Err(DiscoveryError::MissingClientMetadataSupport(
+             auth_server_url.to_string(),
+         ));
+     }
+ 
+     // 12. DPoP ES256 Algorithm Enforcement
+-    if !meta
++    if  /* ~ changed by cargo-mutants ~ */meta
+         .dpop_signing_alg_values_supported
+         .iter()
+         .any(|alg| alg == "ES256")
+     {
+         return Err(DiscoveryError::MissingDpopAlgorithm(
+             auth_server_url.to_string(),
+         ));
+     }

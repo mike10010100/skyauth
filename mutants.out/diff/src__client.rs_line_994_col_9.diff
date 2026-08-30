@@ -1,0 +1,44 @@
+--- src/client.rs
++++ replace AtprotoOAuthClient::send_xrpc_request -> Result<reqwest::Response, AtprotoOAuthError> with Ok(Default::default())
+@@ -986,40 +986,17 @@
+     ///
+     /// Returns [`AtprotoOAuthError`] if the PDS endpoint is missing or invalid, or if the request fails.
+     pub async fn send_xrpc_request(
+         &self,
+         session: &OAuthSession,
+         nsid: &str,
+         query_params: &[(&str, &str)],
+     ) -> Result<reqwest::Response, AtprotoOAuthError> {
+-        let pds_endpoint = session
+-            .pds_endpoint()
+-            .ok_or(TokenError::MissingField("pds_endpoint"))?;
+-        let mut url = Url::parse(pds_endpoint)
+-            .map_err(|e| TokenError::Http(format!("Invalid PDS endpoint: {e}")))?;
+-        let trimmed_nsid = nsid.trim_start_matches('/');
+-        // Preserve any base path on the PDS endpoint (e.g. `https://host/pds`) so
+-        // sub-path deployments resolve to `/pds/xrpc/...` and the DPoP `htu` matches
+-        // the actual request target.
+-        let base_path = url.path().trim_end_matches('/');
+-        url.set_path(&format!("{}/xrpc/{}", base_path, trimmed_nsid));
+-        if !query_params.is_empty() {
+-            url.query_pairs_mut()
+-                .extend_pairs(query_params.iter().copied());
+-        }
+-        self.send_dpop_request(
+-            session.dpop_key(),
+-            reqwest::Method::GET,
+-            url.as_str(),
+-            Some(session.access_token()),
+-            None,
+-            None,
+-        )
+-        .await
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Extracts the OAuth `error` and `error_description` fields from a JSON body.
+ fn parse_oauth_error_fields(json: Option<&serde_json::Value>) -> (String, Option<String>) {
+     let error_code = json
+         .and_then(|j| j.get("error"))
+         .and_then(|e| e.as_str())

@@ -1,0 +1,21 @@
+--- src/discovery.rs
++++ delete ! in validate_auth_server_capabilities
+@@ -361,17 +361,17 @@
+     // 6. Response Types Supported Enforcement (must include "code")
+     if !meta.response_types_supported.iter().any(|r| r == "code") {
+         return Err(DiscoveryError::MissingResponseType(
+             auth_server_url.to_string(),
+         ));
+     }
+ 
+     // 7. Grant Types Supported Enforcement (must include "authorization_code" and "refresh_token")
+-    if !meta
++    if  /* ~ changed by cargo-mutants ~ */meta
+         .grant_types_supported
+         .iter()
+         .any(|g| g == "authorization_code")
+     {
+         return Err(DiscoveryError::MissingGrantType {
+             auth_server: auth_server_url.to_string(),
+             missing: "authorization_code".to_string(),
+         });

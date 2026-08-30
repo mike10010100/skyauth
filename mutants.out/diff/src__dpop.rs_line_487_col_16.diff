@@ -1,0 +1,21 @@
+--- src/dpop.rs
++++ replace != with == in DPoPVerifier::verify_proof
+@@ -479,17 +479,17 @@
+             return Err(DPoPError::InvalidHeaderTyp(typ.to_string()));
+         }
+ 
+         let alg = header_val
+             .get("alg")
+             .and_then(|v| v.as_str())
+             .ok_or_else(|| DPoPError::UnsupportedAlgorithm("Missing 'alg' header".to_string()))?;
+ 
+-        if alg != "ES256" {
++        if alg == /* ~ changed by cargo-mutants ~ */ "ES256" {
+             return Err(DPoPError::UnsupportedAlgorithm(alg.to_string()));
+         }
+ 
+         let jwk_val = header_val.get("jwk").ok_or(DPoPError::MissingJwk)?;
+ 
+         // Ensure JWK does not contain private key material (RFC 9449 § 4.3 item 7)
+         if jwk_val.get("d").is_some() {
+             return Err(DPoPError::PrivateKeyInJwk);

@@ -1,0 +1,21 @@
+--- src/crypto.rs
++++ replace != with == in verify_p256_raw
+@@ -161,17 +161,17 @@
+ ///
+ /// Returns [`CryptoError::EcdsaVerify`] if the signature length is not 64 bytes or if
+ /// the signature is cryptographically invalid.
+ pub fn verify_p256_raw(
+     verifying_key: &VerifyingKey,
+     message: &[u8],
+     signature_bytes: &[u8],
+ ) -> Result<(), CryptoError> {
+-    if signature_bytes.len() != 64 {
++    if signature_bytes.len() == /* ~ changed by cargo-mutants ~ */ 64 {
+         return Err(CryptoError::EcdsaVerify(format!(
+             "Invalid IEEE P1363 signature length: expected 64 bytes, got {}",
+             signature_bytes.len()
+         )));
+     }
+ 
+     let sig = Signature::from_slice(signature_bytes)
+         .map_err(|e| CryptoError::EcdsaVerify(format!("Failed to parse signature: {e}")))?;

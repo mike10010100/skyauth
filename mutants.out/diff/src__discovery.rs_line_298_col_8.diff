@@ -1,0 +1,21 @@
+--- src/discovery.rs
++++ delete ! in validate_auth_server_capabilities
+@@ -290,17 +290,17 @@
+ 
+ /// Validates security capabilities and invariant compliance on Authorization Server Metadata
+ /// according to the AT Protocol OAuth specification profile.
+ pub fn validate_auth_server_capabilities(
+     meta: &AuthorizationServerMetadata,
+     auth_server_url: &str,
+ ) -> Result<(), DiscoveryError> {
+     // 1. Issuer Origin Equality & Origin-only Check
+-    if !is_origin_only(auth_server_url) {
++    if  /* ~ changed by cargo-mutants ~ */is_origin_only(auth_server_url) {
+         return Err(DiscoveryError::InvalidAuthorizationServerUrl(
+             auth_server_url.to_string(),
+         ));
+     }
+     if !is_origin_only(&meta.issuer) {
+         return Err(DiscoveryError::InvalidAuthorizationServerUrl(
+             meta.issuer.clone(),
+         ));

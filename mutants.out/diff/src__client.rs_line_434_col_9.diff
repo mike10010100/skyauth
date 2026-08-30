@@ -1,0 +1,21 @@
+--- src/client.rs
++++ replace AtprotoOAuthClient::state_store -> &Arc<OAuthStateStore> with Box::leak(Box::new(Arc::new(Default::default())))
+@@ -426,17 +426,17 @@
+     #[must_use]
+     pub const fn ssrf_filter(&self) -> &SsrfFilter {
+         &self.ssrf_filter
+     }
+ 
+     /// Returns a reference to the internal OAuth state store.
+     #[must_use]
+     pub fn state_store(&self) -> &Arc<OAuthStateStore> {
+-        &self.state_store
++        Box::leak(Box::new(Arc::new(Default::default()))) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Returns the configured state TTL duration.
+     #[must_use]
+     pub const fn state_ttl(&self) -> Duration {
+         self.state_ttl
+     }
+ 

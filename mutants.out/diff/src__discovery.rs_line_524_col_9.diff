@@ -1,0 +1,21 @@
+--- src/discovery.rs
++++ replace IdentityResolver::discover_oauth_endpoints -> Result<DiscoveredAuthEndpoints, DiscoveryError> with Ok(Default::default())
+@@ -516,17 +516,17 @@
+ }
+ 
+ impl IdentityResolver {
+     /// Executes the full OAuth discovery pipeline for a user handle or DID.
+     pub async fn discover_oauth_endpoints(
+         &self,
+         did_or_handle: &str,
+     ) -> Result<DiscoveredAuthEndpoints, DiscoveryError> {
+-        discover_oauth_endpoints(self, did_or_handle).await
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ #[cfg(test)]
+ #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
+ mod tests {
+     use super::*;
+ 

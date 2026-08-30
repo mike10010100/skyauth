@@ -1,0 +1,22 @@
+--- src/client.rs
++++ replace AtprotoOAuthClientBuilder::allow_insecure_localhost -> Self with Default::default()
+@@ -309,18 +309,17 @@
+     pub fn ssrf_filter(mut self, filter: SsrfFilter) -> Self {
+         self.ssrf_filter = filter;
+         self
+     }
+ 
+     /// Configures whether insecure HTTP and localhost connections are permitted (for test environments).
+     #[must_use]
+     pub fn allow_insecure_localhost(mut self, allow: bool) -> Self {
+-        self.ssrf_filter.allow_insecure_localhost = allow;
+-        self
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Sets the shared OAuth state store for session tracking and single-use consumption.
+     #[must_use]
+     pub fn state_store(mut self, store: Arc<OAuthStateStore>) -> Self {
+         self.state_store = Some(store);
+         self
+     }

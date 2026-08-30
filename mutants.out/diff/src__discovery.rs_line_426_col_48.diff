@@ -1,0 +1,21 @@
+--- src/discovery.rs
++++ replace == with != in validate_auth_server_capabilities
+@@ -418,17 +418,17 @@
+         .any(|alg| alg == "none")
+     {
+         return Err(DiscoveryError::InvalidTokenAuthSigningAlg(
+             auth_server_url.to_string(),
+         ));
+     }
+ 
+     // 9. Scopes Supported Enforcement (must include "atproto")
+-    if !meta.scopes_supported.iter().any(|s| s == "atproto") {
++    if !meta.scopes_supported.iter().any(|s| s != /* ~ changed by cargo-mutants ~ */ "atproto") {
+         return Err(DiscoveryError::MissingAtprotoScope(
+             auth_server_url.to_string(),
+         ));
+     }
+ 
+     // 10. Authorization Response ISS Parameter Supported (RFC 9207 is mandatory in ATProto)
+     if !meta.authorization_response_iss_parameter_supported {
+         return Err(DiscoveryError::MissingIssParameterSupport(

@@ -1,0 +1,30 @@
+--- src/crypto.rs
++++ replace base64url_decode_fixed -> Result<[u8; N], CryptoError> with Ok([1; N])
+@@ -117,26 +117,17 @@
+ }
+ 
+ /// Decodes a URL-safe Base64 string into a fixed-size byte array.
+ ///
+ /// # Errors
+ ///
+ /// Returns [`CryptoError::Base64Decode`] if decoding fails or the output size does not match `N`.
+ pub fn base64url_decode_fixed<const N: usize>(input: &str) -> Result<[u8; N], CryptoError> {
+-    let bytes = base64url_decode(input)?;
+-    if bytes.len() != N {
+-        return Err(CryptoError::Base64Decode(format!(
+-            "Expected {N} bytes after base64url decode, got {}",
+-            bytes.len()
+-        )));
+-    }
+-    let mut out = [0u8; N];
+-    out.copy_from_slice(&bytes);
+-    Ok(out)
++    Ok([1; N]) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Signs an arbitrary message using ECDSA P-256 and outputs a 64-byte raw IEEE P1363 signature ($R || S$).
+ ///
+ /// This format is mandated by RFC 7518 § 3.4 for the `ES256` algorithm.
+ ///
+ /// # Errors
+ ///

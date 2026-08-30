@@ -1,0 +1,28 @@
+--- src/dpop.rs
++++ replace DPoPKey::public_jwk -> JwkEc with Default::default()
+@@ -220,24 +220,17 @@
+         let res = Self::from_slice(&bytes);
+         bytes.zeroize();
+         res
+     }
+ 
+     /// Derives the public [`JwkEc`] representation corresponding to this keypair.
+     #[must_use]
+     pub fn public_jwk(&self) -> JwkEc {
+-        let verifying_key = self.signing_key.verifying_key();
+-        let (x_bytes, y_bytes) = verifying_key_to_coordinates(verifying_key);
+-        JwkEc {
+-            kty: "EC".to_string(),
+-            crv: "P-256".to_string(),
+-            x: base64url_encode(&x_bytes),
+-            y: base64url_encode(&y_bytes),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Computes the RFC 7638 SHA-256 JWK Thumbprint (`jkt`) for this key's public component.
+     #[must_use]
+     pub fn jwk_thumbprint(&self) -> String {
+         self.public_jwk().thumbprint()
+     }
+ 

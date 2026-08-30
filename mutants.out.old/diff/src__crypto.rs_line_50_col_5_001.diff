@@ -1,0 +1,26 @@
+--- src/crypto.rs
++++ replace sha256_digest -> [u8; 32] with [1; 32]
+@@ -42,22 +42,17 @@
+ /// ```
+ /// use skyauth::crypto::sha256_digest;
+ ///
+ /// let hash = sha256_digest(b"hello world");
+ /// assert_eq!(hash.len(), 32);
+ /// ```
+ #[must_use]
+ pub fn sha256_digest(data: &[u8]) -> [u8; 32] {
+-    let mut hasher = Sha256::new();
+-    hasher.update(data);
+-    let result = hasher.finalize();
+-    let mut out = [0u8; 32];
+-    out.copy_from_slice(&result);
+-    out
++    [1; 32] /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Computes an HMAC-SHA256 message authentication code (RFC 2104).
+ ///
+ /// # Errors
+ ///
+ /// Returns [`CryptoError::Hmac`] if the key is invalid.
+ ///

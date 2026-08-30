@@ -1,0 +1,21 @@
+--- src/discovery.rs
++++ replace == with != in validate_auth_server_capabilities
+@@ -453,17 +453,17 @@
+             auth_server_url.to_string(),
+         ));
+     }
+ 
+     // 13. PKCE S256 Challenge Method Enforcement
+     if !meta
+         .code_challenge_methods_supported
+         .iter()
+-        .any(|method| method == "S256")
++        .any(|method| method != /* ~ changed by cargo-mutants ~ */ "S256")
+     {
+         return Err(DiscoveryError::MissingPkceMethod(
+             auth_server_url.to_string(),
+         ));
+     }
+ 
+     Ok(())
+ }

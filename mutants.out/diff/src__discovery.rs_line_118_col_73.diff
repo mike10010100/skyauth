@@ -1,0 +1,21 @@
+--- src/discovery.rs
++++ replace || with && in is_origin_only
+@@ -110,17 +110,17 @@
+ ///
+ /// Rejects explicit default HTTPS port (`:443`) or explicit default HTTP port (`:80`),
+ /// as well as userinfo, paths (other than empty or `/`), query parameters, and fragments.
+ fn is_origin_only(url_str: &str) -> bool {
+     if let Ok(parsed) = Url::parse(url_str) {
+         let scheme = parsed.scheme();
+         let host = parsed.host_str().unwrap_or("");
+         let is_loopback =
+-            host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]";
++            host == "localhost" || host == "127.0.0.1" || host == "::1" && /* ~ changed by cargo-mutants ~ */ host == "[::1]";
+         if scheme != "https" && !(scheme == "http" && is_loopback) {
+             return false;
+         }
+         if !parsed.username().is_empty() || parsed.password().is_some() {
+             return false;
+         }
+         // Reject explicit default port spellings (`:443` for https, `:80` for http).
+         // The `url` crate normalizes default ports during parsing (`port()` returns

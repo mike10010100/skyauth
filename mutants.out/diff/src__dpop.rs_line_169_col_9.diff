@@ -1,0 +1,23 @@
+--- src/dpop.rs
++++ replace DPoPKey::from_pkcs8_pem -> Result<Self, CryptoError> with Ok(Default::default())
+@@ -161,19 +161,17 @@
+     }
+ 
+     /// Imports an ECDSA P-256 private key from a PKCS#8 PEM string.
+     ///
+     /// # Errors
+     ///
+     /// Returns [`CryptoError::Pem`] if the PEM string is invalid.
+     pub fn from_pkcs8_pem(pem: &str) -> Result<Self, CryptoError> {
+-        let signing_key = SigningKey::from_pkcs8_pem(pem)
+-            .map_err(|e| CryptoError::Pem(format!("Invalid PKCS#8 PEM key: {e}")))?;
+-        Ok(Self { signing_key })
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Exports the private key as a PKCS#8 PEM formatted string.
+     ///
+     /// # Errors
+     ///
+     /// Returns [`CryptoError::Pem`] if encoding fails.
+     pub fn to_pkcs8_pem(&self) -> Result<String, CryptoError> {

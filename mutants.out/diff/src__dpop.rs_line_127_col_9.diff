@@ -1,0 +1,22 @@
+--- src/dpop.rs
++++ replace <impl serde::Deserialize<'de> for DPoPKey>::deserialize -> Result<Self, D::Error> with Ok(Default::default())
+@@ -119,18 +119,17 @@
+     }
+ }
+ 
+ impl<'de> serde::Deserialize<'de> for DPoPKey {
+     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+     where
+         D: serde::Deserializer<'de>,
+     {
+-        let s = String::deserialize(deserializer)?;
+-        Self::from_pkcs8_pem(&s).map_err(serde::de::Error::custom)
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl DPoPKey {
+     /// Generates a fresh, cryptographically secure random ECDSA P-256 keypair.
+     ///
+     /// # Examples
+     ///

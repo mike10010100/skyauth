@@ -1,0 +1,23 @@
+--- src/crypto.rs
++++ replace jwk_thumbprint_ec_p256 -> String with String::new()
+@@ -231,19 +231,17 @@
+ /// let jkt = jwk_thumbprint_ec_p256(
+ ///     "l8tFrhx-34tV3hRICRDY9zCkDlpBhF42UQUfWVAWBFs",
+ ///     "9VE4jf_Ok_o64zbTTlcuNJajHmt6v9TDVrU0CdvGRDA",
+ /// );
+ /// assert_eq!(jkt, "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I");
+ /// ```
+ #[must_use]
+ pub fn jwk_thumbprint_ec_p256(x: &str, y: &str) -> String {
+-    let canonical_json = format!(r#"{{"crv":"P-256","kty":"EC","x":"{x}","y":"{y}"}}"#);
+-    let digest = sha256_digest(canonical_json.as_bytes());
+-    base64url_encode(&digest)
++    String::new() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Computes the RFC 7638 JSON Web Key (JWK) Thumbprint (`jkt`) for an RSA key.
+ ///
+ /// The canonical JSON object contains exactly the following fields in strict lexicographical order:
+ /// `{"e":"<e>","kty":"RSA","n":"<n>"}`.
+ ///
+ /// # Examples

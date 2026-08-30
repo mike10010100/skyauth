@@ -1,0 +1,21 @@
+--- src/discovery.rs
++++ replace || with && in is_origin_only
+@@ -146,17 +146,17 @@
+         };
+         if has_explicit_port {
+             let port_str = host_port.rsplit(':').next().unwrap_or("");
+             if (scheme == "https" && port_str == "443") || (scheme == "http" && port_str == "80") {
+                 return false;
+             }
+         }
+         let path = parsed.path();
+-        (path.is_empty() || path == "/") && parsed.query().is_none() && parsed.fragment().is_none()
++        (path.is_empty() && /* ~ changed by cargo-mutants ~ */ path == "/") && parsed.query().is_none() && parsed.fragment().is_none()
+     } else {
+         false
+     }
+ }
+ 
+ /// Normalizes a URL to its ASCII origin representation (or stripped base).
+ fn normalize_origin(url_str: &str) -> String {
+     if let Ok(parsed) = Url::parse(url_str) {

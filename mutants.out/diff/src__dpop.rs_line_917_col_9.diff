@@ -1,0 +1,21 @@
+--- src/dpop.rs
++++ replace <impl DPoPServerNonceSource for Arc<T>>::generate_nonce -> String with String::new()
+@@ -909,17 +909,17 @@
+     /// Generates a fresh challenge nonce.
+     fn generate_nonce(&self) -> String;
+     /// Verifies whether the presented nonce is valid and active.
+     fn verify_nonce(&self, nonce: &str) -> bool;
+ }
+ 
+ impl<T: DPoPServerNonceSource + ?Sized> DPoPServerNonceSource for Arc<T> {
+     fn generate_nonce(&self) -> String {
+-        (**self).generate_nonce()
++        String::new() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn verify_nonce(&self, nonce: &str) -> bool {
+         (**self).verify_nonce(nonce)
+     }
+ }
+ 
+ /// In-memory implementation of [`DPoPServerNonceSource`] tracking nonces with time-to-live.

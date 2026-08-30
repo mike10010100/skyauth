@@ -1,0 +1,23 @@
+--- src/dpop.rs
++++ replace DPoPKey::from_slice -> Result<Self, CryptoError> with Ok(Default::default())
+@@ -200,19 +200,17 @@
+     }
+ 
+     /// Imports an ECDSA P-256 private key from raw 32-byte scalar bytes.
+     ///
+     /// # Errors
+     ///
+     /// Returns [`CryptoError::InvalidKey`] if the bytes cannot be parsed into a valid P-256 scalar.
+     pub fn from_slice(bytes: &[u8]) -> Result<Self, CryptoError> {
+-        let signing_key = SigningKey::from_slice(bytes)
+-            .map_err(|e| CryptoError::InvalidKey(format!("Invalid P-256 scalar bytes: {e}")))?;
+-        Ok(Self { signing_key })
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Imports an ECDSA P-256 private key from a Base64URL-encoded scalar string.
+     ///
+     /// # Errors
+     ///
+     /// Returns [`CryptoError`] if decoding or key parsing fails.
+     pub fn from_bytes_b64(b64: &str) -> Result<Self, CryptoError> {

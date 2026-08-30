@@ -1,0 +1,25 @@
+--- src/discovery.rs
++++ replace normalize_origin -> String with String::new()
+@@ -154,21 +154,17 @@
+         (path.is_empty() || path == "/") && parsed.query().is_none() && parsed.fragment().is_none()
+     } else {
+         false
+     }
+ }
+ 
+ /// Normalizes a URL to its ASCII origin representation (or stripped base).
+ fn normalize_origin(url_str: &str) -> String {
+-    if let Ok(parsed) = Url::parse(url_str) {
+-        parsed.origin().ascii_serialization()
+-    } else {
+-        url_str.trim().trim_end_matches('/').to_string()
+-    }
++    String::new() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Fetches and parses RFC 9728 Protected Resource Metadata from a PDS endpoint.
+ ///
+ /// # Errors
+ /// - Returns [`DiscoveryError::MissingAuthorizationServers`] if the `authorization_servers` list is empty.
+ /// - Returns [`DiscoveryError::MultipleAuthorizationServers`] if more than 1 authorization server is listed.
+ /// - Returns [`DiscoveryError::InvalidAuthorizationServerUrl`] if the authorization server URL is not a valid origin.

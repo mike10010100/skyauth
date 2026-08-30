@@ -1,0 +1,21 @@
+--- src/client.rs
++++ replace != with == in AtprotoOAuthClient::handle_callback_with_entry
+@@ -718,17 +718,17 @@
+ 
+         let callback_iss = callback_params
+             .iss
+             .as_deref()
+             .ok_or(TokenError::MissingCallbackIssuer)?;
+ 
+         let norm_callback = callback_iss.trim().trim_end_matches('/');
+         let norm_expected = state_entry.issuer.trim().trim_end_matches('/');
+-        if norm_callback != norm_expected {
++        if norm_callback == /* ~ changed by cargo-mutants ~ */ norm_expected {
+             return Err(TokenError::IssuerMismatch {
+                 expected: state_entry.issuer.clone(),
+                 actual: callback_iss.to_string(),
+             }
+             .into());
+         }
+ 
+         self.exchange_code(&callback_params.code, state_entry).await

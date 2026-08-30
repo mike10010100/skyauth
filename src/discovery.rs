@@ -655,4 +655,28 @@ mod tests {
         assert!(!is_origin_only("https://auth.example.com:443/"));
         assert!(is_origin_only("https://auth.example.com:8443"));
     }
+
+    #[test]
+    fn test_is_origin_only_loopback_http_acceptance_boundaries() {
+        // Loopback HTTP is the only permitted non-HTTPS form — pin every clause of
+        // the loopback host check so mutations of the host comparison fail.
+        assert!(is_origin_only("http://localhost"));
+        assert!(is_origin_only("http://127.0.0.1"));
+        assert!(is_origin_only("http://127.0.0.1:8080"));
+        assert!(is_origin_only("http://[::1]:8080"));
+        // Non-loopback http must be rejected regardless of port.
+        assert!(!is_origin_only("http://auth.example.com"));
+        assert!(!is_origin_only("http://auth.example.com:80"));
+        assert!(!is_origin_only("http://auth.example.com:8080"));
+        assert!(!is_origin_only("http://127.0.0.2")); // near-loopback, not loopback
+                                                      // userinfo in the authority is rejected even on loopback.
+        assert!(!is_origin_only("http://user@127.0.0.1"));
+        // Paths, query, and fragments disqualify origin-only form.
+        assert!(!is_origin_only("http://127.0.0.1/xrpc"));
+        assert!(!is_origin_only("https://auth.example.com/?a=b"));
+        assert!(!is_origin_only("https://auth.example.com/#frag"));
+        // Port-8443-with-trailing-:80-substring must not be confused with default :80.
+        assert!(is_origin_only("https://auth.example.com:8080"));
+        assert!(is_origin_only("https://auth.example.com:44371"));
+    }
 }

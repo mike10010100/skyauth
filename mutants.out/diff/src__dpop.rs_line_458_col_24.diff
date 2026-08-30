@@ -1,0 +1,21 @@
+--- src/dpop.rs
++++ replace != with == in DPoPVerifier::verify_proof
+@@ -450,17 +450,17 @@
+         proof_jwt: &str,
+         expected_htm: &str,
+         expected_htu: &str,
+         expected_nonce: Option<&str>,
+         expected_ath: Option<&str>,
+         now_override: Option<SystemTime>,
+     ) -> Result<(DPoPProofClaims, JwkEc), DPoPError> {
+         let parts: Vec<&str> = proof_jwt.trim().split('.').collect();
+-        if parts.len() != 3 {
++        if parts.len() == /* ~ changed by cargo-mutants ~ */ 3 {
+             return Err(DPoPError::MalformedJwt(format!(
+                 "Expected 3 parts in compact JWT, got {}",
+                 parts.len()
+             )));
+         }
+ 
+         let header_bytes = base64url_decode(parts[0])?;
+         let payload_bytes = base64url_decode(parts[1])?;

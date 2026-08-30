@@ -1,0 +1,22 @@
+--- src/client.rs
++++ replace OAuthClientMetadata::with_client_name -> Self with Default::default()
+@@ -72,18 +72,17 @@
+     pub fn with_scope(mut self, scope: impl Into<String>) -> Self {
+         self.scope = scope.into();
+         self
+     }
+ 
+     /// Sets the optional client display name.
+     #[must_use]
+     pub fn with_client_name(mut self, name: impl Into<String>) -> Self {
+-        self.client_name = Some(name.into());
+-        self
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Sets the optional client secret.
+     #[must_use]
+     pub fn with_client_secret(mut self, secret: impl Into<String>) -> Self {
+         self.client_secret = Some(secret.into());
+         self
+     }

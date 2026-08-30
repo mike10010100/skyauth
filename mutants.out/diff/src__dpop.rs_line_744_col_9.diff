@@ -1,0 +1,22 @@
+--- src/dpop.rs
++++ replace DPoPNonceCache::set_nonce with ()
+@@ -736,18 +736,17 @@
+     pub fn new() -> Self {
+         Self {
+             cache: Arc::new(RwLock::new(HashMap::new())),
+         }
+     }
+ 
+     /// Stores a server-issued challenge nonce for an origin URL.
+     pub fn set_nonce(&self, origin: &str, nonce: impl Into<String>) {
+-        let mut guard = self.cache.write();
+-        guard.insert(origin.trim().to_ascii_lowercase(), nonce.into());
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Retrieves the current challenge nonce for an origin URL, if available.
+     #[must_use]
+     pub fn get_nonce(&self, origin: &str) -> Option<String> {
+         let guard = self.cache.read();
+         guard.get(&origin.trim().to_ascii_lowercase()).cloned()
+     }

@@ -1,0 +1,22 @@
+--- src/dpop.rs
++++ replace DPoPKey::to_bytes_b64 -> Zeroizing<String> with Zeroizing::from(String::new())
+@@ -190,18 +190,17 @@
+         out.copy_from_slice(&self.signing_key.to_bytes());
+         out
+     }
+ 
+     /// Exports the private key as an unpadded Base64URL string stored in a
+     /// zeroized-on-drop buffer.
+     #[must_use]
+     pub fn to_bytes_b64(&self) -> Zeroizing<String> {
+-        let raw = self.to_bytes();
+-        Zeroizing::new(base64url_encode(&*raw))
++        Zeroizing::from(String::new()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Imports an ECDSA P-256 private key from raw 32-byte scalar bytes.
+     ///
+     /// # Errors
+     ///
+     /// Returns [`CryptoError::InvalidKey`] if the bytes cannot be parsed into a valid P-256 scalar.
+     pub fn from_slice(bytes: &[u8]) -> Result<Self, CryptoError> {

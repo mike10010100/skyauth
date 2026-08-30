@@ -1,0 +1,22 @@
+--- src/client.rs
++++ replace AtprotoOAuthClientBuilder::client_metadata -> Self with Default::default()
+@@ -275,18 +275,17 @@
+             state_store: None,
+             state_ttl: DEFAULT_STATE_TTL,
+         }
+     }
+ 
+     /// Sets the client metadata.
+     #[must_use]
+     pub fn client_metadata(mut self, metadata: OAuthClientMetadata) -> Self {
+-        self.metadata = Some(metadata);
+-        self
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Alias for [`Self::client_metadata`].
+     #[must_use]
+     pub fn metadata(self, metadata: OAuthClientMetadata) -> Self {
+         self.client_metadata(metadata)
+     }
+ 

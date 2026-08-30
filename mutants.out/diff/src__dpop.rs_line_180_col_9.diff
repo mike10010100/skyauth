@@ -1,0 +1,24 @@
+--- src/dpop.rs
++++ replace DPoPKey::to_pkcs8_pem -> Result<String, CryptoError> with Ok(String::new())
+@@ -172,20 +172,17 @@
+     }
+ 
+     /// Exports the private key as a PKCS#8 PEM formatted string.
+     ///
+     /// # Errors
+     ///
+     /// Returns [`CryptoError::Pem`] if encoding fails.
+     pub fn to_pkcs8_pem(&self) -> Result<String, CryptoError> {
+-        self.signing_key
+-            .to_pkcs8_pem(LineEnding::LF)
+-            .map(|zeroizing| zeroizing.as_str().to_string())
+-            .map_err(|e| CryptoError::Pem(format!("Failed to export PKCS#8 PEM: {e}")))
++        Ok(String::new()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Exports the private key scalar as a zeroized-on-drop 32-byte buffer.
+     #[must_use]
+     pub fn to_bytes(&self) -> Zeroizing<[u8; 32]> {
+         let mut out = Zeroizing::new([0u8; 32]);
+         out.copy_from_slice(&self.signing_key.to_bytes());
+         out

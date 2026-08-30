@@ -1,0 +1,28 @@
+--- src/dpop.rs
++++ replace DPoPVerifier::with_replay_prevention -> Self with Default::default()
+@@ -406,24 +406,17 @@
+     pub fn with_replay_cache(mut self, cache: DPoPReplayCache) -> Self {
+         self.replay_cache = Some(cache);
+         self
+     }
+ 
+     /// Configures whether anti-replay protection is enabled for this verifier.
+     #[must_use]
+     pub fn with_replay_prevention(mut self, enabled: bool) -> Self {
+-        if enabled {
+-            if self.replay_cache.is_none() {
+-                self.replay_cache = Some(DPoPReplayCache::new());
+-            }
+-        } else {
+-            self.replay_cache = None;
+-        }
+-        self
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Returns a reference to the active [`DPoPReplayCache`], if enabled.
+     #[must_use]
+     pub fn replay_cache(&self) -> Option<&DPoPReplayCache> {
+         self.replay_cache.as_ref()
+     }
+ 

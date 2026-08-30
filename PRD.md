@@ -173,6 +173,7 @@ graph TD
     B --> C[Mutation Testing - cargo mutants]
     C --> D[Deductive Verification - Verus]
     C --> E[Bounded Model Checking - Kani with Cover Anti-Vacuity]
+    C --> F[Mutation Testing - cargo-mutants]
 ```
 
 #### Layer 1 (Primary): Verus Deductive Verification (`verus!`)
@@ -205,7 +206,9 @@ We leverage [**Verus**](https://github.com/verus-lang/verus) (Microsoft Research
 For bit-level transformations and low-level byte packing:
 - All Kani harnesses (`#[kani::proof]`) **must enforce strict anti-vacuity**:
   1. Mandatory `kani::cover!()` reachability statements ensuring execution paths are actually exercised.
-  2. Proof validation via `cargo mutants` to prove that synthetic bug injection causes harnesses to fail.
+  2. Proof validation via `cargo-mutants` (enforced in CI at a 70% kill-rate floor, with
+     formal-verification module sources excluded as they are the specification, not subject):
+     synthetic bug injection must cause the suite to fail, or the gap is a test debt item.
 
 ---
 

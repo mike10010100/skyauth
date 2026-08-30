@@ -1,0 +1,21 @@
+--- src/client.rs
++++ replace AtprotoOAuthClient::nonce_cache -> &DPoPNonceCache with Box::leak(Box::new(Default::default()))
+@@ -414,17 +414,17 @@
+     #[must_use]
+     pub const fn resolver(&self) -> &IdentityResolver {
+         &self.resolver
+     }
+ 
+     /// Returns a reference to the shared DPoP nonce cache.
+     #[must_use]
+     pub const fn nonce_cache(&self) -> &DPoPNonceCache {
+-        &self.nonce_cache
++        Box::leak(Box::new(Default::default())) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Returns a reference to the active SSRF filter.
+     #[must_use]
+     pub const fn ssrf_filter(&self) -> &SsrfFilter {
+         &self.ssrf_filter
+     }
+ 

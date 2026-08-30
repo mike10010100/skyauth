@@ -1,0 +1,21 @@
+--- src/dpop.rs
++++ delete ! in DPoPVerifier::verify_proof
+@@ -522,17 +522,17 @@
+         let claims: DPoPProofClaims = serde_json::from_slice(&payload_bytes)
+             .map_err(|e| DPoPError::MalformedJwt(format!("Failed to parse payload JSON: {e}")))?;
+ 
+         if claims.jti.trim().is_empty() {
+             return Err(DPoPError::MissingClaim("jti"));
+         }
+ 
+         // Method verification (case-insensitive)
+-        if !claims.htm.eq_ignore_ascii_case(expected_htm) {
++        if  /* ~ changed by cargo-mutants ~ */claims.htm.eq_ignore_ascii_case(expected_htm) {
+             return Err(DPoPError::MethodMismatch {
+                 expected: expected_htm.to_uppercase(),
+                 actual: claims.htm,
+             });
+         }
+ 
+         // URI verification (normalized comparison)
+         let norm_expected_htu = normalize_htu(expected_htu)?;

@@ -1,0 +1,21 @@
+--- src/dpop.rs
++++ replace > with >= in DPoPReplayCache::check_and_record
+@@ -829,17 +829,17 @@
+     ) -> Result<(), DPoPError> {
+         let composite_key = format!("{jkt}:{jti}");
+         let shard_idx = self.shard_index(&composite_key);
+         let shard = &self.shards[shard_idx];
+         let mut guard = shard.write();
+ 
+         // 1. Check if key already exists and is unexpired
+         if let Some(&existing_exp) = guard.get(&composite_key) {
+-            if existing_exp > now_secs {
++            if existing_exp >= /* ~ changed by cargo-mutants ~ */ now_secs {
+                 return Err(DPoPError::ReplayDetected {
+                     jti: jti.to_string(),
+                 });
+             }
+         }
+ 
+         // 2. Amortized lazy pruning: run the O(n) retain pass at most once per
+         //    64 admissions per shard instead of on every call.

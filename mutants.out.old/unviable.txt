@@ -1,0 +1,1 @@
+src/crypto.rs:193:5: replace verifying_key_from_coordinates -> Result<VerifyingKey, CryptoError> with Ok(Default::default())

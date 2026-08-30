@@ -1,0 +1,21 @@
+--- src/discovery.rs
++++ replace == with != in validate_auth_server_capabilities
+@@ -442,17 +442,17 @@
+             auth_server_url.to_string(),
+         ));
+     }
+ 
+     // 12. DPoP ES256 Algorithm Enforcement
+     if !meta
+         .dpop_signing_alg_values_supported
+         .iter()
+-        .any(|alg| alg == "ES256")
++        .any(|alg| alg != /* ~ changed by cargo-mutants ~ */ "ES256")
+     {
+         return Err(DiscoveryError::MissingDpopAlgorithm(
+             auth_server_url.to_string(),
+         ));
+     }
+ 
+     // 13. PKCE S256 Challenge Method Enforcement
+     if !meta

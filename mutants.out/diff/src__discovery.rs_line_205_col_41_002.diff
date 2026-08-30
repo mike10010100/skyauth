@@ -1,0 +1,21 @@
+--- src/discovery.rs
++++ replace > with >= in fetch_protected_resource_metadata
+@@ -197,17 +197,17 @@
+         })?;
+ 
+     // 1. ATProto requires exactly one Authorization Server
+     if meta.authorization_servers.is_empty() {
+         return Err(DiscoveryError::MissingAuthorizationServers(
+             pds_endpoint.to_string(),
+         ));
+     }
+-    if meta.authorization_servers.len() > 1 {
++    if meta.authorization_servers.len() >= /* ~ changed by cargo-mutants ~ */ 1 {
+         return Err(DiscoveryError::MultipleAuthorizationServers(
+             meta.authorization_servers.len(),
+         ));
+     }
+ 
+     // 2. The Authorization Server URL must be an origin-only URL
+     let as_url = &meta.authorization_servers[0];
+     if !is_origin_only(as_url) {

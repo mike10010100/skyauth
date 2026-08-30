@@ -1,0 +1,21 @@
+--- src/dpop.rs
++++ replace <impl PartialEq for DPoPKey>::eq -> bool with false
+@@ -90,17 +90,17 @@
+ /// necessarily return heap copies the caller should treat as sensitive.
+ #[derive(Clone)]
+ pub struct DPoPKey {
+     signing_key: SigningKey,
+ }
+ 
+ impl PartialEq for DPoPKey {
+     fn eq(&self, other: &Self) -> bool {
+-        self.signing_key.to_bytes() == other.signing_key.to_bytes()
++        false /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl Eq for DPoPKey {}
+ 
+ impl std::fmt::Debug for DPoPKey {
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+         f.debug_struct("DPoPKey")

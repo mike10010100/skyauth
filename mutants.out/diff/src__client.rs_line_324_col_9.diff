@@ -1,0 +1,22 @@
+--- src/client.rs
++++ replace AtprotoOAuthClientBuilder::state_store -> Self with Default::default()
+@@ -316,18 +316,17 @@
+     pub fn allow_insecure_localhost(mut self, allow: bool) -> Self {
+         self.ssrf_filter.allow_insecure_localhost = allow;
+         self
+     }
+ 
+     /// Sets the shared OAuth state store for session tracking and single-use consumption.
+     #[must_use]
+     pub fn state_store(mut self, store: Arc<OAuthStateStore>) -> Self {
+-        self.state_store = Some(store);
+-        self
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Sets the TTL duration for authorization state entries.
+     #[must_use]
+     pub fn state_ttl(mut self, ttl: Duration) -> Self {
+         self.state_ttl = ttl;
+         self
+     }

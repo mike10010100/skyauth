@@ -1,0 +1,30 @@
+--- src/client.rs
++++ replace parse_oauth_error_fields -> (String, Option<String>) with (String::new(), None)
+@@ -1015,26 +1015,17 @@
+             None,
+         )
+         .await
+     }
+ }
+ 
+ /// Extracts the OAuth `error` and `error_description` fields from a JSON body.
+ fn parse_oauth_error_fields(json: Option<&serde_json::Value>) -> (String, Option<String>) {
+-    let error_code = json
+-        .and_then(|j| j.get("error"))
+-        .and_then(|e| e.as_str())
+-        .unwrap_or("token_request_failed")
+-        .to_string();
+-    let error_desc = json
+-        .and_then(|j| j.get("error_description"))
+-        .and_then(|d| d.as_str())
+-        .map(ToString::to_string);
+-    (error_code, error_desc)
++    (String::new(), None) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Checks whether a parsed JSON body is a `use_dpop_nonce` DPoP challenge.
+ fn is_use_dpop_nonce_error(json: Option<&serde_json::Value>) -> bool {
+     json.and_then(|j| j.get("error")).and_then(|e| e.as_str()) == Some("use_dpop_nonce")
+ }
+ 
+ /// Reads a bounded body and parses it as lenient JSON, returning `None` on non-JSON bodies.

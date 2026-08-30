@@ -1,0 +1,22 @@
+--- src/dpop.rs
++++ replace DPoPVerifier::with_replay_cache -> Self with Default::default()
+@@ -399,18 +399,17 @@
+     pub fn with_max_proof_age(mut self, age: Duration) -> Self {
+         self.max_proof_age = age;
+         self
+     }
+ 
+     /// Sets a custom or shared [`DPoPReplayCache`].
+     #[must_use]
+     pub fn with_replay_cache(mut self, cache: DPoPReplayCache) -> Self {
+-        self.replay_cache = Some(cache);
+-        self
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Configures whether anti-replay protection is enabled for this verifier.
+     #[must_use]
+     pub fn with_replay_prevention(mut self, enabled: bool) -> Self {
+         if enabled {
+             if self.replay_cache.is_none() {
+                 self.replay_cache = Some(DPoPReplayCache::new());

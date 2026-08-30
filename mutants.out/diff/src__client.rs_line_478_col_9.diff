@@ -1,0 +1,22 @@
+--- src/client.rs
++++ replace AtprotoOAuthClient::initiate_login -> Result<(AuthorizationRequest, StoredStateEntry), AtprotoOAuthError> with Ok((Default::default(), Default::default()))
+@@ -470,18 +470,17 @@
+     ///
+     /// # Errors
+     ///
+     /// Returns [`AtprotoOAuthError`] if discovery, PAR, or cryptographic operations fail.
+     pub async fn initiate_login(
+         &self,
+         handle_or_did: &str,
+     ) -> Result<(AuthorizationRequest, StoredStateEntry), AtprotoOAuthError> {
+-        self.initiate_login_with_scope(handle_or_did, &self.metadata.scope)
+-            .await
++        Ok((Default::default(), Default::default())) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Initiates an OAuth login flow with custom scope overrides.
+     pub async fn initiate_login_with_scope(
+         &self,
+         handle_or_did: &str,
+         scope: &str,
+     ) -> Result<(AuthorizationRequest, StoredStateEntry), AtprotoOAuthError> {

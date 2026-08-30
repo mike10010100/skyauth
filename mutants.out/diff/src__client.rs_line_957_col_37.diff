@@ -1,0 +1,21 @@
+--- src/client.rs
++++ replace == with != in AtprotoOAuthClient::send_dpop_request
+@@ -949,17 +949,17 @@
+                         .get("dpop-nonce")
+                         .and_then(|h| h.to_str().ok()),
+                 ) {
+                     self.nonce_cache.set_nonce(&server_origin, new_nonce);
+                 }
+ 
+                 let retry_status = retry_resp.status();
+                 if retry_status == reqwest::StatusCode::BAD_REQUEST
+-                    || retry_status == reqwest::StatusCode::UNAUTHORIZED
++                    || retry_status != /* ~ changed by cargo-mutants ~ */ reqwest::StatusCode::UNAUTHORIZED
+                 {
+                     // Check if still failing with use_dpop_nonce
+                     let retry_is_nonce = retry_resp
+                         .headers()
+                         .get("dpop-nonce")
+                         .and_then(|h| h.to_str().ok())
+                         .is_some();
+                     if retry_is_nonce {

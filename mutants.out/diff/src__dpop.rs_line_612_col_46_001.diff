@@ -1,0 +1,21 @@
+--- src/dpop.rs
++++ replace < with > in DPoPVerifier::verify_proof
+@@ -604,17 +604,17 @@
+                 iat: claims.iat,
+                 now,
+                 max_age_secs,
+             });
+         }
+ 
+         // Check optional exp claim
+         if let Some(exp) = claims.exp {
+-            if exp.saturating_add(skew_secs) < now {
++            if exp.saturating_add(skew_secs) > /* ~ changed by cargo-mutants ~ */ now {
+                 return Err(DPoPError::ExpiredProof { exp, now });
+             }
+         }
+ 
+         // Anti-Replay Check (RFC 9449 § 4.3 item 4 & § 11.1)
+         if let Some(ref cache) = self.replay_cache {
+             let jkt = jwk.thumbprint();
+             // Cap the cache entry lifetime to the server's own acceptance window

@@ -1,0 +1,23 @@
+--- src/client.rs
++++ replace AtprotoOAuthClient::refresh_token -> Result<OAuthSession, AtprotoOAuthError> with Ok(Default::default())
+@@ -803,19 +803,17 @@
+         Ok(())
+     }
+ 
+     /// Refreshes a session and returns a new updated [`OAuthSession`] instance.
+     pub async fn refresh_token(
+         &self,
+         session: &OAuthSession,
+     ) -> Result<OAuthSession, AtprotoOAuthError> {
+-        let mut cloned = session.clone();
+-        self.refresh_session(&mut cloned).await?;
+-        Ok(cloned)
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Internal helper for sending token endpoint requests with DPoP and transparent auto-nonce retry.
+     async fn send_dpop_token_request(
+         &self,
+         token_endpoint: &str,
+         dpop_key: &DPoPKey,
+         body_bytes: Vec<u8>,

@@ -1,0 +1,21 @@
+--- src/discovery.rs
++++ delete ! in validate_auth_server_capabilities
+@@ -371,17 +371,17 @@
+         .iter()
+         .any(|g| g == "authorization_code")
+     {
+         return Err(DiscoveryError::MissingGrantType {
+             auth_server: auth_server_url.to_string(),
+             missing: "authorization_code".to_string(),
+         });
+     }
+-    if !meta
++    if  /* ~ changed by cargo-mutants ~ */meta
+         .grant_types_supported
+         .iter()
+         .any(|g| g == "refresh_token")
+     {
+         return Err(DiscoveryError::MissingGrantType {
+             auth_server: auth_server_url.to_string(),
+             missing: "refresh_token".to_string(),
+         });

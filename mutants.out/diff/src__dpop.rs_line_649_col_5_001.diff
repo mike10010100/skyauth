@@ -1,0 +1,22 @@
+--- src/dpop.rs
++++ replace compute_access_token_hash -> String with "xyzzy".into()
+@@ -641,18 +641,17 @@
+ ///
+ /// // RFC 9449 Section 7.1 Test Vector
+ /// let token = "Kz~8mXK1EalYznwH-LC-1fBAo.4Ljp~zsPE_NeO.gxU";
+ /// let ath = compute_access_token_hash(token);
+ /// assert_eq!(ath, "fUHyO2r2Z3DZ53EsNrWBb0xWXoaNy59IiKCAqksmQEo");
+ /// ```
+ #[must_use]
+ pub fn compute_access_token_hash(access_token: &str) -> String {
+-    let digest = sha256_digest(access_token.as_bytes());
+-    base64url_encode(&digest)
++    "xyzzy".into() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Normalizes an HTTP target URI (`htu`) according to RFC 9449 § 4.2.
+ ///
+ /// Transformation rules:
+ /// - Strips any query component (`?...`).
+ /// - Strips any fragment component (`#...`).
+ /// - Lowercases scheme and host.

@@ -1,0 +1,21 @@
+--- src/client.rs
++++ replace == with != in AtprotoOAuthClient::exchange_code
+@@ -636,17 +636,17 @@
+                 }
+                 .into());
+             }
+         }
+ 
+         // 3. Validate Scope is present and contains "atproto"
+         let scope_str = resp_json.scope.as_deref().ok_or(TokenError::MissingScope)?;
+ 
+-        let has_atproto = scope_str.split_whitespace().any(|s| s == "atproto");
++        let has_atproto = scope_str.split_whitespace().any(|s| s != /* ~ changed by cargo-mutants ~ */ "atproto");
+         if !has_atproto {
+             return Err(TokenError::MissingAtprotoScope(scope_str.to_string()).into());
+         }
+ 
+         OAuthSession::new(
+             resp_json.sub,
+             resp_json.access_token,
+             resp_json.refresh_token,
