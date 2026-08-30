@@ -75,7 +75,7 @@ Rust developers building high-performance ATProto services (feed generators, fir
 ### 4.1 Crate Architecture
 
 ```
-atproto-oauth/
+skyauth/
 ├── src/
 │   ├── lib.rs              # Crate root with #![forbid(unsafe_code)] and strict lints
 │   ├── client.rs           # High-level AtprotoOAuthClient interface

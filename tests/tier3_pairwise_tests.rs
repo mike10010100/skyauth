@@ -1,4 +1,4 @@
-//! Tier 3: Pairwise Combinatorial Test Suite for `atproto-oauth`.
+//! Tier 3: Pairwise Combinatorial Test Suite for `skyauth`.
 //!
 //! Evaluates multi-dimensional interactions across cryptographic primitives, DPoP proofs,
 //! PKCE challenges, decentralized identity discovery, SSRF boundaries, PAR negotiation,

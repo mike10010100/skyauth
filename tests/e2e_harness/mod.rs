@@ -1,4 +1,4 @@
-//! Comprehensive E2E mock testing harness for `atproto-oauth`.
+//! Comprehensive E2E mock testing harness for `skyauth`.
 //!
 //! Provides opaque-box mock network servers (DNS, PLC Directory, PDS, Authorization Server)
 //! with fault injection, RFC test vectors, and standard ATProto test scenarios.

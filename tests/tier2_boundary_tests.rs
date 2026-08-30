@@ -1,4 +1,4 @@
-//! Tier 2: Boundary and Corner Case Test Suite for `atproto-oauth`.
+//! Tier 2: Boundary and Corner Case Test Suite for `skyauth`.
 //!
 //! Tests edge cases, extreme inputs, boundary conditions, and error paths across all 25 features.
 //! Covers >= 5 distinct boundary test cases per feature (125+ tests total).

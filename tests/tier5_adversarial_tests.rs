@@ -1,4 +1,4 @@
-//! Tier 5: Adversarial Stress & Cryptographic Tampering Test Suite for `atproto-oauth`.
+//! Tier 5: Adversarial Stress & Cryptographic Tampering Test Suite for `skyauth`.
 //!
 //! Driven by empirical challengers to stress-test:
 //! 1. PKCE boundary conditions, ASCII character limits, and entropy bounds.

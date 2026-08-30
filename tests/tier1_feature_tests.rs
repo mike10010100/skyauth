@@ -1,4 +1,4 @@
-//! Tier 1: Comprehensive Feature Coverage Test Suite for `atproto-oauth`.
+//! Tier 1: Comprehensive Feature Coverage Test Suite for `skyauth`.
 //!
 //! Covers all 25 features defined in `PROJECT.md` with >= 5 distinct test cases per feature (125+ tests total).
 //! Derived purely from RFC 9449, RFC 9126, RFC 7636, RFC 8414, RFC 9728, and ATProto OAuth specifications.

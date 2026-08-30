@@ -1,8 +1,8 @@
-# `atproto-oauth` Test Infrastructure & Mock Harness Blueprint
+# `skyauth` Test Infrastructure & Mock Harness Blueprint
 
 ## Overview
 
-The `atproto-oauth` End-to-End (E2E) test infrastructure provides a fully hermetic, deterministic, opaque-box testing environment for validating decentralized OAuth 2.1 authentication workflows as specified in **RFC 9449 (DPoP)**, **RFC 9126 (PAR)**, **RFC 7636 (PKCE)**, **RFC 8414 (OAuth Server Metadata)**, **RFC 9728 (OAuth Protected Resource Metadata)**, and the **ATProto OAuth Specification**.
+The `skyauth` End-to-End (E2E) test infrastructure provides a fully hermetic, deterministic, opaque-box testing environment for validating decentralized OAuth 2.1 authentication workflows as specified in **RFC 9449 (DPoP)**, **RFC 9126 (PAR)**, **RFC 7636 (PKCE)**, **RFC 8414 (OAuth Server Metadata)**, **RFC 9728 (OAuth Protected Resource Metadata)**, and the **ATProto OAuth Specification**.
 
 The test harness operates strictly without external network dependencies, spinning up ephemeral in-memory mock services and Wiremock HTTP servers on loopback interfaces.
 

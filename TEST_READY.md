@@ -1,8 +1,8 @@
-# `atproto-oauth` Test Readiness & Verification Report
+# `skyauth` Test Readiness & Verification Report
 
 ## Executive Summary
 
-The complete, multi-tiered End-to-End (E2E) test suite for `atproto-oauth` has been designed, implemented, and verified. The test suite comprises **308 test cases** spanning four comprehensive testing tiers and unit/property suites, achieving **100% pass rate** across all 25 system features defined in `PROJECT.md` and `PRD.md`.
+The complete, multi-tiered End-to-End (E2E) test suite for `skyauth` has been designed, implemented, and verified. The test suite comprises **308 test cases** spanning four comprehensive testing tiers and unit/property suites, achieving **100% pass rate** across all 25 system features defined in `PROJECT.md` and `PRD.md`.
 
 All tests follow strict **opaque-box methodology**, deriving expectations directly from authoritative RFC specifications (**RFC 9449, RFC 9126, RFC 7636, RFC 8414, RFC 9728, RFC 7638, RFC 2104**) and standard ATProto OAuth specifications.
 

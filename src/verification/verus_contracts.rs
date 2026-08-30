@@ -5,19 +5,19 @@
 //!
 //! ## Theorems Proven via SMT Solver (Z3 / Verus)
 //!
-//! 1. [`theorem_single_use_state_consumption`]: Proves that an OAuth authorization state token
+//! 1. `theorem_single_use_state_consumption`: Proves that an OAuth authorization state token
 //!    can transition from `Uninitialized` -> `Pending` -> `Consumed` at most once across all possible
 //!    execution traces, and that once `Consumed` or `Expired`, all subsequent consumption attempts
 //!    strictly return `false` without modifying the state.
-//! 2. [`lemma_post_consumption_terminality`]: Proves that the `Consumed` state is terminal.
-//! 3. [`proof_rfc1918_10_restricted`], [`proof_rfc1918_172_restricted`], [`proof_rfc1918_192_restricted`]:
+//! 2. `lemma_post_consumption_terminality`: Proves that the `Consumed` state is terminal.
+//! 3. `proof_rfc1918_10_restricted`, `proof_rfc1918_172_restricted`, `proof_rfc1918_192_restricted`:
 //!    Proves that all private, loopback, cloud metadata (`169.254.169.254`), and CGNAT IP spaces
 //!    are unconditionally classified as restricted by the formal SSRF specification.
-//! 4. [`theorem_pkce_short_verifier_rejected`], [`theorem_pkce_long_verifier_rejected`],
-//!    [`theorem_pkce_valid_bounds_accepted`]: Proves that PKCE S256 code verifiers are accepted
+//! 4. `theorem_pkce_short_verifier_rejected`, `theorem_pkce_long_verifier_rejected`,
+//!    `theorem_pkce_valid_bounds_accepted`: Proves that PKCE S256 code verifiers are accepted
 //!    if and only if their length is strictly within $[43, 128]$ and all characters belong to
 //!    the unreserved ASCII character set.
-//! 5. [`theorem_constant_time_eq_soundness`]: Proves that constant-time slice equality holds
+//! 5. `theorem_constant_time_eq_soundness`: Proves that constant-time slice equality holds
 //!    if and only if lengths match and all byte elements are bitwise identical.
 
 pub use crate::verification::formal_models::*;

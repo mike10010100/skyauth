@@ -1,4 +1,4 @@
-//! Adversarial Stress and Challenge Tests for Milestone 3 (atproto-oauth-rs).
+//! Adversarial Stress and Challenge Tests for Milestone 3 (skyauth).
 //!
 //! Focus areas:
 //! 1. Refresh token rotation: single-use enforcement, multi-hop invalidation, replay detection, concurrent rotation races.

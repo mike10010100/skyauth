@@ -1,4 +1,4 @@
-//! Tier 4: Realistic Workload and End-to-End Workflow Test Suite for `atproto-oauth`.
+//! Tier 4: Realistic Workload and End-to-End Workflow Test Suite for `skyauth`.
 //!
 //! Simulates realistic end-to-end user authentication lifecycles, multi-hop auto-nonce challenges,
 //! high-concurrency multi-user sessions, compromised token replay defense, and daemon key rotation.
