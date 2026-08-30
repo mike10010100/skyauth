@@ -15,7 +15,7 @@ use crate::identity::{IdentityResolver, IdentityResolverBuilder};
 use crate::par::{build_authorization_url, execute_par_request, ParParameters};
 use crate::pkce::PkcePair;
 use crate::session::OAuthSession;
-use crate::ssrf::SsrfFilter;
+use crate::ssrf::{read_bounded_body, SsrfFilter};
 
 /// Client configuration and metadata for an AT Protocol OAuth client.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,17 +258,11 @@ impl AtprotoOAuthClientBuilder {
 
         let nonce_cache = self.nonce_cache.unwrap_or_default();
 
-        let http_client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(15))
-            .build()
-            .map_err(|e| TokenError::Http(e.to_string()))?;
-
         Ok(AtprotoOAuthClient {
             metadata,
             resolver,
             nonce_cache,
             ssrf_filter: self.ssrf_filter,
-            http_client,
         })
     }
 }
@@ -283,7 +277,6 @@ pub struct AtprotoOAuthClient {
     resolver: IdentityResolver,
     nonce_cache: DPoPNonceCache,
     ssrf_filter: SsrfFilter,
-    http_client: reqwest::Client,
 }
 
 impl AtprotoOAuthClient {
@@ -295,17 +288,12 @@ impl AtprotoOAuthClient {
         let resolver = IdentityResolverBuilder::new()
             .ssrf_filter(ssrf_filter)
             .build();
-        let http_client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(15))
-            .build()
-            .unwrap_or_default();
 
         Self {
             metadata,
             resolver,
             nonce_cache: DPoPNonceCache::new(),
             ssrf_filter,
-            http_client,
         }
     }
 
@@ -627,8 +615,10 @@ impl AtprotoOAuthClient {
             ))
         })?;
 
-        self.ssrf_filter
-            .validate_url(&parsed_url)
+        let (client, _pinned_addr, host_header) = self
+            .ssrf_filter
+            .build_pinned_client(&parsed_url)
+            .await
             .map_err(TokenError::from)?;
 
         let server_origin = parsed_url.origin().ascii_serialization();
@@ -638,9 +628,9 @@ impl AtprotoOAuthClient {
         let proof =
             dpop_key.create_proof("POST", token_endpoint, initial_nonce.as_deref(), None)?;
 
-        let resp = self
-            .http_client
+        let resp = client
             .post(token_endpoint)
+            .header(reqwest::header::HOST, host_header.clone())
             .header("content-type", "application/x-www-form-urlencoded")
             .header("accept", "application/json")
             .header("dpop", proof)
@@ -660,11 +650,20 @@ impl AtprotoOAuthClient {
 
         let status = resp.status();
 
+        // Disallow redirects on token endpoints (RFC 6749)
+        if status.is_redirection() {
+            return Err(TokenError::RequestFailed {
+                status: status.as_u16(),
+                error: "invalid_request".to_string(),
+                description: Some("Redirects are not permitted for token endpoints".to_string()),
+            }
+            .into());
+        }
+
         // Check for use_dpop_nonce error challenge
         if status == reqwest::StatusCode::BAD_REQUEST || status == reqwest::StatusCode::UNAUTHORIZED
         {
-            let resp_bytes = resp
-                .bytes()
+            let resp_bytes = read_bounded_body(resp, 1_048_576)
                 .await
                 .map_err(|e| TokenError::Http(e.to_string()))?;
 
@@ -690,9 +689,15 @@ impl AtprotoOAuthClient {
                 let retry_proof =
                     dpop_key.create_proof("POST", token_endpoint, Some(&fresh_nonce), None)?;
 
-                let retry_resp = self
-                    .http_client
+                let (retry_client, _retry_pinned_addr, retry_host_header) = self
+                    .ssrf_filter
+                    .build_pinned_client(&parsed_url)
+                    .await
+                    .map_err(TokenError::from)?;
+
+                let retry_resp = retry_client
                     .post(token_endpoint)
+                    .header(reqwest::header::HOST, retry_host_header)
                     .header("content-type", "application/x-www-form-urlencoded")
                     .header("accept", "application/json")
                     .header("dpop", retry_proof)
@@ -711,9 +716,20 @@ impl AtprotoOAuthClient {
                 }
 
                 let retry_status = retry_resp.status();
+
+                if retry_status.is_redirection() {
+                    return Err(TokenError::RequestFailed {
+                        status: retry_status.as_u16(),
+                        error: "invalid_request".to_string(),
+                        description: Some(
+                            "Redirects are not permitted for token endpoints".to_string(),
+                        ),
+                    }
+                    .into());
+                }
+
                 if retry_status.is_success() {
-                    let bytes = retry_resp
-                        .bytes()
+                    let bytes = read_bounded_body(retry_resp, 1_048_576)
                         .await
                         .map_err(|e| TokenError::Http(e.to_string()))?;
                     let res: TokenResponse = serde_json::from_slice(&bytes)
@@ -721,8 +737,7 @@ impl AtprotoOAuthClient {
                     return Ok(res);
                 }
 
-                let err_bytes = retry_resp
-                    .bytes()
+                let err_bytes = read_bounded_body(retry_resp, 1_048_576)
                     .await
                     .map_err(|e| TokenError::Http(e.to_string()))?;
                 let err_json: Option<serde_json::Value> = serde_json::from_slice(&err_bytes).ok();
@@ -776,8 +791,7 @@ impl AtprotoOAuthClient {
         }
 
         if !status.is_success() {
-            let err_bytes = resp
-                .bytes()
+            let err_bytes = read_bounded_body(resp, 1_048_576)
                 .await
                 .map_err(|e| TokenError::Http(e.to_string()))?;
             let err_json: Option<serde_json::Value> = serde_json::from_slice(&err_bytes).ok();
@@ -801,8 +815,7 @@ impl AtprotoOAuthClient {
             .into());
         }
 
-        let bytes = resp
-            .bytes()
+        let bytes = read_bounded_body(resp, 1_048_576)
             .await
             .map_err(|e| TokenError::Http(e.to_string()))?;
         let res: TokenResponse =
@@ -825,8 +838,10 @@ impl AtprotoOAuthClient {
         let parsed_url = Url::parse(url_str)
             .map_err(|e| TokenError::Http(format!("Invalid URL '{url_str}': {e}")))?;
 
-        self.ssrf_filter
-            .validate_url(&parsed_url)
+        let (client, _pinned_addr, host_header) = self
+            .ssrf_filter
+            .build_pinned_client(&parsed_url)
+            .await
             .map_err(TokenError::from)?;
 
         let server_origin = parsed_url.origin().ascii_serialization();
@@ -842,9 +857,9 @@ impl AtprotoOAuthClient {
             ath.as_deref(),
         )?;
 
-        let mut req = self
-            .http_client
+        let mut req = client
             .request(method.clone(), url_str)
+            .header(reqwest::header::HOST, host_header.clone())
             .header("dpop", proof);
 
         if let Some(token) = access_token {
@@ -895,9 +910,15 @@ impl AtprotoOAuthClient {
                     ath.as_deref(),
                 )?;
 
-                let mut retry_req = self
-                    .http_client
+                let (retry_client, _retry_pinned_addr, retry_host_header) = self
+                    .ssrf_filter
+                    .build_pinned_client(&parsed_url)
+                    .await
+                    .map_err(TokenError::from)?;
+
+                let mut retry_req = retry_client
                     .request(method, url_str)
+                    .header(reqwest::header::HOST, retry_host_header)
                     .header("dpop", retry_proof);
 
                 if let Some(token) = access_token {

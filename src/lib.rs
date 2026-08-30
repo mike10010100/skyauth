@@ -130,7 +130,8 @@ pub use par::{build_authorization_url, execute_par_request, ParParameters, ParRe
 pub use pkce::{derive_s256_challenge, validate_verifier, verify_pkce, PkceMethod, PkcePair};
 pub use session::OAuthSession;
 pub use ssrf::{
-    is_blocked_hostname, is_restricted_ip, is_restricted_ipv4, is_restricted_ipv6, SsrfFilter,
+    is_blocked_hostname, is_restricted_ip, is_restricted_ipv4, is_restricted_ipv6,
+    read_bounded_body, SsrfFilter,
 };
 pub use store::{OAuthStateStore, OAuthStore, DEFAULT_STATE_TTL, NUM_SHARDS};
 pub use verification::{

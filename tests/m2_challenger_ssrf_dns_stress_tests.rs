@@ -832,3 +832,93 @@ async fn test_auth_server_discovery_malicious_as_endpoint_blocked() {
         "Auth server fetch to 127.0.0.1 must fail SSRF check"
     );
 }
+
+#[tokio::test]
+async fn test_par_endpoint_ssrf_and_redirect_blocked() {
+    use skyauth::dpop::{DPoPKey, DPoPNonceCache};
+    use skyauth::par::{execute_par_request, ParParameters};
+
+    let filter = SsrfFilter::new(false); // strict mode
+    let key = DPoPKey::generate();
+    let cache = DPoPNonceCache::new();
+    let params = ParParameters::new(
+        "https://app.example.com/client.json",
+        "https://app.example.com/callback",
+        "atproto",
+        "state123",
+        "challenge_xyz",
+    );
+
+    // 1. Private IP PAR endpoint is blocked
+    let res_ssrf = execute_par_request(
+        &filter,
+        "https://169.254.169.254/par",
+        &params,
+        &key,
+        &cache,
+    )
+    .await;
+    assert!(res_ssrf.is_err());
+
+    // 2. PAR endpoint returning 307 redirect is rejected
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/par_redirect"))
+        .respond_with(
+            ResponseTemplate::new(307).insert_header("Location", "http://169.254.169.254/latest/"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let local_filter = SsrfFilter::new(true);
+    let par_url = format!("{}/par_redirect", mock_server.uri());
+    let res_redir = execute_par_request(&local_filter, &par_url, &params, &key, &cache).await;
+    assert!(
+        res_redir.is_err(),
+        "PAR request to endpoint returning 307 must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn test_token_endpoint_ssrf_and_redirect_blocked() {
+    use skyauth::client::AtprotoOAuthClient;
+    use skyauth::session::OAuthSession;
+
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token_redirect"))
+        .respond_with(
+            ResponseTemplate::new(308).insert_header("Location", "http://169.254.169.254/leak/"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let client = AtprotoOAuthClient::builder()
+        .client_metadata(skyauth::client::OAuthClientMetadata::new(
+            "https://app.example.com/client.json",
+            "https://app.example.com/callback",
+        ))
+        .allow_insecure_localhost(true)
+        .build()
+        .unwrap();
+
+    let mut session = OAuthSession::new(
+        "did:plc:test1234",
+        "access_token_456",
+        Some("refresh_token_secret_123".to_string()),
+        "DPoP",
+        Some("atproto".to_string()),
+        Some(3600),
+        skyauth::dpop::DPoPKey::generate(),
+        Some("https://pds.example.com".to_string()),
+        Some("https://auth.example.com".to_string()),
+        Some(format!("{}/token_redirect", mock_server.uri())),
+    )
+    .unwrap();
+
+    let res = client.refresh_session(&mut session).await;
+    assert!(
+        res.is_err(),
+        "Token refresh request returning 308 redirect must be rejected"
+    );
+}

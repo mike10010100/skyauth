@@ -271,8 +271,51 @@ impl SsrfFilter {
         Ok((addrs[0], host_header))
     }
 
+    /// Validates a URL and resolves all DNS records, ensuring no resolved IP is restricted.
+    ///
+    /// # Errors
+    /// Returns [`SsrfError`] if the URL syntax is invalid, DNS resolution fails, or any resolved IP is restricted.
+    pub async fn validate_url_and_dns(&self, url: &Url) -> Result<SocketAddr, SsrfError> {
+        let (pinned_addr, _host_header) = self.resolve_and_pin(url).await?;
+        Ok(pinned_addr)
+    }
+
+    /// Constructs an SSRF-safe, DNS-pinned [`reqwest::Client`] configured with disabled automatic redirects
+    /// (`Policy::none()`), connection/request timeouts, and socket pinning to a verified IP address.
+    ///
+    /// # Security Invariants
+    /// 1. Resolves all DNS records for the URL's hostname.
+    /// 2. Validates *every* resolved IP address against restricted and private ranges.
+    /// 3. Binds the HTTP client connection directly to the verified socket address via `.resolve()`.
+    /// 4. Disables automatic redirects to prevent credential / token forwarding.
+    ///
+    /// # Errors
+    /// Returns [`SsrfError`] if DNS resolution fails, an IP is blocked, or the client cannot be built.
+    pub async fn build_pinned_client(
+        &self,
+        url: &Url,
+    ) -> Result<(reqwest::Client, SocketAddr, String), SsrfError> {
+        let (pinned_addr, host_header) = self.resolve_and_pin(url).await?;
+        let host_only = url.host_str().unwrap_or("localhost");
+
+        let mut builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(10));
+
+        if host_only.parse::<IpAddr>().is_err() {
+            builder = builder.resolve(host_only, pinned_addr);
+        }
+
+        let client = builder
+            .build()
+            .map_err(|e| SsrfError::Http(e.to_string()))?;
+
+        Ok((client, pinned_addr, host_header))
+    }
+
     /// Executes a safe HTTP GET request with SSRF validation, DNS pinning, redirect depth bounding,
-    /// and response size limits.
+    /// and streaming response size limits.
     ///
     /// # Arguments
     /// - `url_str`: The target URL string.
@@ -284,21 +327,8 @@ impl SsrfFilter {
         let mut redirects_remaining = 3usize;
 
         loop {
-            let (pinned_addr, host_header) = self.resolve_and_pin(&current_url).await?;
-
-            let host_only = current_url.host_str().unwrap_or("localhost");
-            let mut builder = reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .timeout(std::time::Duration::from_secs(10));
-
-            if host_only.parse::<IpAddr>().is_err() {
-                builder = builder.resolve(host_only, pinned_addr);
-            }
-
-            let client = builder
-                .build()
-                .map_err(|e| SsrfError::Http(e.to_string()))?;
+            let (client, _pinned_addr, host_header) =
+                self.build_pinned_client(&current_url).await?;
 
             let resp = client
                 .get(current_url.as_str())
@@ -337,19 +367,8 @@ impl SsrfFilter {
                 ));
             }
 
-            let bytes = resp
-                .bytes()
-                .await
-                .map_err(|e| SsrfError::Http(e.to_string()))?;
-
-            if bytes.len() > max_bytes {
-                return Err(SsrfError::ResponseTooLarge {
-                    max_bytes,
-                    actual_bytes: bytes.len(),
-                });
-            }
-
-            return Ok(bytes.to_vec());
+            let bytes = read_bounded_body(resp, max_bytes).await?;
+            return Ok(bytes);
         }
     }
 
@@ -366,6 +385,46 @@ impl SsrfFilter {
         let bytes = self.safe_get(url_str, max_bytes).await?;
         serde_json::from_slice(&bytes).map_err(|e| SsrfError::Json(e.to_string()))
     }
+}
+
+/// Reads an HTTP response body incrementally chunk-by-chunk, aborting immediately
+/// if the accumulated size exceeds `max_bytes` to prevent memory exhaustion / DoS.
+///
+/// # Errors
+/// - Returns [`SsrfError::ResponseTooLarge`] as soon as `max_bytes` is exceeded.
+/// - Returns [`SsrfError::Http`] if a network stream error occurs.
+pub async fn read_bounded_body(
+    mut resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, SsrfError> {
+    if let Some(content_length) = resp.content_length() {
+        if content_length > max_bytes as u64 {
+            return Err(SsrfError::ResponseTooLarge {
+                max_bytes,
+                actual_bytes: content_length as usize,
+            });
+        }
+    }
+
+    let mut buffer = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| SsrfError::Http(e.to_string()))?
+    {
+        if buffer.len().saturating_add(chunk.len()) > max_bytes {
+            let actual = resp
+                .content_length()
+                .map(|cl| cl as usize)
+                .unwrap_or_else(|| buffer.len().saturating_add(chunk.len()));
+            return Err(SsrfError::ResponseTooLarge {
+                max_bytes,
+                actual_bytes: actual,
+            });
+        }
+        buffer.extend_from_slice(&chunk);
+    }
+    Ok(buffer)
 }
 
 #[cfg(test)]

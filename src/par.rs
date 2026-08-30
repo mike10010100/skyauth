@@ -10,7 +10,7 @@ use url::Url;
 
 use crate::dpop::{extract_dpop_nonce, DPoPKey, DPoPNonceCache};
 use crate::error::{AtprotoOAuthError, DPoPError, ParError};
-use crate::ssrf::SsrfFilter;
+use crate::ssrf::{read_bounded_body, SsrfFilter};
 
 /// Parameters for an RFC 9126 Pushed Authorization Request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,8 +174,9 @@ pub async fn execute_par_request(
         ParError::InvalidEndpoint(format!("Invalid PAR endpoint URL '{par_endpoint}': {e}"))
     })?;
 
-    ssrf_filter
-        .validate_url(&parsed_url)
+    let (client, _pinned_addr, host_header) = ssrf_filter
+        .build_pinned_client(&parsed_url)
+        .await
         .map_err(ParError::from)?;
 
     let server_origin = parsed_url.origin().ascii_serialization();
@@ -186,13 +187,9 @@ pub async fn execute_par_request(
     let initial_nonce = nonce_cache.get_nonce(&server_origin);
     let proof = dpop_key.create_proof("POST", par_endpoint, initial_nonce.as_deref(), None)?;
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| ParError::Http(e.to_string()))?;
-
     let resp = client
         .post(par_endpoint)
+        .header(reqwest::header::HOST, host_header.clone())
         .header("content-type", "application/x-www-form-urlencoded")
         .header("accept", "application/json")
         .header("dpop", proof)
@@ -212,10 +209,19 @@ pub async fn execute_par_request(
 
     let status = resp.status();
 
+    // Disallow redirects on PAR endpoints (RFC 9126)
+    if status.is_redirection() {
+        return Err(ParError::RequestFailed {
+            status: status.as_u16(),
+            error: "invalid_request".to_string(),
+            description: Some("Redirects are not permitted for PAR endpoints".to_string()),
+        }
+        .into());
+    }
+
     // 2. Check for use_dpop_nonce error challenge
     if status == reqwest::StatusCode::BAD_REQUEST || status == reqwest::StatusCode::UNAUTHORIZED {
-        let resp_bytes = resp
-            .bytes()
+        let resp_bytes = read_bounded_body(resp, 1_048_576)
             .await
             .map_err(|e| ParError::Http(e.to_string()))?;
 
@@ -242,8 +248,14 @@ pub async fn execute_par_request(
             let retry_proof =
                 dpop_key.create_proof("POST", par_endpoint, Some(&fresh_nonce), None)?;
 
-            let retry_resp = client
+            let (retry_client, _retry_pinned_addr, retry_host_header) = ssrf_filter
+                .build_pinned_client(&parsed_url)
+                .await
+                .map_err(ParError::from)?;
+
+            let retry_resp = retry_client
                 .post(par_endpoint)
+                .header(reqwest::header::HOST, retry_host_header)
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("accept", "application/json")
                 .header("dpop", retry_proof)
@@ -262,17 +274,25 @@ pub async fn execute_par_request(
             }
 
             let retry_status = retry_resp.status();
+
+            if retry_status.is_redirection() {
+                return Err(ParError::RequestFailed {
+                    status: retry_status.as_u16(),
+                    error: "invalid_request".to_string(),
+                    description: Some("Redirects are not permitted for PAR endpoints".to_string()),
+                }
+                .into());
+            }
+
             if retry_status.is_success() {
-                let body_bytes = retry_resp
-                    .bytes()
+                let body_bytes = read_bounded_body(retry_resp, 1_048_576)
                     .await
                     .map_err(|e| ParError::Http(e.to_string()))?;
                 return parse_par_response(&body_bytes);
             }
 
             // If retry also fails
-            let err_bytes = retry_resp
-                .bytes()
+            let err_bytes = read_bounded_body(retry_resp, 1_048_576)
                 .await
                 .map_err(|e| ParError::Http(e.to_string()))?;
             let err_json: Option<serde_json::Value> = serde_json::from_slice(&err_bytes).ok();
@@ -327,8 +347,7 @@ pub async fn execute_par_request(
     }
 
     if !status.is_success() {
-        let err_bytes = resp
-            .bytes()
+        let err_bytes = read_bounded_body(resp, 1_048_576)
             .await
             .map_err(|e| ParError::Http(e.to_string()))?;
         let err_json: Option<serde_json::Value> = serde_json::from_slice(&err_bytes).ok();
@@ -352,8 +371,7 @@ pub async fn execute_par_request(
         .into());
     }
 
-    let body_bytes = resp
-        .bytes()
+    let body_bytes = read_bounded_body(resp, 1_048_576)
         .await
         .map_err(|e| ParError::Http(e.to_string()))?;
     parse_par_response(&body_bytes)
