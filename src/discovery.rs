@@ -15,7 +15,7 @@ use url::Url;
 
 use crate::error::{DiscoveryError, SsrfError};
 use crate::identity::IdentityResolver;
-use crate::ssrf::SsrfFilter;
+use crate::ssrf::{SsrfFilter, MAX_OAUTH_RESPONSE_BYTES};
 
 /// RFC 9728 OAuth 2.0 Protected Resource Metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,7 +109,11 @@ pub struct DiscoveredAuthEndpoints {
 /// Checks whether a URL is an origin-only URL (scheme + host + optional port, no path/query/fragment).
 fn is_origin_only(url_str: &str) -> bool {
     if let Ok(parsed) = Url::parse(url_str) {
-        if parsed.scheme() != "https" && parsed.scheme() != "http" {
+        let scheme = parsed.scheme();
+        let host = parsed.host_str().unwrap_or("");
+        let is_loopback =
+            host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]";
+        if scheme != "https" && !(scheme == "http" && is_loopback) {
             return false;
         }
         if !parsed.username().is_empty() || parsed.password().is_some() {
@@ -149,7 +153,7 @@ pub async fn fetch_protected_resource_metadata(
     );
 
     let meta: ProtectedResourceMetadata = ssrf_filter
-        .safe_get_json(&url, 1_048_576)
+        .safe_get_json(&url, MAX_OAUTH_RESPONSE_BYTES)
         .await
         .map_err(|e| match e {
             SsrfError::HttpStatus(status, msg) => DiscoveryError::ProtectedResourceDiscoveryFailed(
@@ -215,14 +219,14 @@ pub async fn fetch_auth_server_metadata(
     let primary_url = format!("{base}/.well-known/oauth-authorization-server");
 
     let meta: AuthorizationServerMetadata = match ssrf_filter
-        .safe_get_json(&primary_url, 1_048_576)
+        .safe_get_json(&primary_url, MAX_OAUTH_RESPONSE_BYTES)
         .await
     {
         Ok(m) => m,
         Err(SsrfError::HttpStatus(404, _)) => {
             let fallback_url = format!("{base}/.well-known/openid-configuration");
             ssrf_filter
-                .safe_get_json(&fallback_url, 1_048_576)
+                .safe_get_json(&fallback_url, MAX_OAUTH_RESPONSE_BYTES)
                 .await
                 .map_err(|e| match e {
                     SsrfError::HttpStatus(status, msg) => {
@@ -347,12 +351,16 @@ pub fn validate_auth_server_capabilities(
         });
     }
 
-    // 8. Token Endpoint Auth Methods Supported Enforcement (must include "none" and/or "private_key_jwt")
-    if !meta
+    // 8. Token Endpoint Auth Methods Supported Enforcement (ATProto profile mandates both "none" and "private_key_jwt")
+    let has_none = meta
         .token_endpoint_auth_methods_supported
         .iter()
-        .any(|m| m == "none" || m == "private_key_jwt")
-    {
+        .any(|m| m == "none");
+    let has_private_key_jwt = meta
+        .token_endpoint_auth_methods_supported
+        .iter()
+        .any(|m| m == "private_key_jwt");
+    if !has_none || !has_private_key_jwt {
         return Err(DiscoveryError::MissingTokenAuthMethod(
             auth_server_url.to_string(),
         ));
@@ -480,7 +488,10 @@ mod tests {
                 "authorization_code".to_string(),
                 "refresh_token".to_string(),
             ],
-            token_endpoint_auth_methods_supported: vec!["none".to_string()],
+            token_endpoint_auth_methods_supported: vec![
+                "none".to_string(),
+                "private_key_jwt".to_string(),
+            ],
             token_endpoint_auth_signing_alg_values_supported: vec!["ES256".to_string()],
             scopes_supported: vec!["atproto".to_string()],
             authorization_response_iss_parameter_supported: true,

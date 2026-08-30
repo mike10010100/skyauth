@@ -1,10 +1,10 @@
 name: CI & Formal Verification
 
-on:
+'on':
   push:
-    branches: [ "main", "fix/**" ]
+    branches: ["main", "fix/**"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
@@ -17,6 +17,8 @@ jobs:
   version-bump-check:
     name: Enforce Semantic Version Bump & CHANGELOG on PRs
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     if: github.event_name == 'pull_request'
     steps:
       - name: Checkout repository with full history

@@ -19,7 +19,8 @@ use serde::{Deserialize, Serialize};
 
 use super::AuthenticatedUser;
 use crate::crypto::{
-    base64url_decode, base64url_encode, constant_time_eq, sign_p256_raw, verify_p256_raw,
+    base64url_decode, base64url_encode, constant_time_eq, sha256_digest, sign_p256_raw,
+    verify_p256_raw,
 };
 use crate::error::{CryptoError, IntegrationError, TokenError};
 use crate::session::OAuthSession;
@@ -329,11 +330,30 @@ impl JwtAccessTokenValidator {
             )));
         }
 
+        let typ = header_val.get("typ").and_then(|v| v.as_str());
+        if !typ
+            .map(|t| {
+                t.eq_ignore_ascii_case("at+jwt") || t.eq_ignore_ascii_case("application/at+jwt")
+            })
+            .unwrap_or(false)
+        {
+            return Err(IntegrationError::Token(TokenError::MalformedToken(
+                format!(
+                    "Unsupported typ in access token: expected 'at+jwt', got {:?}",
+                    typ
+                ),
+            )));
+        }
+
         let kid = header_val.get("kid").and_then(|v| v.as_str());
 
         // 2. Resolve verifying key
         let verifying_key = if let Some(k) = kid {
-            self.trusted_keys.get(k).or(self.default_key.as_ref())
+            match self.trusted_keys.get(k) {
+                Some(key) => Some(key),
+                None if self.trusted_keys.is_empty() => self.default_key.as_ref(),
+                None => None,
+            }
         } else if let Some(ref default_k) = self.default_key {
             Some(default_k)
         } else if self.trusted_keys.len() == 1 {
@@ -380,6 +400,9 @@ impl JwtAccessTokenValidator {
         }
 
         // 6. Check Issuer
+        if claims.iss.trim().is_empty() {
+            return Err(IntegrationError::Token(TokenError::MissingIssuer));
+        }
         if let Some(ref exp_iss) = self.expected_issuer {
             let norm_expected = exp_iss.trim().trim_end_matches('/');
             let norm_actual = claims.iss.trim().trim_end_matches('/');
@@ -392,6 +415,9 @@ impl JwtAccessTokenValidator {
         }
 
         // 7. Check Audience
+        if claims.aud.is_none() {
+            return Err(IntegrationError::Token(TokenError::MissingAudience));
+        }
         if let Some(ref exp_aud) = self.expected_audience {
             let matches_aud = match &claims.aud {
                 Some(serde_json::Value::String(s)) => s == exp_aud,
@@ -474,7 +500,7 @@ impl AccessTokenValidator for JwtAccessTokenValidator {
 /// In-memory registry for active access tokens and sessions with DPoP binding enforcement.
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryTokenValidator {
-    tokens: Arc<RwLock<HashMap<String, RegisteredToken>>>,
+    tokens: Arc<RwLock<HashMap<[u8; 32], RegisteredToken>>>,
 }
 
 /// Metadata for a registered access token in [`InMemoryTokenValidator`].
@@ -502,15 +528,16 @@ impl InMemoryTokenValidator {
     /// Registers an active token along with its subject DID and bound DPoP key thumbprint.
     pub fn register_token(
         &self,
-        token: impl Into<String>,
+        token: impl AsRef<[u8]>,
         did: impl Into<String>,
         dpop_thumbprint: impl Into<String>,
         scope: Option<String>,
         expires_at: Option<SystemTime>,
     ) {
+        let digest = sha256_digest(token.as_ref());
         let mut guard = self.tokens.write();
         guard.insert(
-            token.into(),
+            digest,
             RegisteredToken {
                 did: did.into(),
                 dpop_thumbprint: dpop_thumbprint.into(),
@@ -533,8 +560,9 @@ impl InMemoryTokenValidator {
 
     /// Revokes/removes a registered token.
     pub fn revoke_token(&self, token: &str) {
+        let digest = sha256_digest(token.as_bytes());
         let mut guard = self.tokens.write();
-        guard.remove(token);
+        guard.remove(&digest);
     }
 
     /// Validates a presented token synchronously.
@@ -547,8 +575,9 @@ impl InMemoryTokenValidator {
         token: &str,
         dpop_thumbprint: &str,
     ) -> Result<AuthenticatedUser, IntegrationError> {
+        let digest = sha256_digest(token.as_bytes());
         let guard = self.tokens.read();
-        let entry = guard.get(token).ok_or_else(|| {
+        let entry = guard.get(&digest).ok_or_else(|| {
             IntegrationError::Token(TokenError::MalformedToken(
                 "Access token is not registered or has been revoked".to_string(),
             ))
@@ -664,7 +693,8 @@ mod tests {
             "did:plc:alice123",
             now + 3600,
             alice_dpop_key.jwk_thumbprint(),
-        );
+        )
+        .with_audience("https://pds.example.com");
 
         let jwt = claims.sign_jwt(&auth_key, None).unwrap();
 
@@ -690,7 +720,8 @@ mod tests {
 
         // Expired 1000s ago
         let claims =
-            JwtAccessTokenClaims::new("https://auth.example.com", "did:plc:alice123", 1000, &jkt);
+            JwtAccessTokenClaims::new("https://auth.example.com", "did:plc:alice123", 1000, &jkt)
+                .with_audience("https://pds.example.com");
 
         let jwt = claims.sign_jwt(&auth_key, None).unwrap();
         let validator = JwtAccessTokenValidator::new()
@@ -721,7 +752,8 @@ mod tests {
             "did:plc:alice123",
             now + 3600,
             &jkt,
-        );
+        )
+        .with_audience("https://pds.example.com");
 
         let jwt = claims.sign_jwt(&auth_key, None).unwrap();
         let validator = JwtAccessTokenValidator::new()

@@ -87,6 +87,7 @@
 //! let client = AtprotoOAuthClient::builder()
 //!     .metadata(metadata)
 //!     .state_store(state_store)
+//!     .state_ttl(Duration::from_secs(300))
 //!     .build()?;
 //!
 //! // Initiate login with user handle or DID
@@ -164,7 +165,7 @@ pub use pkce::{derive_s256_challenge, validate_verifier, verify_pkce, PkceMethod
 pub use session::OAuthSession;
 pub use ssrf::{
     is_blocked_hostname, is_restricted_ip, is_restricted_ipv4, is_restricted_ipv6,
-    read_bounded_body, SsrfFilter,
+    read_bounded_body, SsrfFilter, MAX_OAUTH_RESPONSE_BYTES,
 };
 pub use store::{OAuthStateStore, OAuthStore, DEFAULT_STATE_TTL, NUM_SHARDS};
 pub use verification::{

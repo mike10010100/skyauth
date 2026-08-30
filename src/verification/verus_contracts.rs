@@ -29,7 +29,6 @@ use vstd::prelude::*;
 // fallback macro so that Verus proof syntax is recognized without compilation errors.
 #[cfg(not(verus))]
 #[doc(hidden)]
-#[macro_export]
 macro_rules! verus {
     ($($tt:tt)*) => {};
 }
@@ -42,16 +41,21 @@ verus! {
 
 /// Formal mathematical specification of IPv4 restricted address spaces.
 pub open spec fn spec_is_restricted_ipv4(o0: u8, o1: u8, o2: u8, o3: u8) -> bool {
-    o0 == 10
-    || (o0 == 172 && o1 >= 16 && o1 <= 31)
-    || (o0 == 192 && o1 == 168)
+    o0 == 0
+    || o0 == 10
+    || (o0 == 100 && (o1 & 0xC0) == 64)
     || o0 == 127
     || (o0 == 169 && o1 == 254)
-    || (o0 == 100 && o1 >= 64 && o1 <= 127)
+    || (o0 == 172 && o1 >= 16 && o1 <= 31)
+    || (o0 == 192 && o1 == 0 && o2 == 0)
+    || (o0 == 192 && o1 == 0 && o2 == 2)
+    || (o0 == 192 && o1 == 88 && o2 == 99)
+    || (o0 == 192 && o1 == 168)
+    || (o0 == 198 && (o1 == 18 || o1 == 19))
+    || (o0 == 198 && o1 == 51 && o2 == 100)
+    || (o0 == 203 && o1 == 0 && o2 == 113)
     || (o0 >= 224 && o0 <= 239)
     || o0 >= 240
-    || (o0 == 0 && o1 == 0 && o2 == 0 && o3 == 0)
-    || (o0 == 255 && o1 == 255 && o2 == 255 && o3 == 255)
 }
 
 /// Theorem: Any IPv4 address in 10.0.0.0/8 is strictly restricted.

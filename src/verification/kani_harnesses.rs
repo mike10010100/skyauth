@@ -576,6 +576,7 @@ pub fn proof_constant_time_eq_soundness() {
 /// - `custom_port_preserved_success`: Custom port 8443 is preserved.
 /// - `uppercase_host_lowercased_success`: Uppercase host `EXAMPLE.COM` is lowercased.
 /// - `invalid_scheme_rejected`: Non-http(s) scheme (e.g. `ftp://`) is rejected.
+#[cfg_attr(kani, kani::proof)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 pub fn proof_dpop_htu_normalization_invariants() {
     #[cfg(kani)]
@@ -588,6 +589,8 @@ pub fn proof_dpop_htu_normalization_invariants() {
             let is_default_port = (is_https && port == 443) || (!is_https && port == 80);
             if is_default_port {
                 assert!(!res.contains(&format!(":{port}")));
+            } else if port != 0 {
+                assert!(res.contains(&format!(":{port}")));
             }
             assert!(DPoPHtuFormalSpec::spec_valid_scheme(&res));
             assert!(DPoPHtuFormalSpec::spec_has_no_query(&res));

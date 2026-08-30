@@ -528,7 +528,10 @@ fn test_auth_server_capability_violations() {
             "authorization_code".to_string(),
             "refresh_token".to_string(),
         ],
-        token_endpoint_auth_methods_supported: vec!["none".to_string()],
+        token_endpoint_auth_methods_supported: vec![
+            "none".to_string(),
+            "private_key_jwt".to_string(),
+        ],
         token_endpoint_auth_signing_alg_values_supported: vec![],
         scopes_supported: vec!["atproto".to_string()],
         authorization_response_iss_parameter_supported: true,

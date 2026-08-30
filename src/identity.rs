@@ -12,7 +12,7 @@ use std::sync::Arc;
 use url::Url;
 
 use crate::error::{IdentityError, SsrfError};
-use crate::ssrf::SsrfFilter;
+use crate::ssrf::{SsrfFilter, MAX_OAUTH_RESPONSE_BYTES};
 
 /// Standard PLC directory endpoint.
 pub const DEFAULT_PLC_DIRECTORY: &str = "https://plc.directory";
@@ -561,7 +561,7 @@ impl IdentityResolver {
 
         let doc: DidDocument = self
             .ssrf_filter
-            .safe_get_json(&url, 1_048_576)
+            .safe_get_json(&url, MAX_OAUTH_RESPONSE_BYTES)
             .await
             .map_err(|e| match e {
                 SsrfError::HttpStatus(404, _) => IdentityError::DidNotFound(did.to_string()),
@@ -603,7 +603,7 @@ impl IdentityResolver {
 
         let doc: DidDocument = self
             .ssrf_filter
-            .safe_get_json(&url, 1_048_576)
+            .safe_get_json(&url, MAX_OAUTH_RESPONSE_BYTES)
             .await
             .map_err(|e| match e {
                 SsrfError::HttpStatus(404, _) => IdentityError::DidNotFound(did.to_string()),

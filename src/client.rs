@@ -16,7 +16,7 @@ use crate::identity::{IdentityResolver, IdentityResolverBuilder};
 use crate::par::{build_authorization_url, execute_par_request, ParParameters};
 use crate::pkce::PkcePair;
 use crate::session::OAuthSession;
-use crate::ssrf::{read_bounded_body, SsrfFilter};
+use crate::ssrf::{read_bounded_body, SsrfFilter, MAX_OAUTH_RESPONSE_BYTES};
 use crate::store::{OAuthStateStore, OAuthStore, DEFAULT_STATE_TTL};
 
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -90,6 +90,12 @@ impl OAuthClientMetadata {
 ///
 /// Saved into the OAuth state store prior to user agent redirection, and consumed
 /// atomically upon callback receipt to guarantee single-use CSRF/replay protection.
+///
+/// # Memory Zeroization & Partial Moves
+/// This struct implements [`Drop`] and [`ZeroizeOnDrop`] to securely zeroize sensitive
+/// cryptographic credentials (`code_verifier`) from memory on destruction. As a consequence
+/// of Rust's [`Drop`] safety rules (E0509), partial moves of individual fields out of
+/// this struct are prohibited; callers should borrow fields or clone the structure.
 #[derive(Clone)]
 pub struct StoredStateEntry {
     /// The random state identifier token.
@@ -824,7 +830,7 @@ impl AtprotoOAuthClient {
         // Check for use_dpop_nonce error challenge
         if status == reqwest::StatusCode::BAD_REQUEST || status == reqwest::StatusCode::UNAUTHORIZED
         {
-            let resp_bytes = read_bounded_body(resp, 1_048_576)
+            let resp_bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
                 .await
                 .map_err(|e| TokenError::Http(e.to_string()))?;
 
@@ -890,7 +896,7 @@ impl AtprotoOAuthClient {
                 }
 
                 if retry_status.is_success() {
-                    let bytes = read_bounded_body(retry_resp, 1_048_576)
+                    let bytes = read_bounded_body(retry_resp, MAX_OAUTH_RESPONSE_BYTES)
                         .await
                         .map_err(|e| TokenError::Http(e.to_string()))?;
                     let res: TokenResponse = serde_json::from_slice(&bytes)
@@ -898,7 +904,7 @@ impl AtprotoOAuthClient {
                     return Ok(res);
                 }
 
-                let err_bytes = read_bounded_body(retry_resp, 1_048_576)
+                let err_bytes = read_bounded_body(retry_resp, MAX_OAUTH_RESPONSE_BYTES)
                     .await
                     .map_err(|e| TokenError::Http(e.to_string()))?;
                 let err_json: Option<serde_json::Value> = serde_json::from_slice(&err_bytes).ok();
@@ -952,7 +958,7 @@ impl AtprotoOAuthClient {
         }
 
         if !status.is_success() {
-            let err_bytes = read_bounded_body(resp, 1_048_576)
+            let err_bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
                 .await
                 .map_err(|e| TokenError::Http(e.to_string()))?;
             let err_json: Option<serde_json::Value> = serde_json::from_slice(&err_bytes).ok();
@@ -976,7 +982,7 @@ impl AtprotoOAuthClient {
             .into());
         }
 
-        let bytes = read_bounded_body(resp, 1_048_576)
+        let bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
             .await
             .map_err(|e| TokenError::Http(e.to_string()))?;
         let res: TokenResponse =

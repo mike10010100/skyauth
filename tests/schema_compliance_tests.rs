@@ -150,7 +150,10 @@ fn test_rfc8414_rust_struct_serialization_compliance() {
             "authorization_code".to_string(),
             "refresh_token".to_string(),
         ],
-        token_endpoint_auth_methods_supported: vec!["none".to_string()],
+        token_endpoint_auth_methods_supported: vec![
+            "none".to_string(),
+            "private_key_jwt".to_string(),
+        ],
         token_endpoint_auth_signing_alg_values_supported: vec!["ES256".to_string()],
         scopes_supported: vec!["atproto".to_string()],
         authorization_response_iss_parameter_supported: true,

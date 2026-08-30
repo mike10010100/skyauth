@@ -82,10 +82,18 @@ format_json() {
     local file="$1"
     if command -v jq &>/dev/null; then
         local tmp="${file}.tmp.$$"
-        jq . "${file}" > "${tmp}" && mv "${tmp}" "${file}"
+        if jq . "${file}" > "${tmp}" 2>/dev/null; then
+            mv "${tmp}" "${file}"
+        else
+            rm -f "${tmp}"
+        fi
     elif command -v python3 &>/dev/null; then
         local tmp="${file}.tmp.$$"
-        python3 -m json.tool "${file}" > "${tmp}" && mv "${tmp}" "${file}"
+        if python3 -m json.tool "${file}" > "${tmp}" 2>/dev/null; then
+            mv "${tmp}" "${file}"
+        else
+            rm -f "${tmp}"
+        fi
     fi
 }
 
@@ -189,15 +197,26 @@ verify_specs() {
         local url="$1"
         local rel_path="$2"
         local full_path="${ROOT_DIR}/${rel_path}"
-        local tmp_upstream="/tmp/upstream_spec_$$.json"
+        local tmp_upstream
+        tmp_upstream=$(mktemp 2>/dev/null || mktemp -t 'upstream_spec')
 
         if ${curl_cmd} "${url}" -o "${tmp_upstream}" 2>/dev/null; then
             if validate_json "${tmp_upstream}"; then
                 format_json "${tmp_upstream}"
+                
+                # Format local copy canonical representation for comparison
+                local tmp_local
+                tmp_local=$(mktemp 2>/dev/null || mktemp -t 'local_spec')
+                cp "${full_path}" "${tmp_local}"
+                if validate_json "${tmp_local}"; then
+                    format_json "${tmp_local}"
+                fi
+
                 local upstream_csum
                 local local_csum
                 upstream_csum=$(calc_sha256 "${tmp_upstream}")
-                local_csum=$(calc_sha256 "${full_path}")
+                local_csum=$(calc_sha256 "${tmp_local}")
+                rm -f "${tmp_local}"
 
                 if [[ "${upstream_csum}" != "${local_csum}" ]]; then
                     log_error "UPSTREAM DRIFT DETECTED in ${rel_path}!"

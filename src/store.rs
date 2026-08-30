@@ -135,7 +135,6 @@ impl std::fmt::Debug for OAuthStateStore {
         f.debug_struct("OAuthStateStore")
             .field("num_shards", &NUM_SHARDS)
             .field("default_ttl", &self.default_ttl)
-            .field("total_entries", &self.total_entries())
             .finish()
     }
 }

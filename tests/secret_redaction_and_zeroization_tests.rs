@@ -102,8 +102,14 @@ fn test_oauth_client_metadata_debug_redacts_client_secret() {
 fn test_dpop_key_debug_redacts_private_scalar() {
     let key = DPoPKey::generate();
     let debug_output = format!("{key:?}");
+    let raw_bytes = key.to_bytes();
+    let raw_b64 = key.to_bytes_b64();
+    let raw_hex = hex::encode(raw_bytes);
+
     assert!(debug_output.contains("DPoPKey"));
     assert!(debug_output.contains("thumbprint"));
+    assert!(!debug_output.contains(&raw_b64));
+    assert!(!debug_output.contains(&raw_hex));
     assert!(!debug_output.contains("signing_key"));
     assert!(!debug_output.contains("private_key"));
 }

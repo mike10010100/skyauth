@@ -10,7 +10,7 @@ use url::Url;
 
 use crate::dpop::{extract_dpop_nonce, DPoPKey, DPoPNonceCache};
 use crate::error::{AtprotoOAuthError, DPoPError, ParError};
-use crate::ssrf::{read_bounded_body, SsrfFilter};
+use crate::ssrf::{read_bounded_body, SsrfFilter, MAX_OAUTH_RESPONSE_BYTES};
 
 /// Parameters for an RFC 9126 Pushed Authorization Request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,7 +221,7 @@ pub async fn execute_par_request(
 
     // 2. Check for use_dpop_nonce error challenge
     if status == reqwest::StatusCode::BAD_REQUEST || status == reqwest::StatusCode::UNAUTHORIZED {
-        let resp_bytes = read_bounded_body(resp, 1_048_576)
+        let resp_bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
             .await
             .map_err(|e| ParError::Http(e.to_string()))?;
 
@@ -285,14 +285,14 @@ pub async fn execute_par_request(
             }
 
             if retry_status.is_success() {
-                let body_bytes = read_bounded_body(retry_resp, 1_048_576)
+                let body_bytes = read_bounded_body(retry_resp, MAX_OAUTH_RESPONSE_BYTES)
                     .await
                     .map_err(|e| ParError::Http(e.to_string()))?;
                 return parse_par_response(&body_bytes);
             }
 
             // If retry also fails
-            let err_bytes = read_bounded_body(retry_resp, 1_048_576)
+            let err_bytes = read_bounded_body(retry_resp, MAX_OAUTH_RESPONSE_BYTES)
                 .await
                 .map_err(|e| ParError::Http(e.to_string()))?;
             let err_json: Option<serde_json::Value> = serde_json::from_slice(&err_bytes).ok();
@@ -347,7 +347,7 @@ pub async fn execute_par_request(
     }
 
     if !status.is_success() {
-        let err_bytes = read_bounded_body(resp, 1_048_576)
+        let err_bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
             .await
             .map_err(|e| ParError::Http(e.to_string()))?;
         let err_json: Option<serde_json::Value> = serde_json::from_slice(&err_bytes).ok();
@@ -371,7 +371,7 @@ pub async fn execute_par_request(
         .into());
     }
 
-    let body_bytes = read_bounded_body(resp, 1_048_576)
+    let body_bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
         .await
         .map_err(|e| ParError::Http(e.to_string()))?;
     parse_par_response(&body_bytes)

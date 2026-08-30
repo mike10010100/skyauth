@@ -96,6 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = AtprotoOAuthClient::builder()
         .metadata(metadata)
         .state_store(state_store)
+        .state_ttl(Duration::from_secs(300))
         .build()?;
 
     // 3. Initiate login with handle or DID (pushes PAR, generates PKCE, registers state)
@@ -143,7 +144,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 bash scripts/sync_specs.sh --verify
 
 # Run Kani bounded model checking proof harnesses
-cargo kani --harness "proof_*"
+cargo kani --harness proof_
 
 # Run Verus deductive formal verification proofs
 bash scripts/run_verus.sh

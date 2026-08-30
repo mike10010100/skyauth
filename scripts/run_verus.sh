@@ -30,30 +30,68 @@ if command -v verus &>/dev/null; then
 elif [[ -x "${HOME}/.verus/verus" ]]; then
     VERUS_CMD="${HOME}/.verus/verus"
 else
-    log_info "Verus compiler not detected in PATH. Downloading Verus standalone release..."
+    log_info "Verus compiler not detected in PATH. Downloading Verus release..."
     VERUS_DIR="${HOME}/.verus"
     mkdir -p "${VERUS_DIR}"
     
     OS_TYPE="$(uname -s | tr '[:upper:]' '[:lower:]')"
     ARCH_TYPE="$(uname -m)"
     
-    if [[ "${OS_TYPE}" == "darwin" ]]; then
-        TARGET="apple-darwin"
-    else
-        TARGET="unknown-linux-gnu"
+    case "${OS_TYPE}" in
+        darwin)
+            PLATFORM="macos"
+            ;;
+        linux)
+            PLATFORM="linux"
+            ;;
+        *)
+            PLATFORM="linux"
+            ;;
+    esac
+
+    case "${ARCH_TYPE}" in
+        x86_64|amd64)
+            ARCH="x86"
+            ;;
+        arm64|aarch64)
+            ARCH="arm64"
+            ;;
+        *)
+            ARCH="x86"
+            ;;
+    esac
+    
+    TMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t 'verus_download')
+    trap 'rm -rf "${TMP_DIR}"' EXIT
+    
+    VERUS_ZIP="${TMP_DIR}/verus.zip"
+    VERUS_URL="https://github.com/verus-lang/verus/releases/latest/download/verus-${ARCH}-${PLATFORM}.zip"
+    
+    log_info "Downloading Verus from ${VERUS_URL}..."
+    if curl -fsSL --connect-timeout 8 --max-time 60 "${VERUS_URL}" -o "${VERUS_ZIP}" 2>/dev/null && [[ -s "${VERUS_ZIP}" ]]; then
+        unzip -q "${VERUS_ZIP}" -d "${TMP_DIR}/extracted" 2>/dev/null || unzip -q "${VERUS_ZIP}" -d "${VERUS_DIR}"
+        if [[ -d "${TMP_DIR}/extracted" ]]; then
+            find "${TMP_DIR}/extracted" -type f -name "verus" -exec cp {} "${VERUS_DIR}/verus" \;
+            find "${TMP_DIR}/extracted" -type f -name "z3" -exec cp {} "${VERUS_DIR}/z3" \; 2>/dev/null || true
+            find "${TMP_DIR}/extracted" -name "*vstd*" -exec cp -r {} "${VERUS_DIR}/" \; 2>/dev/null || true
+        fi
+        chmod +x "${VERUS_DIR}/verus" 2>/dev/null || true
+        if [[ -x "${VERUS_DIR}/verus" ]]; then
+            VERUS_CMD="${VERUS_DIR}/verus"
+            log_success "Verus downloaded and configured at ${VERUS_CMD}"
+        fi
     fi
-    
-    VERUS_URL="https://github.com/verus-lang/verus/releases/latest/download/verus-${ARCH_TYPE}-${TARGET}.tar.gz"
-    
-    if curl -fsSL --connect-timeout 5 --max-time 30 "${VERUS_URL}" -o "/tmp/verus.tar.gz" 2>/dev/null; then
-        tar -xzf "/tmp/verus.tar.gz" -C "${VERUS_DIR}" --strip-components=1 2>/dev/null || tar -xzf "/tmp/verus.tar.gz" -C "${VERUS_DIR}"
-        VERUS_CMD="${VERUS_DIR}/verus"
-        log_success "Verus downloaded and configured at ${VERUS_CMD}"
-    else
-        log_warn "Could not automatically download Verus. Ensure 'verus' is installed: https://github.com/verus-lang/verus"
-        log_info "Verifying syntax and structural contracts via pure Rust model checker..."
-        cargo test --test formal_verification_tests
-        exit 0
+
+    if [[ -z "${VERUS_CMD:-}" ]]; then
+        if [[ "${ALLOW_VERUS_FALLBACK:-0}" == "1" ]]; then
+            log_warn "Verus not found. ALLOW_VERUS_FALLBACK=1 enabled; verifying executable model contracts..."
+            cargo test --test formal_verification_tests
+            exit 0
+        else
+            log_error "Verus deductive verifier is required but could not be downloaded/executed."
+            log_error "Install Verus from https://github.com/verus-lang/verus or set ALLOW_VERUS_FALLBACK=1 for offline development."
+            exit 1
+        fi
     fi
 fi
 

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ahash::AHasher;
+use ahash::RandomState;
 use p256::ecdsa::{SigningKey, VerifyingKey};
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey, LineEnding};
 use parking_lot::RwLock;
@@ -757,6 +757,7 @@ impl DPoPNonceCache {
 #[derive(Debug, Clone)]
 pub struct DPoPReplayCache {
     shards: Arc<[RwLock<HashMap<String, u64>>; NUM_SHARDS]>,
+    hasher: RandomState,
 }
 
 impl Default for DPoPReplayCache {
@@ -772,14 +773,15 @@ impl DPoPReplayCache {
         let shards = std::array::from_fn(|_| RwLock::new(HashMap::new()));
         Self {
             shards: Arc::new(shards),
+            hasher: RandomState::new(),
         }
     }
 
     #[inline]
     fn shard_for(&self, key: &str) -> &RwLock<HashMap<String, u64>> {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = AHasher::default();
-        key.hash(&mut hasher);
+        use std::hash::{BuildHasher, Hasher};
+        let mut hasher = self.hasher.build_hasher();
+        hasher.write(key.as_bytes());
         let idx = (hasher.finish() as usize) % NUM_SHARDS;
         &self.shards[idx]
     }
@@ -811,9 +813,20 @@ impl DPoPReplayCache {
             }
         }
 
-        // 2. Perform lazy pruning if shard has grown large (> 1024 entries)
-        if guard.len() > 1024 {
+        // 2. Perform lazy pruning if shard has grown large (> 512 entries)
+        if guard.len() > 512 {
             guard.retain(|_, &mut exp| exp > now_secs);
+        }
+
+        // Strict shard capacity cap to prevent memory exhaustion
+        if guard.len() >= 2048 {
+            if let Some(oldest_key) = guard
+                .iter()
+                .min_by_key(|(_, &exp)| exp)
+                .map(|(k, _)| k.clone())
+            {
+                guard.remove(&oldest_key);
+            }
         }
 
         // 3. Record the consumed JTI
@@ -920,6 +933,11 @@ impl DPoPServerNonceSource for InMemoryServerNonceSource {
         let mut guard = self.nonces.write();
         if guard.len() > 1024 {
             guard.retain(|_, &mut e| e > now_secs);
+        }
+        if guard.len() >= 4096 {
+            if let Some(oldest_key) = guard.iter().min_by_key(|(_, &e)| e).map(|(k, _)| k.clone()) {
+                guard.remove(&oldest_key);
+            }
         }
         guard.insert(nonce.clone(), exp);
         nonce

@@ -17,6 +17,12 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 ///
 /// Holds the authenticated user's DID, DPoP-bound access token, single-use refresh token,
 /// session expiration time, and cryptographic [`DPoPKey`] for signing subsequent XRPC requests.
+///
+/// # Memory Zeroization & Partial Moves
+/// This struct implements [`Drop`] and [`ZeroizeOnDrop`] to securely zeroize sensitive
+/// credentials (`access_token` and `refresh_token`) from memory on destruction. As a consequence
+/// of Rust's [`Drop`] safety rules (E0509), partial moves of individual fields out of
+/// this struct are prohibited; callers should borrow fields or clone the structure.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OAuthSession {
     /// Authenticated subject DID (e.g. `did:plc:...`).

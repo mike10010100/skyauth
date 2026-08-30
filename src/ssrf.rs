@@ -387,6 +387,9 @@ impl SsrfFilter {
     }
 }
 
+/// Maximum allowable HTTP response body size for OAuth and discovery endpoints (1 MiB = 1,048,576 bytes).
+pub const MAX_OAUTH_RESPONSE_BYTES: usize = 1_048_576;
+
 /// Reads an HTTP response body incrementally chunk-by-chunk, aborting immediately
 /// if the accumulated size exceeds `max_bytes` to prevent memory exhaustion / DoS.
 ///
