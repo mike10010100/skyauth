@@ -83,8 +83,6 @@ jobs:
 
       - name: Run Kani Proofs
         uses: model-checking/kani-github-action@v1
-        with:
-          args: "--harness proof_*"
 
   verus:
     name: Verus Deductive Verification
