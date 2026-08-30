@@ -5,6 +5,7 @@
 //! RFC 9449 DPoP-bound code exchange, single-use refresh token rotation, and transparent
 //! auto-nonce negotiation loops.
 
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use url::Url;
 
@@ -16,6 +17,7 @@ use crate::par::{build_authorization_url, execute_par_request, ParParameters};
 use crate::pkce::PkcePair;
 use crate::session::OAuthSession;
 use crate::ssrf::{read_bounded_body, SsrfFilter};
+use crate::store::{OAuthStateStore, OAuthStore, DEFAULT_STATE_TTL};
 
 /// Client configuration and metadata for an AT Protocol OAuth client.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,8 +110,8 @@ impl StoredStateEntry {
         let now = SystemTime::now();
         let max_age = Duration::from_secs(self.expires_in_secs);
         now.duration_since(self.created_at)
-            .map(|elapsed| elapsed > max_age)
-            .unwrap_or(false)
+            .unwrap_or(Duration::ZERO)
+            > max_age
     }
 }
 
@@ -185,6 +187,8 @@ pub struct AtprotoOAuthClientBuilder {
     resolver: Option<IdentityResolver>,
     nonce_cache: Option<DPoPNonceCache>,
     ssrf_filter: SsrfFilter,
+    state_store: Option<Arc<OAuthStateStore>>,
+    state_ttl: Duration,
 }
 
 impl Default for AtprotoOAuthClientBuilder {
@@ -202,6 +206,8 @@ impl AtprotoOAuthClientBuilder {
             resolver: None,
             nonce_cache: None,
             ssrf_filter: SsrfFilter::default(),
+            state_store: None,
+            state_ttl: DEFAULT_STATE_TTL,
         }
     }
 
@@ -240,6 +246,20 @@ impl AtprotoOAuthClientBuilder {
         self
     }
 
+    /// Sets the shared OAuth state store for session tracking and single-use consumption.
+    #[must_use]
+    pub fn state_store(mut self, store: Arc<OAuthStateStore>) -> Self {
+        self.state_store = Some(store);
+        self
+    }
+
+    /// Sets the TTL duration for authorization state entries.
+    #[must_use]
+    pub fn state_ttl(mut self, ttl: Duration) -> Self {
+        self.state_ttl = ttl;
+        self
+    }
+
     /// Builds the configured [`AtprotoOAuthClient`].
     ///
     /// # Panics / Errors
@@ -257,12 +277,17 @@ impl AtprotoOAuthClientBuilder {
         });
 
         let nonce_cache = self.nonce_cache.unwrap_or_default();
+        let state_store = self
+            .state_store
+            .unwrap_or_else(|| Arc::new(OAuthStateStore::new(self.state_ttl)));
 
         Ok(AtprotoOAuthClient {
             metadata,
             resolver,
             nonce_cache,
             ssrf_filter: self.ssrf_filter,
+            state_store,
+            state_ttl: self.state_ttl,
         })
     }
 }
@@ -277,6 +302,8 @@ pub struct AtprotoOAuthClient {
     resolver: IdentityResolver,
     nonce_cache: DPoPNonceCache,
     ssrf_filter: SsrfFilter,
+    state_store: Arc<OAuthStateStore>,
+    state_ttl: Duration,
 }
 
 impl AtprotoOAuthClient {
@@ -294,6 +321,8 @@ impl AtprotoOAuthClient {
             resolver,
             nonce_cache: DPoPNonceCache::new(),
             ssrf_filter,
+            state_store: Arc::new(OAuthStateStore::default()),
+            state_ttl: DEFAULT_STATE_TTL,
         }
     }
 
@@ -325,6 +354,18 @@ impl AtprotoOAuthClient {
     #[must_use]
     pub const fn ssrf_filter(&self) -> &SsrfFilter {
         &self.ssrf_filter
+    }
+
+    /// Returns a reference to the internal OAuth state store.
+    #[must_use]
+    pub fn state_store(&self) -> &Arc<OAuthStateStore> {
+        &self.state_store
+    }
+
+    /// Returns the configured state TTL duration.
+    #[must_use]
+    pub const fn state_ttl(&self) -> Duration {
+        self.state_ttl
     }
 
     /// Initiates an OAuth login flow for a user handle or DID.
@@ -416,12 +457,17 @@ impl AtprotoOAuthClient {
             token_endpoint: endpoints.token_endpoint,
             scopes: scope.to_string(),
             created_at: SystemTime::now(),
-            expires_in_secs: 300,
+            expires_in_secs: self.state_ttl.as_secs(),
         };
+
+        // 8. Atomically persist state into internal store with TTL
+        self.state_store
+            .insert_state(state.clone(), stored_state.clone(), self.state_ttl)
+            .await?;
 
         let auth_req = AuthorizationRequest {
             authorization_url: auth_url,
-            state,
+            state: state.clone(),
             request_uri: par_res.request_uri,
             expires_in: par_res.expires_in,
             stored_state: stored_state.clone(),
@@ -506,13 +552,46 @@ impl AtprotoOAuthClient {
         )
     }
 
-    /// Handles an OAuth redirect callback by verifying `state` and `iss` before code exchange.
+    /// Handles an OAuth redirect callback by atomically consuming the stored state from the
+    /// internal [`OAuthStateStore`], verifying expiration and RFC 9207 `iss`, and exchanging the code.
+    ///
+    /// # Single-Use Guarantee
+    /// The state token is atomically consumed from storage on first attempt. Replaying the callback
+    /// or presenting an expired state will immediately return an error.
     ///
     /// # Errors
-    /// - Returns [`TokenError::InvalidState`] if callback `state` does not match `state_entry.state`.
+    /// - Returns [`TokenError::InvalidState`] if the state token is not found, has expired, or was already consumed.
+    /// - Returns [`TokenError::StateExpired`] if the stored state entry has expired.
+    /// - Returns [`TokenError::MissingCallbackIssuer`] if callback `iss` is missing.
+    /// - Returns [`TokenError::IssuerMismatch`] if callback `iss` does not match the stored issuer.
+    pub async fn handle_callback(
+        &self,
+        callback_params: &CallbackParams,
+    ) -> Result<OAuthSession, AtprotoOAuthError> {
+        let state_entry = self
+            .state_store
+            .take_state(&callback_params.state)
+            .await?
+            .ok_or_else(|| {
+                TokenError::InvalidState(format!(
+                    "State token '{}' not found, expired, or already consumed",
+                    callback_params.state
+                ))
+            })?;
+
+        self.handle_callback_with_entry(callback_params, &state_entry)
+            .await
+    }
+
+    /// Handles an OAuth redirect callback with an explicitly provided [`StoredStateEntry`],
+    /// enforcing expiration and RFC 9207 `iss` verification before code exchange.
+    ///
+    /// # Errors
+    /// - Returns [`TokenError::InvalidState`] if `callback_params.state` does not match `state_entry.state`.
+    /// - Returns [`TokenError::StateExpired`] if `state_entry` has expired.
     /// - Returns [`TokenError::MissingCallbackIssuer`] if callback `iss` is missing.
     /// - Returns [`TokenError::IssuerMismatch`] if callback `iss` does not match `state_entry.issuer`.
-    pub async fn handle_callback(
+    pub async fn handle_callback_with_entry(
         &self,
         callback_params: &CallbackParams,
         state_entry: &StoredStateEntry,
@@ -523,6 +602,10 @@ impl AtprotoOAuthClient {
                 callback_params.state, state_entry.state
             ))
             .into());
+        }
+
+        if state_entry.is_expired() {
+            return Err(TokenError::StateExpired.into());
         }
 
         let callback_iss = callback_params
@@ -1026,6 +1109,41 @@ mod tests {
         };
 
         assert!(entry.is_expired());
+    }
+
+    #[tokio::test]
+    async fn test_handle_callback_with_expired_entry_rejected() {
+        let client = AtprotoOAuthClient::builder()
+            .client_metadata(OAuthClientMetadata::new(
+                "https://app.example.com/client.json",
+                "https://app.example.com/callback",
+            ))
+            .allow_insecure_localhost(true)
+            .build()
+            .unwrap();
+
+        let expired_entry = StoredStateEntry {
+            state: "state_exp".to_string(),
+            client_id: "https://app.example.com/client.json".to_string(),
+            code_verifier: "verifier123".to_string(),
+            dpop_key: DPoPKey::generate(),
+            issuer: "https://auth.example.com".to_string(),
+            did: Some("did:plc:alice".to_string()),
+            handle: Some("alice.bsky.social".to_string()),
+            redirect_uri: "https://app.example.com/callback".to_string(),
+            pds_endpoint: "https://pds.example.com".to_string(),
+            token_endpoint: "https://auth.example.com/oauth/token".to_string(),
+            scopes: "atproto".to_string(),
+            created_at: SystemTime::now() - Duration::from_secs(400),
+            expires_in_secs: 300,
+        };
+
+        let cb = CallbackParams::new("code123", "state_exp").with_iss("https://auth.example.com");
+        let err = client.handle_callback_with_entry(&cb, &expired_entry).await;
+        assert!(matches!(
+            err,
+            Err(AtprotoOAuthError::Token(TokenError::StateExpired))
+        ));
     }
 
     #[test]

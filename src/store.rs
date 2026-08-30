@@ -130,6 +130,16 @@ pub struct OAuthStateStore {
     default_ttl: Duration,
 }
 
+impl std::fmt::Debug for OAuthStateStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthStateStore")
+            .field("num_shards", &NUM_SHARDS)
+            .field("default_ttl", &self.default_ttl)
+            .field("total_entries", &self.total_entries())
+            .finish()
+    }
+}
+
 impl Default for OAuthStateStore {
     fn default() -> Self {
         Self::new(DEFAULT_STATE_TTL)

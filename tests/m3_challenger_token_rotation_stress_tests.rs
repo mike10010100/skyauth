@@ -696,7 +696,9 @@ async fn test_callback_state_swapping_under_concurrency() {
         let swapped_cb = CallbackParams::new("auth_code_123", &stored_states[other_idx].state)
             .with_iss("https://auth.example.com");
 
-        let err = client.handle_callback(&swapped_cb, &stored_states[i]).await;
+        let err = client
+            .handle_callback_with_entry(&swapped_cb, &stored_states[i])
+            .await;
         assert!(
             matches!(
                 err,
@@ -743,7 +745,7 @@ async fn test_callback_issuer_tampering_variants() {
 
     for bad_iss in invalid_issuers {
         let cb = CallbackParams::new("code_123", "valid_state_123").with_iss(bad_iss);
-        let err = client.handle_callback(&cb, &state_entry).await;
+        let err = client.handle_callback_with_entry(&cb, &state_entry).await;
         assert!(
             matches!(
                 err,
@@ -755,7 +757,9 @@ async fn test_callback_issuer_tampering_variants() {
 
     // Missing callback iss entirely (RFC 9207 mandatory)
     let missing_iss_cb = CallbackParams::new("code_123", "valid_state_123");
-    let err_missing_iss = client.handle_callback(&missing_iss_cb, &state_entry).await;
+    let err_missing_iss = client
+        .handle_callback_with_entry(&missing_iss_cb, &state_entry)
+        .await;
     assert!(
         matches!(
             err_missing_iss,
@@ -769,7 +773,7 @@ async fn test_callback_issuer_tampering_variants() {
     let trailing_slash_cb =
         CallbackParams::new("code_123", "valid_state_123").with_iss("https://auth.bsky.social/");
     let res = client
-        .handle_callback(&trailing_slash_cb, &state_entry)
+        .handle_callback_with_entry(&trailing_slash_cb, &state_entry)
         .await;
     assert!(
         !matches!(

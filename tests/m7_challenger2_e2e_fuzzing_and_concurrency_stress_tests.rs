@@ -498,7 +498,9 @@ async fn test_adv_concurrent_50_tasks_racing_exact_same_code_and_state() {
                 Some(entry) => {
                     let callback_params =
                         CallbackParams::new("authz-code-race-1", state_key).with_iss(&entry.issuer);
-                    let res = client_clone.handle_callback(&callback_params, &entry).await;
+                    let res = client_clone
+                        .handle_callback_with_entry(&callback_params, &entry)
+                        .await;
                     if res.is_ok() {
                         success_clone.fetch_add(1, Ordering::SeqCst);
                     }
@@ -555,7 +557,9 @@ async fn test_adv_concurrent_100_tasks_racing_with_corrupted_states() {
         handles.push(tokio::spawn(async move {
             let callback = CallbackParams::new("code-123", corrupted_state)
                 .with_iss("https://auth.example.com");
-            let res = client_clone.handle_callback(&callback, &entry_clone).await;
+            let res = client_clone
+                .handle_callback_with_entry(&callback, &entry_clone)
+                .await;
             assert!(res.is_err(), "Corrupted state must be rejected");
         }));
     }
@@ -613,7 +617,7 @@ async fn test_adv_code_replay_after_successful_exchange() {
     let consumed1 = store.take_state(state_key).await.unwrap();
     assert!(consumed1.is_some());
     let session = client
-        .handle_callback(
+        .handle_callback_with_entry(
             &CallbackParams::new("code-replay-test", state_key).with_iss(&mock_server.uri()),
             &consumed1.unwrap(),
         )

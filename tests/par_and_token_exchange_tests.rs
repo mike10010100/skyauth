@@ -125,21 +125,25 @@ async fn test_callback_handler_with_iss_and_state_validation() {
 
     let (_, stored_state) = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
 
-    // Valid callback with matching state and iss
+    // Valid callback with matching state and iss using integrated turnkey state store
     let valid_cb =
         CallbackParams::new("code_valid_123", &stored_state.state).with_iss(&env.auth_server.uri());
 
-    let session = client
-        .handle_callback(&valid_cb, &stored_state)
-        .await
-        .unwrap();
+    let session = client.handle_callback(&valid_cb).await.unwrap();
     assert_eq!(session.sub(), TEST_ALICE_DID);
+
+    // Single-use guarantee: Replaying consumed callback fails immediately
+    let err_replay = client.handle_callback(&valid_cb).await;
+    assert!(matches!(
+        err_replay,
+        Err(AtprotoOAuthError::Token(TokenError::InvalidState(_)))
+    ));
 
     // Mismatched state should fail
     let invalid_state_cb =
         CallbackParams::new("code_valid_123", "wrong_state_token").with_iss(&env.auth_server.uri());
     let err_state = client
-        .handle_callback(&invalid_state_cb, &stored_state)
+        .handle_callback_with_entry(&invalid_state_cb, &stored_state)
         .await;
     assert!(matches!(
         err_state,
@@ -149,7 +153,9 @@ async fn test_callback_handler_with_iss_and_state_validation() {
     // Mismatched issuer should fail
     let invalid_iss_cb = CallbackParams::new("code_valid_123", &stored_state.state)
         .with_iss("https://attacker-issuer.com");
-    let err_iss = client.handle_callback(&invalid_iss_cb, &stored_state).await;
+    let err_iss = client
+        .handle_callback_with_entry(&invalid_iss_cb, &stored_state)
+        .await;
     assert!(matches!(
         err_iss,
         Err(AtprotoOAuthError::Token(TokenError::IssuerMismatch { .. }))
