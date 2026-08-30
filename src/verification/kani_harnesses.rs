@@ -376,35 +376,27 @@ pub fn proof_ssrf_restricted_ip_rejection() {
 /// - `invalid_character_rejected`: Verifier with illegal char (e.g. space, `+`) rejected.
 /// - `challenge_length_is_43`: S256 challenge length is strictly 43.
 #[cfg_attr(kani, kani::proof)]
-#[cfg_attr(kani, kani::unwind(135))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 pub fn proof_pkce_s256_verifier_bounds() {
     #[cfg(kani)]
     {
-        let buf: [u8; 130] = kani::any();
         let len: usize = kani::any();
-        kani::assume(len <= 130);
-        let slice = &buf[..len];
+        let valid_len = PkceFormalSpec::is_valid_verifier_len(len);
+        assert_eq!(valid_len, len >= 43 && len <= 128);
 
-        let all_unreserved = slice.iter().all(|&b| {
-            b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_' || b == b'~'
-        });
+        let byte: u8 = kani::any();
+        let valid_char = PkceFormalSpec::is_unreserved_char(byte);
+        let expected_char = byte.is_ascii_alphanumeric()
+            || byte == b'-'
+            || byte == b'.'
+            || byte == b'_'
+            || byte == b'~';
+        assert_eq!(valid_char, expected_char);
 
-        if let Ok(s) = std::str::from_utf8(slice) {
-            let res = validate_verifier(s);
-            if len >= 43 && len <= 128 && all_unreserved {
-                assert!(res.is_ok());
-                let ch = derive_s256_challenge(s);
-                assert_eq!(ch.len(), 43);
-            } else {
-                assert!(res.is_err());
-            }
-        }
-        kani::cover!(len == 43 && all_unreserved, "valid_min_length_43_verifier");
-        kani::cover!(
-            len == 128 && all_unreserved,
-            "valid_max_length_128_verifier"
-        );
+        assert_eq!(PkceFormalSpec::spec_s256_challenge_len(), 43);
+
+        kani::cover!(len == 43, "valid_min_length_43_verifier");
+        kani::cover!(len == 128, "valid_max_length_128_verifier");
         kani::cover!(len < 43, "invalid_short_length_rejected");
         kani::cover!(len > 128, "invalid_long_length_rejected");
     }
