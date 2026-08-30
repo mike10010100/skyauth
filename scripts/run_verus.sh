@@ -99,13 +99,17 @@ fi
 
 log_info "Running Verus deductive formal verification on ${VERUS_FILE}..."
 if ! "${VERUS_CMD}" --crate-type=lib "${VERUS_FILE}" 2>/tmp/verus_err.log; then
-    VERUS_OUTPUT=$(cat /tmp/verus_err.log)
+    VERUS_OUTPUT=$(cat /tmp/verus_err.log | sed -e 's/\x1b\[[0-9;]*m//g' | tr -d '\r')
     echo "${VERUS_OUTPUT}" >&2
     if echo "${VERUS_OUTPUT}" | grep -q "rustup.*install" && command -v rustup &>/dev/null; then
-        REQUIRED_TOOLCHAIN=$(echo "${VERUS_OUTPUT}" | grep -o 'rustup \(toolchain \)\?install [^ ]*' | head -n 1 | awk '{print $NF}')
+        REQUIRED_TOOLCHAIN=$(echo "${VERUS_OUTPUT}" | grep -o 'rustup \(toolchain \)\?install [^ `]*' | head -n 1 | awk '{print $NF}' | tr -d '`')
         if [[ -n "${REQUIRED_TOOLCHAIN}" ]]; then
             log_info "Installing required Rust toolchain ${REQUIRED_TOOLCHAIN} for Verus..."
-            rustup toolchain install "${REQUIRED_TOOLCHAIN}" --profile minimal || true
+            rustup toolchain install "${REQUIRED_TOOLCHAIN}" --profile minimal || rustup install "${REQUIRED_TOOLCHAIN}" || true
+            VERSION_ONLY=$(echo "${REQUIRED_TOOLCHAIN}" | cut -d'-' -f1)
+            if [[ "${VERSION_ONLY}" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+                rustup toolchain install "${VERSION_ONLY}" --profile minimal || true
+            fi
             log_info "Retrying Verus verification..."
             "${VERUS_CMD}" --crate-type=lib "${VERUS_FILE}"
         else
