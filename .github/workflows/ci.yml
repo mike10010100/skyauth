@@ -10,6 +10,9 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
+permissions:
+  contents: read
+
 jobs:
   lint-and-format:
     name: Code Quality & Linting
@@ -81,7 +84,7 @@ jobs:
       - name: Run Kani Proofs
         uses: model-checking/kani-github-action@v1
         with:
-          args: "--enable-unstable --harness proof_*"
+          args: "--harness proof_*"
 
   verus:
     name: Verus Deductive Verification

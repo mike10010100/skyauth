@@ -1180,6 +1180,9 @@ mod tests {
         let source = InMemoryServerNonceSource::new(Duration::from_secs(60));
         let nonce = source.generate_nonce();
         assert!(source.verify_nonce(&nonce));
-        assert!(!source.verify_nonce("invalid-nonce-xyz"));
+        let mut raw = [0u8; 24];
+        rand::thread_rng().fill_bytes(&mut raw);
+        let unissued_nonce = base64url_encode(&raw);
+        assert!(!source.verify_nonce(&unissued_nonce));
     }
 }

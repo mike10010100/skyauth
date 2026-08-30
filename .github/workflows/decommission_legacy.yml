@@ -3,6 +3,9 @@ name: Decommission Legacy Package (atproto-oauth-rs)
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   decommission:
     name: Publish Deprecation Forwarder Stub & Yank v0.1.0
