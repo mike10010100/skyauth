@@ -256,12 +256,12 @@ where
             }
         };
 
-        let access_token = if let Some(token) = auth_header.strip_prefix("DPoP ") {
-            token.trim()
-        } else if let Some(token) = auth_header.strip_prefix("dpop ") {
-            token.trim()
-        } else {
-            return Box::pin(async { Ok(unauthorized_response("invalid_scheme", None, None)) });
+        // RFC 7235 § 2.1 / RFC 9449 § 7.1: the auth-scheme token is case-insensitive.
+        let access_token = match auth_header.split_once(' ') {
+            Some((scheme, cred)) if scheme.eq_ignore_ascii_case("DPoP") => cred.trim(),
+            _ => {
+                return Box::pin(async { Ok(unauthorized_response("invalid_scheme", None, None)) });
+            }
         };
 
         // 2. Extract DPoP proof header
@@ -712,6 +712,72 @@ mod tests {
 
         let resp = service.call(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let www_auth = resp
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .expect("401 must carry WWW-Authenticate header")
+            .to_str()
+            .unwrap();
+        assert!(
+            www_auth.contains("invalid_token"),
+            "expected cnf.jkt binding rejection (invalid_token), got: {www_auth}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tower_stolen_token_positive_control_with_own_proof() {
+        // Positive control: the identical token authenticates when presented with
+        // Alice's own DPoP key's proof, proving the previous rejection came from the
+        // cnf.jkt binding check rather than an unrelated validation failure.
+        let auth_key = SigningKey::random(&mut thread_rng());
+        let alice_key = DPoPKey::generate();
+        let alice_jkt = alice_key.jwk_thumbprint();
+
+        let claims = {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            JwtAccessTokenClaims::new(
+                "https://auth.example.com",
+                "did:plc:alice123",
+                now + 3600,
+                &alice_jkt,
+            )
+            .with_audience("https://pds.example.com")
+        };
+        let alice_token = claims.sign_jwt(&auth_key, None).unwrap();
+        let ath = compute_access_token_hash(&alice_token);
+
+        let uri = "https://pds.example.com/xrpc/app.bsky.actor.getProfile";
+        let alice_proof = alice_key
+            .create_proof("GET", uri, None, Some(&ath))
+            .unwrap();
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let token_validator = JwtAccessTokenValidator::new()
+            .with_verifying_key(*auth_key.verifying_key())
+            .with_expected_audience("https://pds.example.com");
+        let layer = OAuthAuthLayer::from_jwt_validator(verifier, token_validator);
+
+        let inner_service = service_fn(|req: Request<()>| async move {
+            let user = req.extensions().get::<AuthenticatedUser>().cloned();
+            assert!(user.is_some(), "positive control must authenticate");
+            Ok::<Response<String>, Infallible>(Response::new("OK".to_string()))
+        });
+
+        let mut service = layer.layer(inner_service);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {alice_token}"))
+            .header("DPoP", alice_proof)
+            .body(())
+            .unwrap();
+
+        let resp = service.call(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

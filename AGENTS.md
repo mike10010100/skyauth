@@ -101,3 +101,8 @@ Neither Verus nor Kani is preinstalled on a fresh machine. Both self-bootstrap:
 If `cargo kani` cannot be run in an offline/CI-restricted environment, fall back to the
 executable formal-model tests (`cargo test --test formal_verification_tests`) and **explicitly
 state in the handoff report that the Kani gate could not run** — never silently skip it.
+
+The same policy applies to the Verus gate: `scripts/run_verus.sh` exits non-zero unless Verus is
+installed, or the environment variable `ALLOW_VERUS_FALLBACK=1` is set to run only the executable
+model tests. Offline fallback for Verus requires the same explicit disclosure in the handoff
+report — never silently skip it either.

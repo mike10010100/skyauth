@@ -203,7 +203,7 @@ pub proof fn lemma_post_consumption_terminality(
     any_tick: nat,
 )
     requires
-        matches!(s_consumed.status, VerusStateStatus::Consumed { .. }),
+        s_consumed.status matches VerusStateStatus::Consumed { .. },
     ensures
         ({
             let (s_next, taken) = s_consumed.take_state(any_tick);
@@ -264,22 +264,95 @@ pub proof fn theorem_pkce_valid_bounds_accepted(len: nat)
 // SECTION 4: Constant-Time Slice Equality Soundness Theorem
 // =========================================================================
 
-/// Specification of slice equality.
-pub open spec fn spec_slices_equal(len_a: nat, len_b: nat, content_equal: bool) -> bool {
-    len_a == len_b && content_equal
+/// Specification of slice equality over symbolic octet tuples.
+pub open spec fn spec_slices_equal(a: (u8, u8), b: (u8, u8)) -> bool {
+    a.0 == b.0 && a.1 == b.1
 }
 
-/// Theorem: Slice equality holds if and only if lengths and byte elements match.
-pub proof fn theorem_constant_time_eq_soundness(len_a: nat, len_b: nat, content_equal: bool)
-    ensures spec_slices_equal(len_a, len_b, content_equal) == (len_a == len_b && content_equal)
-{
+/// XOR/accumulator evaluation model mirroring `constant_time_eq`'s structure:
+/// fold the per-byte XOR differences with bitwise OR, compare with zero.
+pub open spec fn spec_constant_time_diff(a: (u8, u8), b: (u8, u8)) -> u8 {
+    (a.0 ^ b.0) | (a.1 ^ b.1)
 }
 
-/// Theorem: Mismatched lengths strictly evaluate to unequal.
-pub proof fn theorem_constant_time_eq_mismatched_length(len_a: nat, len_b: nat, content_equal: bool)
-    requires len_a != len_b
-    ensures !spec_slices_equal(len_a, len_b, content_equal)
+/// Fundamental XOR fact: a ^ b == 0 if and only if a == b (bit-by-bit).
+proof fn lemma_xor_zero_iff_eq(a: u8, b: u8)
+    ensures (a ^ b) == 0 <==> a == b
 {
+    assert((a ^ b) == 0 <==> a == b) by(bit_vector);
+}
+
+/// OR of two values is zero if and only if both are zero.
+proof fn lemma_or_zero(a: u8, b: u8)
+    ensures (a | b) == 0 <==> (a == 0 && b == 0)
+{
+    assert((a | b) == 0 <==> (a == 0 && b == 0)) by(bit_vector);
+}
+
+/// If the left operand of a bitwise OR is non-zero, the result is non-zero.
+proof fn lemma_or_nonzero_left(a: u8, b: u8)
+    requires a != 0
+    ensures (a | b) != 0
+{
+    assert((a | b) == 0 <==> (a == 0 && b == 0)) by(bit_vector);
+}
+
+/// Theorem (soundness, non-vacuous): the XOR/accumulator evaluation reports
+/// equality if and only if element-wise equality holds. This is the property
+/// real slice-based `constant_time_eq` claims to implement; here it is proven
+/// over the symbolic two-octet model using bit-level XOR/OR lemmas.
+pub proof fn theorem_constant_time_eq_soundness(a: (u8, u8), b: (u8, u8))
+    ensures spec_constant_time_diff(a, b) == 0 <==> spec_slices_equal(a, b)
+{
+    let d0 = a.0 ^ b.0;
+    let d1 = a.1 ^ b.1;
+    assert(spec_constant_time_diff(a, b) == (d0 | d1));
+    lemma_or_zero(d0, d1);
+    // Forward direction: accumulator zero => both XORs zero => bytes equal.
+    if (d0 | d1) == 0 {
+        assert(d0 == 0);
+        assert(d1 == 0);
+        lemma_xor_zero_iff_eq(a.0, b.0);
+        lemma_xor_zero_iff_eq(a.1, b.1);
+        assert(a.0 == b.0 && a.1 == b.1);
+        assert(spec_slices_equal(a, b));
+    }
+    // Reverse direction: bytes equal => both XORs zero => accumulator zero.
+    if spec_slices_equal(a, b) {
+        assert(a.0 == b.0);
+        assert(a.1 == b.1);
+        lemma_xor_zero_iff_eq(a.0, b.0);
+        lemma_xor_zero_iff_eq(a.1, b.1);
+        assert(d0 == 0);
+        assert(d1 == 0);
+        lemma_or_zero(d0, d1);
+        assert(spec_constant_time_diff(a, b) == 0);
+    }
+}
+
+/// Theorem: a differing first octet forces a non-zero accumulator and strict inequality.
+pub proof fn theorem_constant_time_eq_mismatched_first_octet(a: (u8, u8), b: (u8, u8))
+    requires a.0 != b.0
+    ensures !spec_slices_equal(a, b) && spec_constant_time_diff(a, b) != 0
+{
+    lemma_xor_zero_iff_eq(a.0, b.0);
+    // From the lemma: (a.0 ^ b.0) == 0 <==> a.0 == b.0. The hypothesis gives a.0 != b.0,
+    // so the XOR must be non-zero.
+    assert(a.0 != b.0);
+    let d0 = a.0 ^ b.0;
+    let d1 = a.1 ^ b.1;
+    assert(spec_constant_time_diff(a, b) == (d0 | d1));
+    lemma_xor_zero_iff_eq(a.0, b.0);
+    if d0 == 0 {
+        // d0 == 0 would imply a.0 == b.0, contradicting the hypothesis.
+        lemma_xor_zero_iff_eq(a.0, b.0);
+        assert(a.0 == b.0);
+        assert(false);
+    }
+    assert(d0 != 0);
+    lemma_or_nonzero_left(d0, d1);
+    assert(a.0 != b.0);
+    assert(!spec_slices_equal(a, b));
 }
 
 } // verus!

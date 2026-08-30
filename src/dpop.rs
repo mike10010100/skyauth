@@ -6,6 +6,7 @@
 //! <https://datatracker.ietf.org/doc/html/rfc9449>.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -182,20 +183,20 @@ impl DPoPKey {
             .map_err(|e| CryptoError::Pem(format!("Failed to export PKCS#8 PEM: {e}")))
     }
 
-    /// Exports the private key scalar as a raw 32-byte array.
+    /// Exports the private key scalar as a zeroized-on-drop 32-byte buffer.
     #[must_use]
-    pub fn to_bytes(&self) -> [u8; 32] {
+    pub fn to_bytes(&self) -> Zeroizing<[u8; 32]> {
         let mut out = Zeroizing::new([0u8; 32]);
         out.copy_from_slice(&self.signing_key.to_bytes());
-        *out
+        out
     }
 
-    /// Exports the private key as an unpadded Base64URL string.
+    /// Exports the private key as an unpadded Base64URL string stored in a
+    /// zeroized-on-drop buffer.
     #[must_use]
-    pub fn to_bytes_b64(&self) -> String {
-        let mut raw = Zeroizing::new([0u8; 32]);
-        raw.copy_from_slice(&self.signing_key.to_bytes());
-        base64url_encode(&*raw)
+    pub fn to_bytes_b64(&self) -> Zeroizing<String> {
+        let raw = self.to_bytes();
+        Zeroizing::new(base64url_encode(&*raw))
     }
 
     /// Imports an ECDSA P-256 private key from raw 32-byte scalar bytes.
@@ -616,10 +617,11 @@ impl DPoPVerifier {
         // Anti-Replay Check (RFC 9449 § 4.3 item 4 & § 11.1)
         if let Some(ref cache) = self.replay_cache {
             let jkt = jwk.thumbprint();
-            let base_validity = claims
-                .exp
-                .unwrap_or_else(|| claims.iat.saturating_add(max_age_secs));
-            let expires_at = base_validity.saturating_add(skew_secs);
+            // Cap the cache entry lifetime to the server's own acceptance window
+            // (max_proof_age + skew), NEVER to the attacker-controlled `exp` claim.
+            // An arbitrarily far-future `exp` would otherwise create immortal
+            // entries that permanently saturate every shard (DoS).
+            let expires_at = now.saturating_add(max_age_secs).saturating_add(skew_secs);
 
             cache.check_and_record(&jkt, &claims.jti, expires_at, now)?;
         }
@@ -761,10 +763,21 @@ impl DPoPNonceCache {
 ///
 /// Prevents DPoP proof replay attacks within the acceptance time window per RFC 9449 § 4.3 and § 11.1.
 /// Keyed on `(jkt, jti)` composite identifiers to enforce uniqueness per public key thumbprint.
+///
+/// # Scope Limitation (Multi-Replica Deployments)
+/// This cache is per-process: `shards` is an in-process [`Arc`], so sharing via
+/// [`DPoPVerifier::with_replay_cache`] only deduplicates proofs within one process. If a
+/// resource server runs multiple replicas behind a load balancer, an attacker can replay a
+/// captured proof against a second replica, which has no record of the `jti`. RFC 9449 § 11.1
+/// treats the acceptance window as the exposure bound, but horizontally scaled deployments
+/// desiring strict anti-replay must back this abstraction with a shared store (e.g. Redis).
 #[derive(Debug, Clone)]
 pub struct DPoPReplayCache {
     shards: Arc<[RwLock<HashMap<String, u64>>; NUM_SHARDS]>,
     hasher: RandomState,
+    /// Per-shard monotonic hint counters: prune lazily every 64 admissions,
+    /// amortizing the O(n) retain pass instead of running it on every insert.
+    prune_hints: Arc<[AtomicU64; NUM_SHARDS]>,
 }
 
 impl Default for DPoPReplayCache {
@@ -778,9 +791,11 @@ impl DPoPReplayCache {
     #[must_use]
     pub fn new() -> Self {
         let shards = std::array::from_fn(|_| RwLock::new(HashMap::new()));
+        let prune_hints = std::array::from_fn(|_| AtomicU64::new(0));
         Self {
             shards: Arc::new(shards),
             hasher: RandomState::new(),
+            prune_hints: Arc::new(prune_hints),
         }
     }
 
@@ -813,7 +828,8 @@ impl DPoPReplayCache {
         now_secs: u64,
     ) -> Result<(), DPoPError> {
         let composite_key = format!("{jkt}:{jti}");
-        let shard = self.shard_for(&composite_key);
+        let shard_idx = self.shard_index(&composite_key);
+        let shard = &self.shards[shard_idx];
         let mut guard = shard.write();
 
         // 1. Check if key already exists and is unexpired
@@ -825,18 +841,19 @@ impl DPoPReplayCache {
             }
         }
 
-        // 2. Perform lazy pruning if shard has grown large (> 512 entries)
-        if guard.len() > 512 {
+        // 2. Amortized lazy pruning: run the O(n) retain pass at most once per
+        //    64 admissions per shard instead of on every call.
+        let admissions = self.prune_hints[shard_idx].fetch_add(1, Ordering::Relaxed);
+        if guard.len() > 512 && admissions % 64 == 0 {
             guard.retain(|_, &mut exp| exp > now_secs);
         }
 
-        // Strict shard capacity cap to prevent memory exhaustion without evicting live proofs
+        // Strict shard capacity cap to prevent memory exhaustion without evicting live
+        // proofs. Expired entries are always prunable; only live admission is refused.
         if guard.len() >= 2048 {
             guard.retain(|_, &mut exp| exp > now_secs);
             if guard.len() >= 2048 {
-                return Err(DPoPError::Serialization(
-                    "DPoP replay cache capacity saturated with active proofs".to_string(),
-                ));
+                return Err(DPoPError::ReplayCacheSaturated);
             }
         }
 
@@ -959,10 +976,11 @@ impl DPoPServerNonceSource for InMemoryServerNonceSource {
         if guard.len() > 1024 {
             guard.retain(|_, &mut e| e > now_secs);
         }
+        // Fail closed at capacity instead of evicting a live nonce (matching the
+        // replay cache policy). Admissions are pre-authentication, so an attacker
+        // must not be able to displace challenge nonces for legitimate clients.
         if guard.len() >= 4096 {
-            if let Some(oldest_key) = guard.iter().min_by_key(|(_, &e)| e).map(|(k, _)| k.clone()) {
-                guard.remove(&oldest_key);
-            }
+            return String::new();
         }
         guard.insert(nonce.clone(), exp);
         nonce
@@ -1270,6 +1288,7 @@ mod tests {
         let cache = DPoPReplayCache::new();
         // Insert 2048 entries with future expiration that hash into the same shard
         let target_shard = 0;
+        let mut recorded_jtis = Vec::new();
         let mut count = 0;
         let mut i = 0;
         while count < 2048 {
@@ -1278,6 +1297,7 @@ mod tests {
                 assert!(cache
                     .check_and_record("jkt", &format!("{i}"), 5000, 1000)
                     .is_ok());
+                recorded_jtis.push(format!("{i}"));
                 count += 1;
             }
             i += 1;
@@ -1292,11 +1312,14 @@ mod tests {
             i += 1;
         };
         let res = cache.check_and_record("jkt", &overflow_jti, 5000, 1000);
-        assert!(matches!(res, Err(DPoPError::Serialization(_))));
+        assert!(matches!(res, Err(DPoPError::ReplayCacheSaturated)));
 
-        // All existing entries remain consumed and protected against replay
-        assert!(
-            cache.is_consumed("jkt", "0", 1000) || !cache.is_consumed("jkt", "nonexistent", 1000)
-        );
+        // No-eviction invariant: every recorded (jkt, jti) must still be consumed.
+        for jti in &recorded_jtis {
+            assert!(
+                cache.is_consumed("jkt", jti, 1000),
+                "live replay entry was evicted under saturation: jti={jti}"
+            );
+        }
     }
 }

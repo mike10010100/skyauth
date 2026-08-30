@@ -165,13 +165,19 @@ impl ZeroizeOnDrop for StoredStateEntry {}
 
 impl StoredStateEntry {
     /// Checks whether this stored state entry has expired.
+    ///
+    /// Fails closed: if the system clock is earlier than `created_at` (backward
+    /// step / NTP correction), the entry is treated as expired rather than valid.
     #[must_use]
     pub fn is_expired(&self) -> bool {
         let now = SystemTime::now();
         let max_age = Duration::from_secs(self.expires_in_secs);
-        now.duration_since(self.created_at)
-            .unwrap_or(Duration::ZERO)
-            > max_age
+        match now.duration_since(self.created_at) {
+            // Normal path: elapsed time exceeds the configured maximum age.
+            Ok(elapsed) => elapsed > max_age,
+            // Clock moved backward below `created_at`: fail closed.
+            Err(_) => true,
+        }
     }
 }
 
@@ -991,7 +997,11 @@ impl AtprotoOAuthClient {
         let mut url = Url::parse(pds_endpoint)
             .map_err(|e| TokenError::Http(format!("Invalid PDS endpoint: {e}")))?;
         let trimmed_nsid = nsid.trim_start_matches('/');
-        url.set_path(&format!("xrpc/{trimmed_nsid}"));
+        // Preserve any base path on the PDS endpoint (e.g. `https://host/pds`) so
+        // sub-path deployments resolve to `/pds/xrpc/...` and the DPoP `htu` matches
+        // the actual request target.
+        let base_path = url.path().trim_end_matches('/');
+        url.set_path(&format!("{}/xrpc/{}", base_path, trimmed_nsid));
         if !query_params.is_empty() {
             url.query_pairs_mut()
                 .extend_pairs(query_params.iter().copied());

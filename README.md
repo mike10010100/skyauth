@@ -31,7 +31,7 @@ Add `skyauth` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-skyauth = "0.1"
+skyauth = "0.2"
 ```
 
 ### 1. DPoP Proof Generation & Verification

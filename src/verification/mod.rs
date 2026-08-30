@@ -32,8 +32,12 @@
 //! | **Single-Use State** | State token transitions from `Pending` to `Consumed` exactly once | [`verus_contracts`] | [`formal_models::OAuthStateTransitionModel`] | [`kani_harnesses::proof_single_use_state_consumption`] |
 //! | **SSRF Non-Bypassability** | No RFC 1918, link-local, or cloud metadata IP can pass filters | [`verus_contracts`] | [`formal_models::SsrfFormalSpec`] | [`kani_harnesses::proof_ssrf_restricted_ip_rejection`] |
 //! | **PKCE S256 Bounds** | $43 \le \text{len} \le 128$, unreserved character domain, 43-char challenge | [`verus_contracts`] | [`formal_models::PkceFormalSpec`] | [`kani_harnesses::proof_pkce_s256_verifier_bounds`] |
-//! | **Constant-Time Eq** | $\text{ct\_eq}(a, b) \iff a == b$ with data-independent execution time | [`verus_contracts`] | [`formal_models::ConstantTimeEqSpec`] | [`kani_harnesses::proof_constant_time_eq_soundness`] |
-//! | **DPoP HTU Invariants** | Strips query/fragment, normalizes case and default ports | [`verus_contracts`] | [`formal_models::DPoPHtuFormalSpec`] | [`kani_harnesses::proof_dpop_htu_normalization_invariants`] |
+//! | **Constant-Time Eq** | XOR/accumulator evaluation $\iff$ element-wise equality (over the symbolic two-octet model) | [`verus_contracts`] | [`formal_models::ConstantTimeEqSpec`] | [`kani_harnesses::proof_constant_time_eq_soundness`] |
+//! | **DPoP HTU Invariants** | Strips query/fragment; protocol port/case rules (scheme-prefix and port checks only) | — (deductive proof omitted; symbolic execution hits an upstream Kani ICE)¹ | [`formal_models::DPoPHtuFormalSpec`] | [`kani_harnesses::proof_dpop_htu_normalization_invariants`]² |
+//!
+//! ¹ The HTU row intentionally has no Verus proof; the executable model covers the properties.
+//! ² The HTU harness runs deterministically through `formal_verification_tests.rs`; symbolic
+//!   execution is disabled due to an upstream Kani compiler ICE (see the harness doc comment).
 
 pub mod formal_models;
 pub mod kani_harnesses;

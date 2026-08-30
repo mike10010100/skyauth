@@ -565,6 +565,34 @@ impl InMemoryTokenValidator {
         guard.remove(&digest);
     }
 
+    /// Prunes all expired token records from the registry.
+    ///
+    /// Expired tokens are rejected at validation time regardless; this sweep reclaims
+    /// the memory of a long-running process that registers a session per login.
+    /// Returns the number of evicted records.
+    pub fn prune_expired(&self) -> usize {
+        let now = SystemTime::now();
+        let mut guard = self.tokens.write();
+        let before = guard.len();
+        guard.retain(|_, entry| match entry.expires_at {
+            Some(exp) => exp > now,
+            None => true,
+        });
+        before - guard.len()
+    }
+
+    /// Returns the total number of registered token records (including expired, unpruned ones).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.tokens.read().len()
+    }
+
+    /// Returns `true` if the registry holds no records.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Validates a presented token synchronously.
     ///
     /// # Errors
@@ -830,6 +858,115 @@ mod tests {
         assert!(matches!(
             err_revoked,
             IntegrationError::Token(TokenError::MalformedToken(_))
+        ));
+    }
+
+    #[test]
+    fn test_jwt_access_token_wrong_typ_rejected() {
+        // RFC 9068 § 4: access tokens must carry typ 'at+jwt'. A well-signed generic
+        // JWT ('JWT' typ, or no typ at all) minted by the same key must be rejected,
+        // preventing confusion attacks across token types sharing a signing key.
+        let auth_key = SigningKey::random(&mut thread_rng());
+        let client_jkt = DPoPKey::generate().jwk_thumbprint();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let claims = JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:typ-test",
+            now + 3600,
+            &client_jkt,
+        )
+        .with_audience("https://pds.example.com");
+
+        // Sign with typ JWT via low-level construction (bypass sign_jwt's typ)
+        let payload_str = serde_json::to_string(&claims).unwrap();
+        let header_typ_jwt = r#"{"alg":"ES256","typ":"JWT"}"#;
+        let header_b64 = base64url_encode(header_typ_jwt.as_bytes());
+        let payload_b64 = base64url_encode(payload_str.as_bytes());
+        let signing_input = format!("{header_b64}.{payload_b64}");
+        let sig = sign_p256_raw(&auth_key, signing_input.as_bytes()).unwrap();
+        let jwt_wrong_typ = format!("{signing_input}.{}", base64url_encode(&sig));
+
+        let validator =
+            JwtAccessTokenValidator::new().with_verifying_key(*auth_key.verifying_key());
+
+        let err = validator
+            .verify_token_sync(&jwt_wrong_typ, &client_jkt)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            IntegrationError::Token(TokenError::MalformedToken(ref msg))
+                if msg.contains("typ") || msg.contains("at+jwt")
+        ));
+    }
+
+    #[test]
+    fn test_jwt_access_token_unknown_kid_fail_closed() {
+        // Fail-closed kid resolution: the validator registers trusted key "key-2024".
+        // A well-signed token naming a DIFFERENT kid ("key-1999") must be rejected —
+        // not silently verified against the trusted key (kid is attacker-controlled).
+        let auth_key = SigningKey::random(&mut thread_rng());
+        let client_jkt = DPoPKey::generate().jwk_thumbprint();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let claims = JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:kid-test",
+            now + 3600,
+            &client_jkt,
+        )
+        .with_audience("https://pds.example.com");
+
+        // Header claims kid "key-1999", which the registry does not know.
+        let payload_str = serde_json::to_string(&claims).unwrap();
+        let header_unknown_kid = r#"{"alg":"ES256","typ":"at+jwt","kid":"key-1999"}"#;
+        let header_b64 = base64url_encode(header_unknown_kid.as_bytes());
+        let payload_b64 = base64url_encode(payload_str.as_bytes());
+        let signing_input = format!("{header_b64}.{payload_b64}");
+        let sig = sign_p256_raw(&auth_key, signing_input.as_bytes()).unwrap();
+        let jwt = format!("{signing_input}.{}", base64url_encode(&sig));
+
+        let validator =
+            JwtAccessTokenValidator::new().with_trusted_key("key-2024", *auth_key.verifying_key());
+
+        let err = validator.verify_token_sync(&jwt, &client_jkt).unwrap_err();
+        assert!(matches!(err, IntegrationError::AuthFailed(_)));
+    }
+
+    #[test]
+    fn test_jwt_access_token_missing_audience_rejected() {
+        // Presence gate: a token lacking aud is rejected even when the validator
+        // has no expected audience configured (fail-closed presence check).
+        let auth_key = SigningKey::random(&mut thread_rng());
+        let client_jkt = DPoPKey::generate().jwk_thumbprint();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let claims_no_aud = JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:aud-test",
+            now + 3600,
+            &client_jkt,
+        );
+        let jwt_no_aud = claims_no_aud.sign_jwt(&auth_key, None).unwrap();
+
+        let validator =
+            JwtAccessTokenValidator::new().with_verifying_key(*auth_key.verifying_key());
+
+        let err = validator
+            .verify_token_sync(&jwt_no_aud, &client_jkt)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            IntegrationError::Token(TokenError::MissingAudience)
         ));
     }
 }

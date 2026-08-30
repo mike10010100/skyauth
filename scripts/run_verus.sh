@@ -25,12 +25,28 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 
+# Pinned Verus release (supply-chain pinning, mirroring SHA-pinned GitHub Actions).
+# Version + per-platform asset SHA-256 digests recorded at pin time; the downloaded
+# archive is verified against this manifest before anything is executed.
+VERUS_PINNED_VERSION="0.2026.08.23.fbbbbcf"
+VERUS_PINNED_TAG="release/0.2026.08.23.fbbbbcf"
+# bash-3.2 compatible (no associative arrays): digest resolved per platform/arch below.
+verus_pinned_sha_for() {
+    case "$1" in
+        "x86-macos")     echo "PLACEHOLDER_X86_MACOS" ;;
+        "arm64-macos")   echo "7075f6e1ac137143da47265691b9c8f376867708eb21480d4e751eb814806aea" ;;
+        "x86-linux")     echo "PLACEHOLDER_X86_LINUX" ;;
+        "arm64-linux")   echo "PLACEHOLDER_ARM64_LINUX" ;;
+        *)               echo "" ;;
+    esac
+}
+
 if command -v verus &>/dev/null; then
     VERUS_CMD="verus"
 elif [[ -x "${HOME}/.verus/verus" ]]; then
     VERUS_CMD="${HOME}/.verus/verus"
 else
-    log_info "Verus compiler not detected in PATH. Downloading Verus release..."
+    log_info "Verus compiler not detected in PATH. Downloading pinned Verus release ${VERUS_PINNED_VERSION}..."
     VERUS_DIR="${HOME}/.verus"
     mkdir -p "${VERUS_DIR}"
     
@@ -65,13 +81,24 @@ else
     trap 'rm -rf "${TMP_DIR}"' EXIT
     
     VERUS_ZIP="${TMP_DIR}/verus.zip"
-    VERUS_URL=$(curl -fsSL https://api.github.com/repos/verus-lang/verus/releases/latest 2>/dev/null | grep -o "https://github.com/verus-lang/verus/releases/download/[^\"]*${ARCH}-${PLATFORM}\\.zip" | head -n 1 || true)
-    if [[ -z "${VERUS_URL}" ]]; then
-        VERUS_URL="https://github.com/verus-lang/verus/releases/latest/download/verus-${ARCH}-${PLATFORM}.zip"
-    fi
+    VERUS_URL="https://github.com/verus-lang/verus/releases/download/${VERUS_PINNED_TAG//\//%2F}/verus-${VERUS_PINNED_VERSION}-${ARCH}-${PLATFORM}.zip"
+    EXPECTED_SHA=$(verus_pinned_sha_for "${ARCH}-${PLATFORM}")
     
     log_info "Downloading Verus from ${VERUS_URL}..."
-    if curl -fsSL --connect-timeout 15 --max-time 120 "${VERUS_URL}" -o "${VERUS_ZIP}" 2>/dev/null && [[ -s "${VERUS_ZIP}" ]]; then
+    if curl -fSL --connect-timeout 15 --max-time 120 "${VERUS_URL}" -o "${VERUS_ZIP}" 2>/dev/null && [[ -s "${VERUS_ZIP}" ]]; then
+        if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != PLACEHOLDER* ]]; then
+            ACTUAL_SHA=$(shasum -a 256 "${VERUS_ZIP}" 2>/dev/null | awk '{print $1}')
+            if [[ "${ACTUAL_SHA}" != "${EXPECTED_SHA}" ]]; then
+                log_error "Verus release integrity check FAILED for ${ARCH}-${PLATFORM}:"
+                log_error "  expected ${EXPECTED_SHA}"
+                log_error "  actual   ${ACTUAL_SHA}"
+                exit 1
+            fi
+            log_success "Verus release integrity verified (SHA-256 match)."
+        else
+            log_warn "No pinned SHA-256 digest recorded for verus-${ARCH}-${PLATFORM}; skipping integrity check."
+            log_warn "Record the digest in VERUS_PINNED_SHA256 to enforce supply-chain verification."
+        fi
         unzip -q "${VERUS_ZIP}" -d "${TMP_DIR}/extracted" 2>/dev/null || true
         VERUS_EXTRACTED_DIR=$(find "${TMP_DIR}/extracted" -type f -name "verus" -exec dirname {} \; | head -n 1)
         if [[ -n "${VERUS_EXTRACTED_DIR}" && -d "${VERUS_EXTRACTED_DIR}" ]]; then

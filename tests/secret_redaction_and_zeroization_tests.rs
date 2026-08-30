@@ -1,5 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
-
+//! Secret redaction and zeroization verification tests.
 use skyauth::client::{OAuthClientMetadata, StoredStateEntry};
 use skyauth::dpop::DPoPKey;
 use skyauth::integrations::AuthenticatedUser;
@@ -8,7 +7,7 @@ use std::time::SystemTime;
 use zeroize::Zeroize;
 
 #[test]
-fn test_oauth_session_debug_redacts_tokens() {
+fn test_oauth_session_debug_redacts_tokens() -> Result<(), Box<dyn std::error::Error>> {
     let key = DPoPKey::generate();
     let session = OAuthSession::new(
         "did:plc:testuser12345",
@@ -21,14 +20,14 @@ fn test_oauth_session_debug_redacts_tokens() {
         Some("https://pds.example.com".to_string()),
         Some("https://bsky.social".to_string()),
         Some("https://bsky.social/oauth/token".to_string()),
-    )
-    .unwrap();
+    )?;
 
     let debug_output = format!("{session:?}");
     assert!(!debug_output.contains("super_secret_access_token_xyz987"));
     assert!(!debug_output.contains("super_secret_refresh_token_abc123"));
     assert!(debug_output.contains("[REDACTED]"));
     assert!(debug_output.contains("did:plc:testuser12345"));
+    Ok(())
 }
 
 #[test]
@@ -46,18 +45,20 @@ fn test_authenticated_user_debug_redacts_access_token() {
 }
 
 #[test]
-fn test_authenticated_user_serialization_omits_access_token() {
+fn test_authenticated_user_serialization_omits_access_token(
+) -> Result<(), Box<dyn std::error::Error>> {
     let user = AuthenticatedUser::new(
         "did:plc:testuser12345",
         "super_secret_bearer_token_999",
         "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I",
     );
 
-    let json = serde_json::to_string(&user).unwrap();
+    let json = serde_json::to_string(&user)?;
     assert!(!json.contains("super_secret_bearer_token_999"));
     assert!(!json.contains("access_token"));
     assert!(json.contains("did:plc:testuser12345"));
     assert!(json.contains("0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"));
+    Ok(())
 }
 
 #[test]
@@ -99,23 +100,23 @@ fn test_oauth_client_metadata_debug_redacts_client_secret() {
 }
 
 #[test]
-fn test_dpop_key_debug_redacts_private_scalar() {
+fn test_dpop_key_debug_redacts_private_scalar() -> Result<(), Box<dyn std::error::Error>> {
     let key = DPoPKey::generate();
     let debug_output = format!("{key:?}");
-    let raw_bytes = key.to_bytes();
     let raw_b64 = key.to_bytes_b64();
-    let raw_hex = hex::encode(raw_bytes);
+    let raw_hex = hex::encode(key.to_bytes().as_slice());
 
     assert!(debug_output.contains("DPoPKey"));
     assert!(debug_output.contains("thumbprint"));
-    assert!(!debug_output.contains(&raw_b64));
+    assert!(!debug_output.contains(raw_b64.as_str()));
     assert!(!debug_output.contains(&raw_hex));
     assert!(!debug_output.contains("signing_key"));
     assert!(!debug_output.contains("private_key"));
+    Ok(())
 }
 
 #[test]
-fn test_zeroize_clears_session_and_state_tokens() {
+fn test_zeroize_clears_session_and_state_tokens() -> Result<(), Box<dyn std::error::Error>> {
     let mut session = OAuthSession::new(
         "did:plc:testuser12345",
         "sensitive_access_token",
@@ -127,8 +128,7 @@ fn test_zeroize_clears_session_and_state_tokens() {
         None,
         None,
         None,
-    )
-    .unwrap();
+    )?;
 
     assert_eq!(session.access_token, "sensitive_access_token");
     assert_eq!(
@@ -143,4 +143,5 @@ fn test_zeroize_clears_session_and_state_tokens() {
     if let Some(ref rt) = session.refresh_token {
         assert!(rt.is_empty() || rt.chars().all(|c| c == '\0'));
     }
+    Ok(())
 }

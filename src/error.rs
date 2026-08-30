@@ -215,6 +215,15 @@ pub enum DPoPError {
     #[error("DPoP nonce retry limit exceeded")]
     NonceRetryLimitExceeded,
 
+    /// The DPoP replay cache has reached capacity with live (unexpired) proofs.
+    ///
+    /// This is a server-side resource-exhaustion condition, not a defective client
+    /// proof; callers should map it to an HTTP 503-class response, not 401.
+    #[error(
+        "DPoP replay cache capacity saturated with active proofs (server-side resource exhaustion)"
+    )]
+    ReplayCacheSaturated,
+
     /// JSON or byte serialization failed.
     #[error("Serialization error: {0}")]
     Serialization(String),
@@ -689,9 +698,9 @@ pub enum DiscoveryError {
         missing: String,
     },
 
-    /// Authorization server metadata is missing required token endpoint authentication method (`none` or `private_key_jwt`).
+    /// Authorization server metadata is missing required token endpoint authentication methods (`none` AND `private_key_jwt`).
     #[error(
-        "Authorization server '{0}' is missing required token endpoint authentication method ('none' or 'private_key_jwt')"
+        "Authorization server '{0}' must advertise both required token endpoint authentication methods ('none' and 'private_key_jwt')"
     )]
     MissingTokenAuthMethod(String),
 

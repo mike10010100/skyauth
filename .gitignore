@@ -2,4 +2,3 @@
 **/*.rs.bk
 *.log
 .DS_Store
-*.proptest-regressions

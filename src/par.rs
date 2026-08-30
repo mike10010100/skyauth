@@ -109,6 +109,16 @@ impl ParParameters {
     #[must_use]
     pub fn to_form_urlencoded_with_credentials(&self, extra: &[(&str, &str)]) -> String {
         let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+        self.encode_pairs(&mut serializer);
+        for (key, value) in extra {
+            serializer.append_pair(key, value);
+        }
+        serializer.finish()
+    }
+
+    /// Single source of truth for the PAR parameter set. Any new RFC 9126 field
+    /// must be added here exactly once, so the two public serializers cannot drift.
+    fn encode_pairs<'a>(&'a self, serializer: &mut url::form_urlencoded::Serializer<'a, String>) {
         serializer.append_pair("client_id", &self.client_id);
         serializer.append_pair("response_type", &self.response_type);
         serializer.append_pair("redirect_uri", &self.redirect_uri);
@@ -126,36 +136,13 @@ impl ParParameters {
         if let Some(ref ca) = self.client_assertion {
             serializer.append_pair("client_assertion", ca);
         }
-
-        for (key, value) in extra {
-            serializer.append_pair(key, value);
-        }
-
-        serializer.finish()
     }
 
     /// Serializes the parameters into standard `application/x-www-form-urlencoded` format.
     #[must_use]
     pub fn to_form_urlencoded(&self) -> String {
         let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-        serializer.append_pair("client_id", &self.client_id);
-        serializer.append_pair("response_type", &self.response_type);
-        serializer.append_pair("redirect_uri", &self.redirect_uri);
-        serializer.append_pair("scope", &self.scope);
-        serializer.append_pair("state", &self.state);
-        serializer.append_pair("code_challenge", &self.code_challenge);
-        serializer.append_pair("code_challenge_method", &self.code_challenge_method);
-
-        if let Some(ref hint) = self.login_hint {
-            serializer.append_pair("login_hint", hint);
-        }
-        if let Some(ref cat) = self.client_assertion_type {
-            serializer.append_pair("client_assertion_type", cat);
-        }
-        if let Some(ref ca) = self.client_assertion {
-            serializer.append_pair("client_assertion", ca);
-        }
-
+        self.encode_pairs(&mut serializer);
         serializer.finish()
     }
 }
