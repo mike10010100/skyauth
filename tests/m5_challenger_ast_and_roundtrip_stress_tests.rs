@@ -25,7 +25,7 @@ use skyauth::client::TokenResponse;
 use skyauth::discovery::{AuthorizationServerMetadata, ProtectedResourceMetadata};
 use skyauth::dpop::{DPoPProofClaims, JwkEc};
 use skyauth::identity::{DidDocument, DidService, VerificationMethod};
-use skyauth::par::{ParParameters, ParResponse};
+use skyauth::par::ParResponse;
 use skyauth::pkce::{PkceMethod, PkcePair};
 
 // Static bundled schema includes
@@ -702,6 +702,7 @@ fn test_challenge_roundtrip_authorization_server_metadata() {
         scopes_supported: vec!["atproto".to_string(), "transition:generic".to_string()],
         authorization_response_iss_parameter_supported: true,
         client_id_metadata_document_supported: true,
+        require_request_uri_registration: Some(true),
     };
 
     let serialized = serde_json::to_value(&full).unwrap();
@@ -816,6 +817,7 @@ fn test_challenge_empty_par_endpoint_serialization_discrepancy_in_authorization_
         scopes_supported: vec!["atproto".to_string()],
         authorization_response_iss_parameter_supported: true,
         client_id_metadata_document_supported: true,
+        require_request_uri_registration: Some(true),
     };
 
     let serialized_empty_par = serde_json::to_value(&struct_with_empty_par).unwrap();
@@ -893,34 +895,34 @@ fn test_challenge_roundtrip_token_response() {
     let validator = compile_validator(&token_schema);
 
     // Full token response
-    let full = TokenResponse {
-        access_token: "dpop_access_jwt_string".to_string(),
-        token_type: "DPoP".to_string(),
-        expires_in: Some(3600),
-        refresh_token: Some("single_use_refresh_token_string".to_string()),
-        scope: Some("atproto transition:generic".to_string()),
-        sub: "did:plc:ragtjsm2j2vknwk6zui0p4kb".to_string(),
-    };
+    let full = json!({
+        "access_token": "dpop_access_jwt_string",
+        "token_type": "DPoP",
+        "expires_in": 3600,
+        "refresh_token": "single_use_refresh_token_string",
+        "scope": "atproto transition:generic",
+        "sub": "did:plc:ragtjsm2j2vknwk6zui0p4kb"
+    });
 
-    let serialized = serde_json::to_value(&full).unwrap();
-    assert!(validator.is_valid(&serialized));
-    let deserialized: TokenResponse = serde_json::from_value(serialized).unwrap();
-    assert_eq!(full, deserialized);
+    assert!(validator.is_valid(&full));
+    let deserialized: TokenResponse = serde_json::from_value(full).unwrap();
+    assert_eq!(deserialized.token_type(), "DPoP");
+    assert_eq!(deserialized.expires_in(), Some(3600));
+    assert_eq!(deserialized.scope(), Some("atproto transition:generic"));
+    let debug = format!("{deserialized:?}");
+    assert!(!debug.contains("dpop_access_jwt_string"));
+    assert!(!debug.contains("single_use_refresh_token_string"));
 
     // Minimal token response
-    let minimal = TokenResponse {
-        access_token: "bearer_token_string".to_string(),
-        token_type: "Bearer".to_string(),
-        expires_in: None,
-        refresh_token: None,
-        scope: None,
-        sub: "did:plc:z72i7hdynmk62xgdxonx2xnn".to_string(),
-    };
-
-    let serialized_min = serde_json::to_value(&minimal).unwrap();
-    assert!(validator.is_valid(&serialized_min));
-    let deserialized_min: TokenResponse = serde_json::from_value(serialized_min).unwrap();
-    assert_eq!(minimal, deserialized_min);
+    let minimal = json!({
+        "access_token": "bearer_token_string",
+        "token_type": "Bearer",
+        "sub": "did:plc:z72i7hdynmk62xgdxonx2xnn"
+    });
+    assert!(validator.is_valid(&minimal));
+    let deserialized_min: TokenResponse = serde_json::from_value(minimal).unwrap();
+    assert_eq!(deserialized_min.token_type(), "Bearer");
+    assert_eq!(deserialized_min.expires_in(), None);
 }
 
 #[test]
@@ -945,24 +947,6 @@ fn test_challenge_roundtrip_par_response_and_parameters() {
     assert!(validator.is_valid(&serialized));
     let deserialized: ParResponse = serde_json::from_value(serialized).unwrap();
     assert_eq!(par_resp, deserialized);
-
-    // ParParameters serialization and roundtrip
-    let par_params = ParParameters::new(
-        "https://app.example.com/client-metadata.json",
-        "https://app.example.com/callback",
-        "atproto",
-        "state_nonce_12345",
-        "E9Melhoa2OwvFrGMTJguCH5rtx64ZW_SoRO823Ht_K0",
-    )
-    .with_login_hint("alice.bsky.social")
-    .with_client_assertion(
-        "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-        "assertion_jwt",
-    );
-
-    let params_val = serde_json::to_value(&par_params).unwrap();
-    let deserialized_params: ParParameters = serde_json::from_value(params_val).unwrap();
-    assert_eq!(par_params, deserialized_params);
 }
 
 #[test]

@@ -6,7 +6,7 @@
 //! <https://datatracker.ietf.org/doc/html/rfc9449>.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use p256::ecdsa::{SigningKey, VerifyingKey};
@@ -15,6 +15,7 @@ use parking_lot::RwLock;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use url::Url;
+use zeroize::Zeroize;
 
 use crate::crypto::{
     base64url_decode, base64url_decode_fixed, base64url_encode, constant_time_eq,
@@ -22,6 +23,7 @@ use crate::crypto::{
     verifying_key_from_coordinates, verifying_key_to_coordinates,
 };
 use crate::error::{CryptoError, DPoPError};
+use crate::session::SecretExportPermit;
 
 /// Default maximum permitted proof age (300 seconds / 5 minutes).
 pub const DEFAULT_MAX_PROOF_AGE: Duration = Duration::from_secs(300);
@@ -80,41 +82,14 @@ impl JwkEc {
 #[derive(Clone)]
 pub struct DPoPKey {
     signing_key: SigningKey,
+    thumbprint: OnceLock<String>,
 }
-
-impl PartialEq for DPoPKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.signing_key.to_bytes() == other.signing_key.to_bytes()
-    }
-}
-
-impl Eq for DPoPKey {}
 
 impl std::fmt::Debug for DPoPKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DPoPKey")
             .field("thumbprint", &self.jwk_thumbprint())
             .finish()
-    }
-}
-
-impl serde::Serialize for DPoPKey {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let pem = self.to_pkcs8_pem().map_err(serde::ser::Error::custom)?;
-        serializer.serialize_str(&pem)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for DPoPKey {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Self::from_pkcs8_pem(&s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -135,6 +110,7 @@ impl DPoPKey {
     pub fn generate() -> Self {
         Self {
             signing_key: SigningKey::random(&mut rand::thread_rng()),
+            thumbprint: OnceLock::new(),
         }
     }
 
@@ -146,7 +122,10 @@ impl DPoPKey {
     pub fn from_pkcs8_der(der_bytes: &[u8]) -> Result<Self, CryptoError> {
         let signing_key = SigningKey::from_pkcs8_der(der_bytes)
             .map_err(|e| CryptoError::InvalidKey(format!("Invalid PKCS#8 DER key: {e}")))?;
-        Ok(Self { signing_key })
+        Ok(Self {
+            signing_key,
+            thumbprint: OnceLock::new(),
+        })
     }
 
     /// Imports an ECDSA P-256 private key from a PKCS#8 PEM string.
@@ -157,7 +136,10 @@ impl DPoPKey {
     pub fn from_pkcs8_pem(pem: &str) -> Result<Self, CryptoError> {
         let signing_key = SigningKey::from_pkcs8_pem(pem)
             .map_err(|e| CryptoError::Pem(format!("Invalid PKCS#8 PEM key: {e}")))?;
-        Ok(Self { signing_key })
+        Ok(Self {
+            signing_key,
+            thumbprint: OnceLock::new(),
+        })
     }
 
     /// Exports the private key as a PKCS#8 PEM formatted string.
@@ -165,25 +147,24 @@ impl DPoPKey {
     /// # Errors
     ///
     /// Returns [`CryptoError::Pem`] if encoding fails.
-    pub fn to_pkcs8_pem(&self) -> Result<String, CryptoError> {
+    pub fn export_pkcs8_pem(
+        &self,
+        _permit: SecretExportPermit,
+    ) -> Result<zeroize::Zeroizing<String>, CryptoError> {
         self.signing_key
             .to_pkcs8_pem(LineEnding::LF)
-            .map(|zeroizing| zeroizing.as_str().to_string())
+            .map(|pem| zeroize::Zeroizing::new(pem.as_str().to_string()))
             .map_err(|e| CryptoError::Pem(format!("Failed to export PKCS#8 PEM: {e}")))
     }
 
     /// Exports the private key scalar as a raw 32-byte array.
     #[must_use]
-    pub fn to_bytes(&self) -> [u8; 32] {
+    pub(crate) fn export_private_scalar(&self) -> zeroize::Zeroizing<[u8; 32]> {
+        let mut scalar = self.signing_key.to_bytes();
         let mut out = [0u8; 32];
-        out.copy_from_slice(&self.signing_key.to_bytes());
-        out
-    }
-
-    /// Exports the private key as an unpadded Base64URL string.
-    #[must_use]
-    pub fn to_bytes_b64(&self) -> String {
-        base64url_encode(&self.signing_key.to_bytes())
+        out.copy_from_slice(&scalar);
+        scalar.zeroize();
+        zeroize::Zeroizing::new(out)
     }
 
     /// Imports an ECDSA P-256 private key from raw 32-byte scalar bytes.
@@ -191,20 +172,13 @@ impl DPoPKey {
     /// # Errors
     ///
     /// Returns [`CryptoError::InvalidKey`] if the bytes cannot be parsed into a valid P-256 scalar.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self, CryptoError> {
+    pub(crate) fn from_slice(bytes: &[u8]) -> Result<Self, CryptoError> {
         let signing_key = SigningKey::from_slice(bytes)
             .map_err(|e| CryptoError::InvalidKey(format!("Invalid P-256 scalar bytes: {e}")))?;
-        Ok(Self { signing_key })
-    }
-
-    /// Imports an ECDSA P-256 private key from a Base64URL-encoded scalar string.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CryptoError`] if decoding or key parsing fails.
-    pub fn from_bytes_b64(b64: &str) -> Result<Self, CryptoError> {
-        let bytes = base64url_decode(b64)?;
-        Self::from_slice(&bytes)
+        Ok(Self {
+            signing_key,
+            thumbprint: OnceLock::new(),
+        })
     }
 
     /// Derives the public [`JwkEc`] representation corresponding to this keypair.
@@ -223,7 +197,13 @@ impl DPoPKey {
     /// Computes the RFC 7638 SHA-256 JWK Thumbprint (`jkt`) for this key's public component.
     #[must_use]
     pub fn jwk_thumbprint(&self) -> String {
-        self.public_jwk().thumbprint()
+        self.thumbprint().to_string()
+    }
+
+    /// Returns the lazily cached public-key thumbprint.
+    fn thumbprint(&self) -> &str {
+        self.thumbprint
+            .get_or_init(|| self.public_jwk().thumbprint())
     }
 
     /// Signs an RFC 9449 DPoP proof JWT for an outgoing HTTP request.
@@ -383,6 +363,12 @@ impl DPoPVerifier {
         self
     }
 
+    /// Returns the lifetime used for accepted replay identifiers.
+    #[must_use]
+    pub fn replay_ttl(&self) -> Duration {
+        self.max_proof_age.saturating_add(self.max_clock_skew)
+    }
+
     /// Verifies an inbound RFC 9449 DPoP proof JWT against expected request parameters.
     ///
     /// # Checks Performed
@@ -505,10 +491,7 @@ impl DPoPVerifier {
             match &claims.nonce {
                 Some(actual_nonce) => {
                     if !constant_time_eq(exp_nonce.as_bytes(), actual_nonce.as_bytes()) {
-                        return Err(DPoPError::NonceMismatch {
-                            expected: exp_nonce.to_string(),
-                            actual: actual_nonce.clone(),
-                        });
+                        return Err(DPoPError::NonceMismatch);
                     }
                 }
                 None => return Err(DPoPError::MissingNonce),
@@ -520,10 +503,7 @@ impl DPoPVerifier {
             match &claims.ath {
                 Some(actual_ath) => {
                     if !constant_time_eq(exp_ath.as_bytes(), actual_ath.as_bytes()) {
-                        return Err(DPoPError::AthMismatch {
-                            expected: exp_ath.to_string(),
-                            actual: actual_ath.clone(),
-                        });
+                        return Err(DPoPError::AthMismatch);
                     }
                 }
                 None => return Err(DPoPError::MissingAth),
@@ -665,41 +645,88 @@ pub fn extract_dpop_nonce(header_val: Option<&str>) -> Option<String> {
     })
 }
 
-/// Origin-keyed in-memory cache for server-issued DPoP challenge nonces.
-///
-/// Automatically tracks and updates the latest nonce for each Authorization Server
-/// and Protected Resource origin.
-#[derive(Debug, Default, Clone)]
+/// DPoP-key and origin-keyed cache for server-issued challenge nonces.
+#[derive(Debug, Clone)]
 pub struct DPoPNonceCache {
-    cache: Arc<RwLock<HashMap<String, String>>>,
+    cache: Arc<RwLock<NonceCacheState>>,
+}
+
+#[derive(Debug, Default)]
+struct NonceCacheState {
+    entries: HashMap<(String, String), CachedNonce>,
+    next_sequence: u128,
+}
+
+#[derive(Debug)]
+struct CachedNonce {
+    value: String,
+    sequence: u128,
 }
 
 impl DPoPNonceCache {
+    const MAX_ENTRIES: usize = 1_024;
+
     /// Creates a new empty DPoP nonce cache.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            cache: Arc::new(RwLock::new(HashMap::new())),
+            cache: Arc::new(RwLock::new(NonceCacheState::default())),
         }
     }
 
-    /// Stores a server-issued challenge nonce for an origin URL.
-    pub fn set_nonce(&self, origin: &str, nonce: impl Into<String>) {
+    /// Stores a nonce for one DPoP key and server origin.
+    pub fn set_nonce(&self, key: &DPoPKey, origin: &str, nonce: impl Into<String>) {
+        let cache_key = Self::cache_key(key, origin);
         let mut guard = self.cache.write();
-        guard.insert(origin.trim().to_ascii_lowercase(), nonce.into());
+        if guard.entries.len() >= Self::MAX_ENTRIES && !guard.entries.contains_key(&cache_key) {
+            if let Some(eviction_key) = guard
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.sequence)
+                .map(|(cache_key, _)| cache_key.clone())
+            {
+                guard.entries.remove(&eviction_key);
+            }
+        }
+        let sequence = guard.next_sequence;
+        guard.next_sequence = guard.next_sequence.saturating_add(1);
+        guard.entries.insert(
+            cache_key,
+            CachedNonce {
+                value: nonce.into(),
+                sequence,
+            },
+        );
     }
 
-    /// Retrieves the current challenge nonce for an origin URL, if available.
+    /// Retrieves the current nonce for one DPoP key and server origin.
     #[must_use]
-    pub fn get_nonce(&self, origin: &str) -> Option<String> {
+    pub fn get_nonce(&self, key: &DPoPKey, origin: &str) -> Option<String> {
         let guard = self.cache.read();
-        guard.get(&origin.trim().to_ascii_lowercase()).cloned()
+        guard
+            .entries
+            .get(&Self::cache_key(key, origin))
+            .map(|entry| entry.value.clone())
     }
 
-    /// Clears the cached nonce for an origin URL.
-    pub fn clear_nonce(&self, origin: &str) {
+    /// Clears the nonce for one DPoP key and server origin.
+    pub fn clear_nonce(&self, key: &DPoPKey, origin: &str) {
         let mut guard = self.cache.write();
-        guard.remove(&origin.trim().to_ascii_lowercase());
+        guard.entries.remove(&Self::cache_key(key, origin));
+    }
+
+    /// Derives the nonce-cache identity from a key and normalized origin.
+    fn cache_key(key: &DPoPKey, origin: &str) -> (String, String) {
+        (
+            key.thumbprint().to_string(),
+            origin.trim().to_ascii_lowercase(),
+        )
+    }
+}
+
+impl Default for DPoPNonceCache {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -871,24 +898,52 @@ mod tests {
     #[test]
     fn test_dpop_nonce_cache() {
         let cache = DPoPNonceCache::new();
-        cache.set_nonce("https://pds.example.com", "nonce-1".to_string());
+        let key = DPoPKey::generate();
+        let other_key = DPoPKey::generate();
+        let first_nonce = DPoPKey::generate().jwk_thumbprint();
+        let second_nonce = DPoPKey::generate().jwk_thumbprint();
+        cache.set_nonce(&key, "https://pds.example.com", first_nonce.clone());
         assert_eq!(
-            cache.get_nonce("https://pds.example.com"),
-            Some("nonce-1".to_string())
+            cache.get_nonce(&key, "https://pds.example.com"),
+            Some(first_nonce)
         );
-        cache.set_nonce("https://pds.example.com", "nonce-2".to_string());
+        assert_eq!(cache.get_nonce(&other_key, "https://pds.example.com"), None);
+        cache.set_nonce(&key, "https://pds.example.com", second_nonce.clone());
         assert_eq!(
-            cache.get_nonce("https://pds.example.com"),
-            Some("nonce-2".to_string())
+            cache.get_nonce(&key, "https://pds.example.com"),
+            Some(second_nonce)
         );
-        cache.clear_nonce("https://pds.example.com");
-        assert_eq!(cache.get_nonce("https://pds.example.com"), None);
+        cache.clear_nonce(&key, "https://pds.example.com");
+        assert_eq!(cache.get_nonce(&key, "https://pds.example.com"), None);
+    }
+
+    #[test]
+    fn nonce_cache_is_bounded() {
+        let cache = DPoPNonceCache::new();
+        let key = DPoPKey::generate();
+        for index in 0..=DPoPNonceCache::MAX_ENTRIES {
+            cache.set_nonce(
+                &key,
+                &format!("https://server-{index:04}.example.com"),
+                format!("nonce-{index}"),
+            );
+        }
+        assert_eq!(
+            cache.get_nonce(&key, "https://server-0000.example.com"),
+            None
+        );
+        assert_eq!(
+            cache.get_nonce(&key, "https://server-1024.example.com"),
+            Some("nonce-1024".to_string())
+        );
     }
 
     #[test]
     fn test_pkcs8_pem_roundtrip() {
         let key = DPoPKey::generate();
-        let pem = key.to_pkcs8_pem().unwrap();
+        let pem = key
+            .export_pkcs8_pem(crate::session::SecretExportPermit::for_encrypted_persistence())
+            .unwrap();
         assert!(pem.contains("BEGIN PRIVATE KEY"));
         let imported = DPoPKey::from_pkcs8_pem(&pem).unwrap();
         assert_eq!(key.public_jwk(), imported.public_jwk());

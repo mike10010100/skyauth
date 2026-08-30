@@ -352,7 +352,9 @@ fn test_ssrf_cloud_metadata_hostnames_and_internal_domains() {
         assert!(
             matches!(
                 filter.validate_url(&url),
-                Err(SsrfError::BlockedHost(_)) | Err(SsrfError::BlockedIp(_))
+                Err(SsrfError::BlockedHost(_))
+                    | Err(SsrfError::BlockedIp(_))
+                    | Err(SsrfError::InvalidUrl(_))
             ),
             "URL https://{host} should be rejected"
         );
@@ -520,10 +522,7 @@ async fn test_redirect_to_private_ip_blocked() {
 
     let res = filter.safe_get(&start_url, 1024 * 1024).await;
     assert!(
-        matches!(
-            res,
-            Err(SsrfError::BlockedIp(_)) | Err(SsrfError::InsecureScheme(_))
-        ),
+        matches!(res, Err(SsrfError::CrossOriginRedirect)),
         "Redirect to private IP 10.0.0.1 should be blocked"
     );
 }
@@ -547,10 +546,7 @@ async fn test_redirect_to_cloud_metadata_blocked() {
 
     let res = filter.safe_get(&start_url, 1024 * 1024).await;
     assert!(
-        matches!(
-            res,
-            Err(SsrfError::BlockedIp(_)) | Err(SsrfError::InsecureScheme(_))
-        ),
+        matches!(res, Err(SsrfError::CrossOriginRedirect)),
         "Redirect to metadata IP 169.254.169.254 should be blocked"
     );
 }
@@ -738,20 +734,20 @@ fn test_ssrf_urls_with_embedded_credentials() {
     let url_userinfo_loopback = Url::parse("https://admin:secret@127.0.0.1:8443/config").unwrap();
     assert!(matches!(
         filter.validate_url(&url_userinfo_loopback),
-        Err(SsrfError::BlockedIp(_))
+        Err(SsrfError::InvalidUrl(_))
     ));
 
     let url_userinfo_meta = Url::parse("https://root:toor@169.254.169.254/latest").unwrap();
     assert!(matches!(
         filter.validate_url(&url_userinfo_meta),
-        Err(SsrfError::BlockedHost(_)) | Err(SsrfError::BlockedIp(_))
+        Err(SsrfError::InvalidUrl(_))
     ));
 
     let url_userinfo_internal =
         Url::parse("https://user:pass@metadata.google.internal/v1").unwrap();
     assert!(matches!(
         filter.validate_url(&url_userinfo_internal),
-        Err(SsrfError::BlockedHost(_))
+        Err(SsrfError::InvalidUrl(_))
     ));
 }
 

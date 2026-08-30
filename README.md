@@ -1,143 +1,132 @@
-# 🔐 `skyauth`
+# SkyAuth
 
-[![crates.io](https://img.shields.io/crates/v/atproto-oauth.svg)](https://crates.io/crates/atproto-oauth)
-[![docs.rs](https://docs.rs/atproto-oauth/badge.svg)](https://docs.rs/atproto-oauth)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
-[![Safety Guard](https://img.shields.io/badge/unsafe-forbidden-success.svg)](src/lib.rs)
+SkyAuth is a Rust library for the current AT Protocol OAuth profile. It provides strict identity
+and metadata discovery, PKCE, PAR, DPoP-bound token exchange and refresh, protected XRPC requests,
+single-use authorization state, granular scope parsing, and optional framework integrations.
 
-> **Pure Safe Rust (`#![forbid(unsafe_code)]`), Zero-Panic AT Protocol OAuth 2.1 Client with RFC 9449 DPoP, RFC 9126 PAR, RFC 7636 PKCE, & Formal Mathematical Verification**
+The crate itself forbids unsafe code. Network access is routed through one transport that resolves
+and validates every address, pins the selected destination, disables implicit redirects, and bounds
+response bodies. Framework features are opt-in.
 
----
+## Status
 
-## 🌟 Highlights
+Version `0.2.0` is a breaking hardening release. It supports public AT Protocol clients. A
+confidential-client configuration is rejected until `private_key_jwt` support is complete.
 
-- **100% Pure Safe Rust**: `#![forbid(unsafe_code)]` enforced crate-wide with 0 `unsafe` blocks and zero production panics.
-- **RFC 9449 DPoP**: Ephemeral ECDSA P-256 key generation, RFC 7517 JWK formatting, RFC 7638 JWK Thumbprints (`jkt`), signed `dpop+jwt` proof tokens, access token hash (`ath`), and transparent auto-nonce retry negotiation.
-- **RFC 9126 PAR (Pushed Authorization Requests)**: Direct back-channel pushing of authorization parameters with signed DPoP headers.
-- **RFC 7636 PKCE**: High-entropy 43-character Base64URL verifier generation, SHA-256 S256 challenge derivation, and constant-time verification.
-- **Decentralized Identity Discovery**: Handle normalization, DNS TXT resolution (`_atproto.<handle>`), HTTPS fallback (`/.well-known/atproto-did`), DID resolution (`did:plc`, `did:web`), and bidirectional `alsoKnownAs` verification.
-- **RFC 8414 & RFC 9728 Discovery**: Protected Resource Metadata and Authorization Server Metadata discovery with automatic OIDC fallback.
-- **Strict SSRF & DNS Rebinding Security**: Full IP boundary filtering blocking RFC 1918 private IPs, loopback, link-local, cloud metadata (`169.254.169.254`), IPv6 ULA, and DNS socket pinning.
-- **64-Shard Partitioned State Store**: Lock-free scaling state storage across 64 independent `RwLock` shards with atomic single-use state consumption ([`OAuthStore::take_state`]) and drift-free background TTL pruning.
-- **Web Framework Integrations**: Ready-to-use extractors, response generators, and middleware for **Axum 0.7**, **Actix-Web 4**, and **Tower**.
-- **Formal Mathematical Verification**: Verified using **Verus** (deductive contracts) and **Kani** (bounded model checking with 36 mandatory anti-vacuity reachability checks).
-- **Dynamic Schema Invariants**: Bundled official ATProto Lexicons and RFC schemas with continuous automated upstream drift detection.
+The supported minimum Rust version is 1.85.
 
----
-
-## 🚀 Quick Start
-
-Add `atproto-oauth` to your `Cargo.toml`:
+## Installation
 
 ```toml
 [dependencies]
-atproto-oauth = "0.1"
+skyauth = "0.2"
 ```
 
-### 1. DPoP Proof Generation & Verification
+Enable only the framework adapters you use:
 
-```rust
-use skyauth::dpop::{DPoPKey, DPoPVerifier, compute_access_token_hash};
-use skyauth::pkce::PkcePair;
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Generate PKCE code challenge
-    let pkce = PkcePair::generate();
-    assert_eq!(pkce.verifier.len(), 43);
-
-    // 2. Generate ephemeral DPoP keypair
-    let dpop_key = DPoPKey::generate();
-    let jkt = dpop_key.jwk_thumbprint();
-
-    // 3. Create a DPoP proof for a token request
-    let proof = dpop_key.create_proof(
-        "POST",
-        "https://pds.example.com/oauth/token",
-        None,
-        None,
-    )?;
-
-    // 4. Verify inbound DPoP proof
-    let verifier = DPoPVerifier::new();
-    let (claims, jwk) = verifier.verify_proof(
-        &proof,
-        "POST",
-        "https://pds.example.com/oauth/token",
-        None,
-        None,
-        None,
-    )?;
-    assert_eq!(claims.htm, "POST");
-
-    Ok(())
-}
+```toml
+skyauth = { version = "0.2", features = ["axum", "tower"] }
 ```
 
-### 2. Full OAuth Client Lifecycle
+## OAuth client
 
-```rust
-use skyauth::client::{AtprotoOAuthClient, OAuthClientMetadata};
-use skyauth::store::OAuthStateStore;
-use std::sync::Arc;
+```no_run
+use skyauth::client::{AtprotoOAuthClient, CallbackParams, OAuthClientMetadata};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let metadata = OAuthClientMetadata {
-        client_id: "https://my-app.example.com/client-metadata.json".to_string(),
-        client_name: Some("My ATProto App".to_string()),
-        client_uri: Some("https://my-app.example.com".to_string()),
-        redirect_uris: vec!["https://my-app.example.com/oauth/callback".to_string()],
-        grant_types: vec!["authorization_code".to_string(), "refresh_token".to_string()],
-        response_types: vec!["code".to_string()],
-        scope: "atproto transition:generic".to_string(),
-        token_endpoint_auth_method: "none".to_string(),
-        dpop_bound_access_tokens: true,
-        jwks_uri: None,
-    };
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let metadata = OAuthClientMetadata::new(
+    "https://app.example.com/oauth-client-metadata.json",
+    "https://app.example.com/oauth/callback",
+);
 
-    let state_store = Arc::new(OAuthStateStore::new());
-    let client = AtprotoOAuthClient::builder()
-        .metadata(metadata)
-        .state_store(state_store)
-        .build()?;
+let client = AtprotoOAuthClient::builder()
+    .client_metadata(metadata)
+    .in_memory_state_store()
+    .build()?;
 
-    // Initiate login with handle or DID
-    let auth_req = client.authorize("alice.bsky.social").await?;
-    println!("Redirect user to: {}", auth_req.authorization_url);
+let request = client.initiate_login("alice.example.com").await?;
+println!("redirect the browser to {}", request.authorization_url());
 
-    Ok(())
-}
+let callback = CallbackParams::new("authorization-code", request.expose_state())
+    .with_iss("https://issuer.example.com");
+let session = client.handle_callback(&callback).await?;
+
+let response = client
+    .send_dpop_request(
+        session.dpop_key(),
+        reqwest::Method::GET,
+        "https://pds.example.com/xrpc/app.bsky.actor.getProfile?actor=alice.example.com",
+        Some(session.expose_access_token()),
+        None,
+        None,
+    )
+    .await?;
+assert!(response.status().is_success());
+# Ok(())
+# }
 ```
 
----
+The builder requires an explicit state store. `.in_memory_state_store()` selects the bundled
+64-shard store. A distributed `OAuthStore` implementation must preserve atomic insert, consume,
+refresh lease, and refresh commit semantics.
 
-## 🛡️ Formal Verification & Mathematical Invariants
+## Inbound Tower authorization
 
-`skyauth` incorporates a multi-layered formal verification hierarchy to eliminate security vulnerabilities:
+The `tower` feature requires an `AccessTokenValidator`, a bounded replay store, a nonce manager,
+trusted external URL configuration, issuer and audience policy, and route scopes. A DPoP proof is
+accepted only with an independently validated access token whose `cnf.jkt` matches the proof key.
+See the public types in `skyauth::integrations::tower` and the integration tests for complete setup.
 
-1. **Verus Deductive Contracts (`verus!`)**: Mathematical proofs for session state transitions, constant-time comparisons, and PKCE deterministic bounds.
-2. **Kani Bounded Model Checking (`kani::proof`)**: 5 exhaustive verification harnesses checking all symbolic byte inputs.
-3. **Anti-Vacuity Coverage (`kani::cover!`)**: 36 mandatory reachability checks ensuring harnesses actually exercise functional code paths.
+## Permissions
 
----
+`ScopeSet` parses the current AT Protocol permission grammar, including `repo`, `rpc`, `blob`,
+`account`, `identity`, and `include` entries. Permission-set expansion is available through an
+`AuthenticatedLexiconResolver`; implementations are responsible for authenticated DNS, DID,
+repository, commit, MST, collection, record-key, and CID verification.
 
-## 🧪 Running Tests & Formal Proofs
+## Session persistence
+
+Sessions do not implement generic Serde traits. Credential persistence is explicit:
+
+```no_run
+use skyauth::session::SecretExportPermit;
+# use skyauth::session::OAuthSession;
+# fn save(session: &OAuthSession) -> Result<(), Box<dyn std::error::Error>> {
+let bytes = session.export_for_persistence(
+    SecretExportPermit::for_encrypted_persistence(),
+)?;
+// Encrypt `bytes` before writing them to durable storage.
+# drop(bytes);
+# Ok(())
+# }
+```
+
+## Verification
+
+The required local gate is:
 
 ```bash
-# Run unit, integration, and RFC vector test suites (730+ tests)
-cargo test --all-targets --all-features
-
-# Verify strict clippy compliance (0 warnings)
+cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
-
-# Verify specification drift against official ATProto Lexicons & RFC schemas
+cargo test --all-targets --all-features
 bash scripts/sync_specs.sh --verify
 ```
 
----
+Additional release gates include rustdoc, doctests, feature combinations, the Rust 1.85 MSRV,
+`cargo deny`, `cargo package`, Kani, and Verus. The exact proof inventory, bounds, tool versions,
+and exclusions are in [docs/formal-verification.md](docs/formal-verification.md).
 
-## 📄 License
+`scripts/sync_specs.sh --verify` checks local integrity without network access.
+`scripts/sync_specs.sh --check-upstream` separately checks the recorded authoritative sources.
 
-Dual-licensed under either:
-- **MIT License** ([LICENSE-MIT](LICENSE-MIT))
-- **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE))
+## Protocol references
+
+- <https://atproto.com/specs/oauth>
+- <https://atproto.com/specs/permission>
+- <https://atproto.com/specs/lexicon>
+- <https://www.rfc-editor.org/rfc/rfc7636.html>
+- <https://www.rfc-editor.org/rfc/rfc9126.html>
+- <https://www.rfc-editor.org/rfc/rfc9449.html>
+- <https://www.rfc-editor.org/rfc/rfc9728.html>
+
+Licensed under MIT or Apache-2.0.

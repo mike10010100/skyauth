@@ -44,7 +44,9 @@ fn test_p1_01_ephemeral_dpop_with_s256_pkce_32byte() {
 #[test]
 fn test_p1_02_pem_imported_dpop_with_s256_pkce_64byte() {
     let key1 = DPoPKey::generate();
-    let pem = key1.to_pkcs8_pem().unwrap();
+    let pem = key1
+        .export_pkcs8_pem(skyauth::session::SecretExportPermit::for_encrypted_persistence())
+        .unwrap();
     let dpop_key = DPoPKey::from_pkcs8_pem(&pem).unwrap();
 
     let pkce = PkcePair::generate_with_entropy_size(64).unwrap();
@@ -328,9 +330,10 @@ async fn test_p3_01_par_nonce_challenge_retry_success() {
 
     // 2. Cache updated with server nonce
     let cache = DPoPNonceCache::new();
-    cache.set_nonce(&env.auth_server.uri(), nonce.to_string());
+    let key = DPoPKey::generate();
+    cache.set_nonce(&key, &env.auth_server.uri(), nonce.to_string());
     assert_eq!(
-        cache.get_nonce(&env.auth_server.uri()).as_deref(),
+        cache.get_nonce(&key, &env.auth_server.uri()).as_deref(),
         Some("challenge-nonce-1")
     );
 

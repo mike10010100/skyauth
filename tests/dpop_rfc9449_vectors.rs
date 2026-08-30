@@ -187,7 +187,7 @@ fn test_dpop_security_rejections() {
         Some("test-ath"),
         None,
     );
-    assert!(matches!(res, Err(DPoPError::NonceMismatch { .. })));
+    assert!(matches!(res, Err(DPoPError::NonceMismatch)));
 
     // 4. Missing required nonce
     let proof_without_nonce = key
@@ -212,7 +212,7 @@ fn test_dpop_security_rejections() {
         Some("wrong-ath"),
         None,
     );
-    assert!(matches!(res, Err(DPoPError::AthMismatch { .. })));
+    assert!(matches!(res, Err(DPoPError::AthMismatch)));
 
     // 6. Missing required ath
     let res = verifier.verify_proof(
@@ -244,20 +244,43 @@ fn test_dpop_security_rejections() {
 #[test]
 fn test_dpop_nonce_cache_concurrency() {
     let cache = DPoPNonceCache::new();
+    let key = DPoPKey::generate();
     let handles: Vec<_> = (0..10)
         .map(|i| {
             let cache_clone = cache.clone();
+            let key = key.clone();
             std::thread::spawn(move || {
                 let origin = format!("https://pds{i}.example.com");
                 let nonce = format!("nonce-{i}");
-                cache_clone.set_nonce(&origin, nonce.clone());
-                assert_eq!(cache_clone.get_nonce(&origin), Some(nonce));
+                cache_clone.set_nonce(&key, &origin, nonce.clone());
+                assert_eq!(cache_clone.get_nonce(&key, &origin), Some(nonce));
             })
         })
         .collect();
 
     for h in handles {
         h.join().unwrap();
+    }
+
+    let contended_cache = DPoPNonceCache::new();
+    let contended_key = DPoPKey::generate();
+    let contended_origin = "https://shared-pds.example.com";
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(10));
+    let handles: Vec<_> = (0..10)
+        .map(|index| {
+            let cache = contended_cache.clone();
+            let key = contended_key.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                cache.set_nonce(&key, contended_origin, format!("contended-{index}"));
+                barrier.wait();
+                let observed = cache.get_nonce(&key, contended_origin).unwrap();
+                assert!((0..10).any(|candidate| observed == format!("contended-{candidate}")));
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().unwrap();
     }
 }
 

@@ -14,7 +14,9 @@ use axum::response::Response;
 use axum::Json;
 use serde_json::json;
 
-use super::{AuthenticatedUser, OAuthCallbackQuery, OAuthSessionExtension};
+use super::{
+    client_metadata_payload, AuthenticatedUser, OAuthCallbackQuery, OAuthSessionExtension,
+};
 use crate::client::{AuthorizationRequest, OAuthClientMetadata};
 use crate::error::IntegrationError;
 
@@ -92,24 +94,7 @@ where
 pub fn client_metadata_response(
     metadata: &OAuthClientMetadata,
 ) -> Result<Response, IntegrationError> {
-    let redirect_uris = vec![metadata.redirect_uri.clone()];
-    let grant_types = vec![
-        "authorization_code".to_string(),
-        "refresh_token".to_string(),
-    ];
-    let response_types = vec!["code".to_string()];
-
-    let payload = json!({
-        "client_id": metadata.client_id,
-        "client_name": metadata.client_name,
-        "client_uri": metadata.client_id,
-        "redirect_uris": redirect_uris,
-        "grant_types": grant_types,
-        "response_types": response_types,
-        "scope": metadata.scope,
-        "token_endpoint_auth_method": if metadata.client_secret.is_some() { "client_secret_post" } else { "none" },
-        "dpop_bound_access_tokens": true
-    });
+    let payload = client_metadata_payload(metadata);
 
     let json_bytes = serde_json::to_vec(&payload).map_err(|e| {
         IntegrationError::Internal(format!("Failed to serialize client metadata: {e}"))
@@ -135,7 +120,7 @@ pub fn redirect_to_authorization(
 ) -> Result<Response, IntegrationError> {
     Response::builder()
         .status(StatusCode::SEE_OTHER)
-        .header(header::LOCATION, auth_req.authorization_url.as_str())
+        .header(header::LOCATION, auth_req.authorization_url().as_str())
         .header(header::CACHE_CONTROL, "no-store")
         .header(header::PRAGMA, "no-cache")
         .body(axum::body::Body::empty())
@@ -163,14 +148,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(query.code.as_deref(), Some("test_code_123"));
-        assert_eq!(query.state.as_deref(), Some("test_state_456"));
-        assert_eq!(query.iss.as_deref(), Some("https://auth.example.com"));
+        assert_eq!(query.expose_code(), Some("test_code_123"));
+        assert_eq!(query.expose_state(), Some("test_state_456"));
+        assert_eq!(query.issuer(), Some("https://auth.example.com"));
 
         let params = query.to_callback_params().unwrap();
-        assert_eq!(params.code, "test_code_123");
-        assert_eq!(params.state, "test_state_456");
-        assert_eq!(params.iss.as_deref(), Some("https://auth.example.com"));
+        assert_eq!(params.expose_code(), "test_code_123");
+        assert_eq!(params.expose_state(), "test_state_456");
+        assert_eq!(params.issuer(), Some("https://auth.example.com"));
     }
 
     #[tokio::test]
@@ -185,7 +170,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(query.error.as_deref(), Some("access_denied"));
+        assert_eq!(query.error_code(), Some("access_denied"));
         assert!(matches!(
             query.to_callback_params(),
             Err(IntegrationError::OAuthError { .. })
@@ -194,8 +179,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_axum_authenticated_user_from_extensions() {
-        let user =
-            AuthenticatedUser::new("did:plc:alice123", "at_alice_token", "jkt_alice_thumbprint");
+        let user = AuthenticatedUser::new("did:plc:alice123", "jkt_alice_thumbprint");
         let ext = OAuthSessionExtension::new(user.clone());
 
         let mut req = Request::builder()
@@ -210,7 +194,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(extracted.did, "did:plc:alice123");
-        assert_eq!(extracted.access_token, "at_alice_token");
         assert_eq!(extracted.dpop_thumbprint, "jkt_alice_thumbprint");
     }
 
@@ -240,28 +223,13 @@ mod tests {
     #[test]
     fn test_axum_redirect_to_authorization() {
         let url = Url::parse("https://auth.example.com/oauth/authorize?client_id=test&request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3A123").unwrap();
-        let stored_state = crate::client::StoredStateEntry {
-            state: "state_123".to_string(),
-            client_id: "test".to_string(),
-            code_verifier: "pkce_123".to_string(),
-            dpop_key: crate::dpop::DPoPKey::generate(),
-            issuer: "https://auth.example.com".to_string(),
-            did: None,
-            handle: None,
-            redirect_uri: "https://app.example.com/callback".to_string(),
-            pds_endpoint: "https://pds.example.com".to_string(),
-            token_endpoint: "https://auth.example.com/token".to_string(),
-            scopes: "atproto".to_string(),
-            created_at: std::time::SystemTime::now(),
-            expires_in_secs: 300,
-        };
-        let auth_req = AuthorizationRequest {
-            authorization_url: url.clone(),
-            state: "state_123".to_string(),
-            request_uri: "urn:ietf:params:oauth:request_uri:123".to_string(),
-            expires_in: 300,
-            stored_state,
-        };
+        let auth_req = AuthorizationRequest::new(
+            url.clone(),
+            "state_123",
+            "urn:ietf:params:oauth:request_uri:123",
+            300,
+        )
+        .unwrap();
 
         let resp = redirect_to_authorization(&auth_req).unwrap();
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);

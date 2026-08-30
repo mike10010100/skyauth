@@ -39,7 +39,13 @@ impl MockAuthServer {
             "grant_types_supported": ["authorization_code", "refresh_token"],
             "code_challenge_methods_supported": ["S256"],
             "dpop_signing_alg_values_supported": ["ES256"],
-            "require_pushed_authorization_requests": true
+            "require_pushed_authorization_requests": true,
+            "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
+            "token_endpoint_auth_signing_alg_values_supported": ["ES256"],
+            "scopes_supported": ["atproto", "transition:generic"],
+            "authorization_response_iss_parameter_supported": true,
+            "client_id_metadata_document_supported": true,
+            "require_request_uri_registration": true
         });
 
         Mock::given(method("GET"))
@@ -66,6 +72,7 @@ impl MockAuthServer {
             .respond_with(
                 ResponseTemplate::new(201)
                     .insert_header("content-type", "application/json")
+                    .insert_header("dpop-nonce", "par-success-nonce")
                     .set_body_json(response),
             )
             .mount(&self.server)
@@ -120,7 +127,7 @@ impl MockAuthServer {
             "token_type": "DPoP",
             "expires_in": expires_in_secs,
             "refresh_token": refresh_token,
-            "scope": "atproto transition:generic",
+            "scope": "atproto",
             "sub": sub_did
         });
 
@@ -130,6 +137,7 @@ impl MockAuthServer {
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "application/json")
+                    .insert_header("dpop-nonce", "token-success-nonce")
                     .set_body_json(response),
             )
             .mount(&self.server)
@@ -178,6 +186,7 @@ impl MockAuthServer {
             .respond_with(
                 ResponseTemplate::new(400)
                     .insert_header("content-type", "application/json")
+                    .insert_header("dpop-nonce", "invalid-grant-nonce")
                     .set_body_json(json!({
                         "error": "invalid_grant",
                         "error_description": "The provided authorization grant is invalid or expired"

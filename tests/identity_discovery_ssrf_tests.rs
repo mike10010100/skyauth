@@ -18,7 +18,7 @@ use skyauth::discovery::{
     discover_oauth_endpoints, fetch_auth_server_metadata, validate_auth_server_capabilities,
     AuthorizationServerMetadata,
 };
-use skyauth::error::{DiscoveryError, IdentityError};
+use skyauth::error::{DiscoveryError, IdentityError, SsrfError};
 use skyauth::identity::{
     normalize_handle, DidDocument, DidService, DnsTxtResolver, IdentityResolver,
 };
@@ -321,7 +321,10 @@ async fn test_identity_resolver_dns_txt_and_https_fallback() {
         .unwrap();
 
     assert_eq!(resolved.id, format!("did:web:127.0.0.1%3A{port}"));
-    assert_eq!(resolved.extract_pds_endpoint().unwrap(), env.pds.uri());
+    assert!(matches!(
+        resolved.extract_pds_endpoint(),
+        Err(IdentityError::Ssrf(SsrfError::InsecureScheme(_)))
+    ));
 }
 
 #[tokio::test]
@@ -363,7 +366,8 @@ async fn test_did_plc_resolution_and_pds_extraction() {
     let doc = resolver.resolve_did(TEST_ALICE_DID).await.unwrap();
     assert_eq!(doc.id, TEST_ALICE_DID);
     assert!(doc.matches_handle(TEST_ALICE_HANDLE));
-    assert_eq!(doc.extract_pds_endpoint().unwrap(), env.pds.uri());
+    let identity = resolver.resolve_ident(TEST_ALICE_DID).await.unwrap();
+    assert_eq!(identity.pds_endpoint, env.pds.uri());
 }
 
 #[tokio::test]
@@ -406,7 +410,10 @@ async fn test_did_web_resolution() {
         .unwrap();
 
     assert_eq!(resolved.id, format!("did:web:127.0.0.1%3A{port}"));
-    assert_eq!(resolved.extract_pds_endpoint().unwrap(), env.pds.uri());
+    assert!(matches!(
+        resolved.extract_pds_endpoint(),
+        Err(IdentityError::Ssrf(SsrfError::InsecureScheme(_)))
+    ));
 }
 
 #[tokio::test]
@@ -464,8 +471,9 @@ async fn test_full_oauth_discovery_pipeline_success() {
 }
 
 #[tokio::test]
-async fn test_discovery_oidc_fallback() {
+async fn test_discovery_rejects_oidc_fallback() {
     let env = MockOAuthEnvironment::start_default().await;
+    env.auth_server.server.reset().await;
 
     // Mount 404 on /.well-known/oauth-authorization-server, but 200 on /.well-known/openid-configuration
     Mock::given(method("GET"))
@@ -498,15 +506,11 @@ async fn test_discovery_oidc_fallback() {
         .await;
 
     let filter = SsrfFilter::new(true);
-    let meta = fetch_auth_server_metadata(&filter, &env.auth_server.uri())
-        .await
-        .expect("OIDC fallback succeeds");
-
-    assert_eq!(meta.issuer, env.auth_server.uri());
-    assert_eq!(
-        meta.pushed_authorization_request_endpoint,
-        format!("{}/oauth/par", env.auth_server.uri())
-    );
+    let result = fetch_auth_server_metadata(&filter, &env.auth_server.uri()).await;
+    assert!(matches!(
+        result,
+        Err(DiscoveryError::AuthServerDiscoveryFailed(_))
+    ));
 }
 
 #[test]
@@ -527,6 +531,7 @@ fn test_auth_server_capability_violations() {
         scopes_supported: vec!["atproto".to_string()],
         authorization_response_iss_parameter_supported: true,
         client_id_metadata_document_supported: true,
+        require_request_uri_registration: Some(true),
     };
     assert!(matches!(
         validate_auth_server_capabilities(&no_es256, "https://auth.example.com"),

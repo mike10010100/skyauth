@@ -69,6 +69,7 @@ async fn test_par_1hop_auto_nonce_challenge_success() {
         .respond_with(
             ResponseTemplate::new(201)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "par-success-nonce-1hop")
                 .set_body_json(json!({
                     "request_uri": "urn:ietf:params:oauth:request_uri:req-par-1hop-success",
                     "expires_in": 60
@@ -104,8 +105,8 @@ async fn test_par_1hop_auto_nonce_challenge_success() {
         .origin()
         .ascii_serialization();
     assert_eq!(
-        nonce_cache.get_nonce(&origin),
-        Some("par-fresh-nonce-1hop".to_string())
+        nonce_cache.get_nonce(&dpop_key, &origin),
+        Some("par-success-nonce-1hop".to_string())
     );
 }
 
@@ -183,20 +184,11 @@ async fn test_par_missing_dpop_nonce_header_on_use_dpop_nonce_fails_cleanly() {
 
     let res = execute_par_request(&ssrf_filter, &par_url, &params, &dpop_key, &nonce_cache).await;
 
-    match res {
-        Err(AtprotoOAuthError::Par(ParError::RequestFailed {
-            status,
-            error,
-            description,
-        })) => {
-            assert_eq!(status, 400);
-            assert_eq!(error, "use_dpop_nonce");
-            assert!(description
-                .unwrap_or_default()
-                .contains("Missing DPoP-Nonce header"));
-        }
-        other => panic!("Expected ParError::RequestFailed missing nonce, got {other:?}"),
-    }
+    assert!(matches!(
+        res,
+        Err(AtprotoOAuthError::Par(ParError::Http(message)))
+            if message.contains("DPoP-Nonce response header is required")
+    ));
 }
 
 #[tokio::test]
@@ -231,13 +223,11 @@ async fn test_par_malformed_whitespace_only_nonce_header_fails_cleanly() {
 
     let res = execute_par_request(&ssrf_filter, &par_url, &params, &dpop_key, &nonce_cache).await;
 
-    match res {
-        Err(AtprotoOAuthError::Par(ParError::RequestFailed { status, error, .. })) => {
-            assert_eq!(status, 400);
-            assert_eq!(error, "use_dpop_nonce");
-        }
-        other => panic!("Expected ParError::RequestFailed, got {other:?}"),
-    }
+    assert!(matches!(
+        res,
+        Err(AtprotoOAuthError::Par(ParError::Http(message)))
+            if message.contains("DPoP-Nonce response header is empty")
+    ));
 }
 
 #[tokio::test]
@@ -262,6 +252,7 @@ async fn test_par_padded_nonce_header_trimmed_and_succeeds() {
         .respond_with(
             ResponseTemplate::new(201)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "par-success-padded")
                 .set_body_json(json!({
                     "request_uri": "urn:ietf:params:oauth:request_uri:req-padded-nonce-ok",
                     "expires_in": 90
@@ -295,8 +286,8 @@ async fn test_par_padded_nonce_header_trimmed_and_succeeds() {
         .origin()
         .ascii_serialization();
     assert_eq!(
-        nonce_cache.get_nonce(&origin),
-        Some("clean_padded_nonce_123".to_string())
+        nonce_cache.get_nonce(&dpop_key, &origin),
+        Some("par-success-padded".to_string())
     );
 }
 
@@ -324,6 +315,7 @@ async fn test_par_special_characters_in_nonce_succeeds() {
         .respond_with(
             ResponseTemplate::new(201)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "par-success-special")
                 .set_body_json(json!({
                     "request_uri": "urn:ietf:params:oauth:request_uri:req-special-nonce-ok",
                     "expires_in": 90
@@ -357,13 +349,13 @@ async fn test_par_special_characters_in_nonce_succeeds() {
         .origin()
         .ascii_serialization();
     assert_eq!(
-        nonce_cache.get_nonce(&origin),
-        Some(special_nonce.to_string())
+        nonce_cache.get_nonce(&dpop_key, &origin),
+        Some("par-success-special".to_string())
     );
 }
 
 #[tokio::test]
-async fn test_par_huge_nonce_stress_no_overflow() {
+async fn test_par_oversized_nonce_is_rejected() {
     let mock_server = MockServer::start().await;
     let par_url = format!("{}/oauth/par", mock_server.uri());
 
@@ -381,19 +373,6 @@ async fn test_par_huge_nonce_stress_no_overflow() {
         .mount(&mock_server)
         .await;
 
-    Mock::given(method("POST"))
-        .and(path("/oauth/par"))
-        .respond_with(
-            ResponseTemplate::new(201)
-                .insert_header("content-type", "application/json")
-                .set_body_json(json!({
-                    "request_uri": "urn:ietf:params:oauth:request_uri:req-huge-nonce-ok",
-                    "expires_in": 90
-                })),
-        )
-        .mount(&mock_server)
-        .await;
-
     let ssrf_filter = SsrfFilter::new(true);
     let dpop_key = DPoPKey::generate();
     let nonce_cache = DPoPNonceCache::new();
@@ -405,20 +384,18 @@ async fn test_par_huge_nonce_stress_no_overflow() {
         "challenge_huge",
     );
 
-    let res = execute_par_request(&ssrf_filter, &par_url, &params, &dpop_key, &nonce_cache)
-        .await
-        .unwrap();
-
-    assert_eq!(
-        res.request_uri,
-        "urn:ietf:params:oauth:request_uri:req-huge-nonce-ok"
-    );
+    let res = execute_par_request(&ssrf_filter, &par_url, &params, &dpop_key, &nonce_cache).await;
 
     let origin = url::Url::parse(&par_url)
         .unwrap()
         .origin()
         .ascii_serialization();
-    assert_eq!(nonce_cache.get_nonce(&origin), Some(huge_nonce));
+    assert!(matches!(
+        res,
+        Err(AtprotoOAuthError::Par(ParError::Http(message)))
+            if message.contains("DPoP-Nonce response header exceeds")
+    ));
+    assert_eq!(nonce_cache.get_nonce(&dpop_key, &origin), None);
 }
 
 #[tokio::test]
@@ -446,24 +423,26 @@ async fn test_token_exchange_1hop_auto_nonce_challenge_success() {
         .build();
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .identity_resolver(resolver)
         .allow_insecure_localhost(true)
         .build()
         .unwrap();
 
-    let (_, stored_state) = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
-    let session = client
-        .exchange_code("valid_auth_code_1hop", &stored_state)
-        .await
-        .unwrap();
+    let auth_req = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
+    let callback = CallbackParams::new("valid_auth_code_1hop", auth_req.expose_state())
+        .with_iss(env.auth_server.uri());
+    let session = client.handle_callback(&callback).await.unwrap();
 
     assert_eq!(session.sub(), TEST_ALICE_DID);
-    assert_eq!(session.access_token(), access_token);
-    assert_eq!(session.refresh_token(), Some(refresh_token));
+    assert_eq!(session.expose_access_token(), access_token);
+    assert_eq!(session.expose_refresh_token(), Some(refresh_token));
     assert_eq!(
-        client.nonce_cache().get_nonce(&env.auth_server.uri()),
-        Some("token-exchange-fresh-nonce-1hop".to_string())
+        client
+            .nonce_cache()
+            .get_nonce(session.dpop_key(), &env.auth_server.uri()),
+        Some("token-success-nonce".to_string())
     );
 }
 
@@ -500,16 +479,17 @@ async fn test_token_exchange_2hop_nonce_challenge_fails_without_infinite_loop() 
         .build();
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .identity_resolver(resolver)
         .allow_insecure_localhost(true)
         .build()
         .unwrap();
 
-    let (_, stored_state) = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
-    let res = client
-        .exchange_code("auth_code_2hop_test", &stored_state)
-        .await;
+    let auth_req = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
+    let callback = CallbackParams::new("auth_code_2hop_test", auth_req.expose_state())
+        .with_iss(env.auth_server.uri());
+    let res = client.handle_callback(&callback).await;
 
     assert!(matches!(
         res,
@@ -546,31 +526,24 @@ async fn test_token_exchange_missing_dpop_nonce_header_on_use_dpop_nonce_fails_c
         .build();
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .identity_resolver(resolver)
         .allow_insecure_localhost(true)
         .build()
         .unwrap();
 
-    let (_, stored_state) = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
-    let res = client
-        .exchange_code("code_missing_nonce_hdr", &stored_state)
-        .await;
+    let auth_req = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
+    let callback = CallbackParams::new("code_missing_nonce_hdr", auth_req.expose_state())
+        .with_iss(env.auth_server.uri());
+    let res = client.handle_callback(&callback).await;
 
-    match res {
-        Err(AtprotoOAuthError::Token(TokenError::RequestFailed {
-            status,
-            error,
-            description,
-        })) => {
-            assert_eq!(status, 400);
-            assert_eq!(error, "use_dpop_nonce");
-            assert!(description
-                .unwrap_or_default()
-                .contains("Missing DPoP-Nonce header"));
-        }
-        other => panic!("Expected TokenError::RequestFailed with missing nonce, got {other:?}"),
-    }
+    assert!(matches!(
+        res,
+        Err(AtprotoOAuthError::Token(TokenError::MissingField(
+            "DPoP-Nonce"
+        )))
+    ));
 }
 
 #[tokio::test]
@@ -589,12 +562,13 @@ async fn test_token_refresh_1hop_auto_nonce_challenge_success() {
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "nonce-initial-refresh")
                 .set_body_json(json!({
                     "access_token": initial_at,
                     "token_type": "DPoP",
                     "expires_in": 3600,
                     "refresh_token": initial_rt,
-                    "scope": "atproto transition:generic",
+                    "scope": "atproto",
                     "sub": TEST_ALICE_DID
                 })),
         )
@@ -610,17 +584,17 @@ async fn test_token_refresh_1hop_auto_nonce_challenge_success() {
         .build();
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .identity_resolver(resolver)
         .allow_insecure_localhost(true)
         .build()
         .unwrap();
 
-    let (_, stored_state) = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
-    let mut session = client
-        .exchange_code("code_for_refresh_test", &stored_state)
-        .await
-        .unwrap();
+    let auth_req = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
+    let callback = CallbackParams::new("code_for_refresh_test", auth_req.expose_state())
+        .with_iss(env.auth_server.uri());
+    let mut session = client.handle_callback(&callback).await.unwrap();
 
     env.auth_server
         .mount_token_nonce_challenge_once("refresh-fresh-nonce-turn-2")
@@ -633,11 +607,13 @@ async fn test_token_refresh_1hop_auto_nonce_challenge_success() {
         .await;
 
     client.refresh_session(&mut session).await.unwrap();
-    assert_eq!(session.access_token(), rotated_at);
-    assert_eq!(session.refresh_token(), Some(rotated_rt));
+    assert_eq!(session.expose_access_token(), rotated_at);
+    assert_eq!(session.expose_refresh_token(), Some(rotated_rt));
     assert_eq!(
-        client.nonce_cache().get_nonce(&env.auth_server.uri()),
-        Some("refresh-fresh-nonce-turn-2".to_string())
+        client
+            .nonce_cache()
+            .get_nonce(session.dpop_key(), &env.auth_server.uri()),
+        Some("token-success-nonce".to_string())
     );
 }
 
@@ -662,17 +638,17 @@ async fn test_xrpc_send_dpop_request_1hop_auto_nonce_challenge_success() {
         .build();
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .identity_resolver(resolver)
         .allow_insecure_localhost(true)
         .build()
         .unwrap();
 
-    let (_, stored_state) = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
-    let session = client
-        .exchange_code("code_for_xrpc", &stored_state)
-        .await
-        .unwrap();
+    let auth_req = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
+    let callback = CallbackParams::new("code_for_xrpc", auth_req.expose_state())
+        .with_iss(env.auth_server.uri());
+    let session = client.handle_callback(&callback).await.unwrap();
 
     let xrpc_path = "/xrpc/app.bsky.actor.getPreferences";
     Mock::given(method("GET"))
@@ -696,6 +672,7 @@ async fn test_xrpc_send_dpop_request_1hop_auto_nonce_challenge_success() {
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "pds-xrpc-fresh-nonce-2")
                 .set_body_json(json!({"preferences": []})),
         )
         .mount(&env.pds.server)
@@ -707,7 +684,7 @@ async fn test_xrpc_send_dpop_request_1hop_auto_nonce_challenge_success() {
             session.dpop_key(),
             reqwest::Method::GET,
             &xrpc_url,
-            Some(session.access_token()),
+            Some(session.expose_access_token()),
             None,
             None,
         )
@@ -716,8 +693,10 @@ async fn test_xrpc_send_dpop_request_1hop_auto_nonce_challenge_success() {
 
     assert_eq!(resp.status(), 200);
     assert_eq!(
-        client.nonce_cache().get_nonce(&env.pds.uri()),
-        Some("pds-xrpc-fresh-nonce-1".to_string())
+        client
+            .nonce_cache()
+            .get_nonce(session.dpop_key(), &env.pds.uri()),
+        Some("pds-xrpc-fresh-nonce-2".to_string())
     );
 }
 
@@ -742,6 +721,7 @@ async fn test_xrpc_2hop_nonce_challenge_fails_without_infinite_loop() {
         .await;
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .allow_insecure_localhost(true)
         .build()
@@ -780,6 +760,7 @@ async fn test_par_error_http_400_invalid_client() {
         .respond_with(
             ResponseTemplate::new(400)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "par-error-invalid-client")
                 .set_body_json(json!({
                     "error": "invalid_client",
                     "error_description": "Unknown client identifier"
@@ -809,7 +790,7 @@ async fn test_par_error_http_400_invalid_client() {
         })) => {
             assert_eq!(status, 400);
             assert_eq!(error, "invalid_client");
-            assert_eq!(description.as_deref(), Some("Unknown client identifier"));
+            assert_eq!(description, None);
         }
         other => panic!("Expected ParError::RequestFailed invalid_client, got {other:?}"),
     }
@@ -825,6 +806,7 @@ async fn test_par_error_http_400_invalid_redirect_uri() {
         .respond_with(
             ResponseTemplate::new(400)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "par-error-invalid-redirect")
                 .set_body_json(json!({
                     "error": "invalid_redirect_uri",
                     "error_description": "The redirect URI is not registered for this client"
@@ -854,10 +836,7 @@ async fn test_par_error_http_400_invalid_redirect_uri() {
         })) => {
             assert_eq!(status, 400);
             assert_eq!(error, "invalid_redirect_uri");
-            assert_eq!(
-                description.as_deref(),
-                Some("The redirect URI is not registered for this client")
-            );
+            assert_eq!(description, None);
         }
         other => panic!("Expected ParError::RequestFailed invalid_redirect_uri, got {other:?}"),
     }
@@ -873,6 +852,7 @@ async fn test_par_error_http_400_invalid_request_missing_parameters() {
         .respond_with(
             ResponseTemplate::new(400)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "par-error-invalid-request")
                 .set_body_json(json!({
                     "error": "invalid_request",
                     "error_description": "Missing mandatory parameter: code_challenge"
@@ -902,10 +882,7 @@ async fn test_par_error_http_400_invalid_request_missing_parameters() {
         })) => {
             assert_eq!(status, 400);
             assert_eq!(error, "invalid_request");
-            assert_eq!(
-                description.as_deref(),
-                Some("Missing mandatory parameter: code_challenge")
-            );
+            assert_eq!(description, None);
         }
         other => panic!("Expected ParError::RequestFailed invalid_request, got {other:?}"),
     }
@@ -921,6 +898,7 @@ async fn test_par_error_empty_request_uri_in_201_response() {
         .respond_with(
             ResponseTemplate::new(201)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "par-error-empty-request-uri")
                 .set_body_json(json!({
                     "request_uri": "   ",
                     "expires_in": 90
@@ -958,6 +936,7 @@ async fn test_par_error_missing_expires_in_field() {
         .respond_with(
             ResponseTemplate::new(201)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "par-error-missing-expiry")
                 .set_body_json(json!({
                     "request_uri": "urn:ietf:params:oauth:request_uri:req-test-missing-exp"
                 })),
@@ -994,6 +973,7 @@ async fn test_par_error_html_non_json_error_page_502() {
         .respond_with(
             ResponseTemplate::new(502)
                 .insert_header("content-type", "text/html")
+                .insert_header("dpop-nonce", "par-error-bad-gateway")
                 .set_body_string("<html><body><h1>502 Bad Gateway</h1></body></html>"),
         )
         .mount(&mock_server)
@@ -1031,6 +1011,7 @@ async fn test_par_error_http_500_internal_server_error() {
         .respond_with(
             ResponseTemplate::new(500)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "par-error-server")
                 .set_body_json(json!({
                     "error": "server_error",
                     "error_description": "Database connection failed"
@@ -1060,7 +1041,7 @@ async fn test_par_error_http_500_internal_server_error() {
         })) => {
             assert_eq!(status, 500);
             assert_eq!(error, "server_error");
-            assert_eq!(description.as_deref(), Some("Database connection failed"));
+            assert_eq!(description, None);
         }
         other => panic!("Expected ParError::RequestFailed 500, got {other:?}"),
     }
@@ -1077,6 +1058,7 @@ async fn test_par_error_http_status_codes_401_403_503() {
             .respond_with(
                 ResponseTemplate::new(code)
                     .insert_header("content-type", "application/json")
+                    .insert_header("dpop-nonce", format!("par-error-{code}"))
                     .set_body_json(json!({
                         "error": format!("error_{code}"),
                         "error_description": format!("HTTP {code} test")
@@ -1106,9 +1088,8 @@ async fn test_par_error_http_status_codes_401_403_503() {
                 description,
             })) => {
                 assert_eq!(status, code);
-                assert_eq!(error, format!("error_{code}"));
-                let expected_desc = format!("HTTP {code} test");
-                assert_eq!(description.as_deref(), Some(expected_desc.as_str()));
+                assert_eq!(error, "par_request_failed");
+                assert_eq!(description, None);
             }
             other => panic!("Expected ParError::RequestFailed for {code}, got {other:?}"),
         }

@@ -11,21 +11,21 @@ use skyauth::store::{OAuthStateStore, OAuthStore, DEFAULT_STATE_TTL, NUM_SHARDS}
 use tokio_util::sync::CancellationToken;
 
 fn create_test_state(state: &str, ttl_secs: u64) -> StoredStateEntry {
-    StoredStateEntry {
-        state: state.to_string(),
-        client_id: "https://feed.example.com/client-metadata.json".to_string(),
-        code_verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk".to_string(),
-        dpop_key: DPoPKey::generate(),
-        issuer: "https://auth.bsky.social".to_string(),
-        did: Some("did:plc:ragtjsm2j2vknq6tfur4vg6u".to_string()),
-        handle: Some("alice.bsky.social".to_string()),
-        redirect_uri: "https://feed.example.com/oauth/callback".to_string(),
-        pds_endpoint: "https://morel.us-east.host.bsky.network".to_string(),
-        token_endpoint: "https://auth.bsky.social/oauth/token".to_string(),
-        scopes: "atproto transition:generic".to_string(),
-        created_at: SystemTime::now(),
-        expires_in_secs: ttl_secs,
-    }
+    StoredStateEntry::builder(state, DPoPKey::generate())
+        .client_id("https://feed.example.com/client-metadata.json")
+        .code_verifier("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
+        .issuer("https://auth.bsky.social")
+        .identity(
+            Some("did:plc:ragtjsm2j2vknq6tfur4vg6u".to_string()),
+            Some("alice.bsky.social".to_string()),
+        )
+        .redirect_uri("https://feed.example.com/oauth/callback")
+        .pds_endpoint("https://morel.us-east.host.bsky.network")
+        .token_endpoint("https://auth.bsky.social/oauth/token")
+        .scopes("atproto transition:generic")
+        .lifetime(SystemTime::now(), ttl_secs.max(1))
+        .build()
+        .unwrap()
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn test_concurrent_multishard_high_throughput_100_threads() {
                 // Take
                 let consumed = s.take_state_sync(&key);
                 assert!(consumed.is_some());
-                assert_eq!(consumed.unwrap().state, key);
+                assert_eq!(consumed.unwrap().state(), key);
 
                 // Re-take must fail
                 assert!(s.take_state_sync(&key).is_none());
@@ -159,7 +159,7 @@ fn test_concurrent_multishard_high_throughput_100_threads() {
 }
 
 #[test]
-fn test_ttl_immediate_expiry_and_pruning() {
+fn test_ttl_validation_and_pruning() {
     let store = OAuthStateStore::default();
 
     // Insert 10 active states
@@ -174,19 +174,19 @@ fn test_ttl_immediate_expiry_and_pruning() {
             .unwrap();
     }
 
-    // Insert 15 expired states (0s TTL)
+    // Zero-lifetime entries are rejected.
     for i in 0..15 {
         let key = format!("expired_state_{i}");
-        store
-            .insert_state_sync(key.clone(), create_test_state(&key, 0), Duration::ZERO)
-            .unwrap();
+        assert!(store
+            .insert_state_sync(key.clone(), create_test_state(&key, 300), Duration::ZERO,)
+            .is_err());
     }
 
-    assert_eq!(store.total_entries(), 25);
+    assert_eq!(store.total_entries(), 10);
 
-    // Prune expired
+    // Active entries remain after pruning.
     let pruned = store.prune_expired_sync();
-    assert_eq!(pruned, 15);
+    assert_eq!(pruned, 0);
     assert_eq!(store.total_entries(), 10);
 
     // Second prune should evict 0
@@ -218,7 +218,7 @@ async fn test_oauth_store_trait_async_lifecycle() {
     // 3. Take state
     let taken = store.take_state(key).await.unwrap();
     assert!(taken.is_some());
-    assert_eq!(taken.unwrap().state, key);
+    assert_eq!(taken.unwrap().state(), key);
 
     // 4. Repeated take returns None
     assert!(store.take_state(key).await.unwrap().is_none());
@@ -228,7 +228,7 @@ async fn test_oauth_store_trait_async_lifecycle() {
     assert_eq!(store.prune_expired().await.unwrap(), 0);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_background_pruner_task_lifecycle_and_cancellation() {
     let store = Arc::new(OAuthStateStore::default());
     let cancel_token = CancellationToken::new();
@@ -237,30 +237,26 @@ async fn test_background_pruner_task_lifecycle_and_cancellation() {
     for i in 0..20 {
         let key = format!("bg_exp_{i}");
         store
-            .insert_state_sync(key.clone(), create_test_state(&key, 0), Duration::ZERO)
+            .insert_state_sync(
+                key.clone(),
+                create_test_state(&key, 1),
+                Duration::from_millis(1),
+            )
             .unwrap();
     }
     assert_eq!(store.total_entries(), 20);
+    tokio::time::advance(Duration::from_millis(5)).await;
 
     // Spawn background pruner with short interval
-    let pruner_handle = store.spawn_pruning_task(Duration::from_millis(15), cancel_token.clone());
+    let mut pruner_handle =
+        store.spawn_pruning_task(Duration::from_millis(15), cancel_token.clone());
 
-    // Allow pruner tick with resilient polling
-    let mut cleared = false;
-    for _ in 0..50 {
-        if store.total_entries() == 0 {
-            cleared = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(
-        cleared,
-        "Store entries should have been pruned to 0 by background task"
-    );
+    tokio::time::advance(Duration::from_millis(20)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(store.total_entries(), 0);
 
     // Cancel token and join
     cancel_token.cancel();
-    let res = pruner_handle.await;
+    let res = pruner_handle.shutdown().await;
     assert!(res.is_ok());
 }

@@ -17,6 +17,8 @@
     clippy::panic
 )]
 
+mod support;
+
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -28,7 +30,9 @@ use proptest::prelude::*;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use tokio_util::sync::CancellationToken;
+#[cfg(feature = "tower")]
 use tower_layer::Layer;
+#[cfg(feature = "tower")]
 use tower_service::Service;
 
 use skyauth::client::{AuthorizationRequest, OAuthClientMetadata, StoredStateEntry};
@@ -39,22 +43,24 @@ use skyauth::integrations::{AuthenticatedUser, OAuthCallbackQuery, OAuthSessionE
 use skyauth::store::{OAuthStateStore, OAuthStore, DEFAULT_STATE_TTL, NUM_SHARDS};
 
 fn mock_stored_state(state: &str, ttl_secs: u64) -> StoredStateEntry {
-    StoredStateEntry {
-        state: state.to_string(),
-        client_id: "https://app.example.com/client-metadata.json".to_string(),
-        code_verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk-sample-pkce-verifier"
-            .to_string(),
-        dpop_key: DPoPKey::generate(),
-        issuer: "https://auth.example.com".to_string(),
-        did: Some("did:plc:alice1234567890abcdef".to_string()),
-        handle: Some("alice.bsky.social".to_string()),
-        redirect_uri: "https://app.example.com/callback".to_string(),
-        pds_endpoint: "https://pds.example.com".to_string(),
-        token_endpoint: "https://auth.example.com/oauth/token".to_string(),
-        scopes: "atproto transition:generic".to_string(),
-        created_at: SystemTime::now(),
-        expires_in_secs: ttl_secs,
-    }
+    try_mock_stored_state(state, ttl_secs).unwrap()
+}
+
+fn try_mock_stored_state(state: &str, ttl_secs: u64) -> Result<StoredStateEntry, StoreError> {
+    StoredStateEntry::builder(state, DPoPKey::generate())
+        .client_id("https://app.example.com/client-metadata.json")
+        .code_verifier("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk-sample-pkce-verifier")
+        .issuer("https://auth.example.com")
+        .identity(
+            Some("did:plc:alice1234567890abcdef".to_string()),
+            Some("alice.bsky.social".to_string()),
+        )
+        .redirect_uri("https://app.example.com/callback")
+        .pds_endpoint("https://pds.example.com")
+        .token_endpoint("https://auth.example.com/oauth/token")
+        .scopes("atproto transition:generic")
+        .lifetime(SystemTime::now(), ttl_secs.max(1))
+        .build()
 }
 
 // =========================================================================
@@ -96,7 +102,7 @@ fn test_challenge_100_threads_racing_take_state_single_key() {
                         b.wait();
                         let result = s.take_state_sync(&k);
                         if let Some(record) = result {
-                            assert_eq!(record.state, k);
+                            assert_eq!(record.state(), k);
                             w.fetch_add(1, Ordering::SeqCst);
                         }
                     })
@@ -147,7 +153,7 @@ async fn test_challenge_100_async_tasks_racing_take_state() {
         tasks.push(tokio::spawn(async move {
             b.wait().await;
             if let Ok(Some(record)) = s.take_state(&k).await {
-                assert_eq!(record.state, k);
+                assert_eq!(record.state(), k);
                 w.fetch_add(1, Ordering::SeqCst);
             }
         }));
@@ -349,16 +355,15 @@ fn test_challenge_ttl_boundary_exact_epsilon_resolution() {
 fn test_challenge_ttl_edge_cases_zero_and_extreme_durations() {
     let store = OAuthStateStore::default();
 
-    // 1. Duration::ZERO - must be immediately expired
+    // 1. Duration::ZERO is not a valid pending transaction lifetime.
     let zero_key = "zero_ttl_key";
-    store
-        .insert_state_sync(
-            zero_key.to_string(),
-            mock_stored_state(zero_key, 0),
-            Duration::ZERO,
-        )
-        .unwrap();
+    let result = store.insert_state_sync(
+        zero_key.to_string(),
+        mock_stored_state(zero_key, 0),
+        Duration::ZERO,
+    );
 
+    assert!(result.is_err());
     assert!(!store.contains_state_sync(zero_key));
     assert!(store.take_state_sync(zero_key).is_none());
 
@@ -389,7 +394,7 @@ fn test_challenge_ttl_edge_cases_zero_and_extreme_durations() {
     assert!(store.contains_state_sync(huge_key));
     let taken = store.take_state_sync(huge_key);
     assert!(taken.is_some());
-    assert_eq!(taken.unwrap().state, huge_key);
+    assert_eq!(taken.unwrap().state(), huge_key);
 }
 
 #[tokio::test]
@@ -398,7 +403,8 @@ async fn test_challenge_massive_concurrent_insertions_during_background_pruner()
     let cancel_token = CancellationToken::new();
 
     // Spawn aggressive background pruner running every 2 milliseconds
-    let pruner_handle = store.spawn_pruning_task(Duration::from_millis(2), cancel_token.clone());
+    let mut pruner_handle =
+        store.spawn_pruning_task(Duration::from_millis(2), cancel_token.clone());
 
     let num_writers = 40;
     let items_per_writer = 100;
@@ -427,7 +433,12 @@ async fn test_challenge_massive_concurrent_insertions_during_background_pruner()
                     _ => Duration::from_secs(60),
                 };
 
-                s.insert_state(key, entry, ttl).await.unwrap();
+                let result = s.insert_state(key, entry, ttl).await;
+                if ttl.is_zero() {
+                    assert!(result.is_err());
+                } else {
+                    result.unwrap();
+                }
             }
         }));
     }
@@ -452,7 +463,7 @@ async fn test_challenge_massive_concurrent_insertions_during_background_pruner()
 
     // Cancel background pruner
     cancel_token.cancel();
-    let res = pruner_handle.await;
+    let res = pruner_handle.shutdown().await;
     assert!(res.is_ok());
 
     // Verify all active items can be taken
@@ -589,18 +600,20 @@ fn test_challenge_shard_index_deterministic_invariance() {
 mod tower_stress_tests {
     use super::*;
     use skyauth::integrations::tower::OAuthAuthLayer;
+    use support::TestTokenAuthority;
     use tower::service_fn;
 
     #[tokio::test]
     async fn test_challenge_tower_middleware_concurrent_valid_and_invalid_dpop() {
         let key = DPoPKey::generate();
         let jkt = key.jwk_thumbprint();
-        let access_token = "concurrent_valid_access_token_xyz";
-        let ath = compute_access_token_hash(access_token);
+        let auth = TestTokenAuthority::new();
+        let access_token = auth.issue(&jkt);
+        let ath = compute_access_token_hash(&access_token);
         let uri = "https://pds.example.com/xrpc/app.bsky.feed.getFeedSkeleton";
 
         let verifier = Arc::new(DPoPVerifier::new());
-        let layer = OAuthAuthLayer::new(verifier).with_require_ath(true);
+        let layer = auth.layer(verifier);
 
         let target_jkt = jkt.clone();
         let inner = service_fn(move |req: Request<()>| {
@@ -608,7 +621,7 @@ mod tower_stress_tests {
             async move {
                 let user = req.extensions().get::<AuthenticatedUser>().cloned();
                 if let Some(u) = user {
-                    assert_eq!(u.dpop_thumbprint, expected_jkt);
+                    assert_eq!(u.dpop_thumbprint(), expected_jkt);
                     Ok::<Response<String>, Infallible>(
                         Response::builder()
                             .status(StatusCode::OK)
@@ -727,7 +740,7 @@ mod axum_adversarial_tests {
             .unwrap();
         let err = query.to_callback_params().unwrap_err();
         assert!(
-            matches!(err, IntegrationError::OAuthError { error, description } if error == "server_error" && description == "Internal Authentication Failure")
+            matches!(err, IntegrationError::OAuthError { error, description } if error == "server_error" && description.is_empty())
         );
     }
 }
@@ -760,7 +773,7 @@ proptest! {
         let first_take = store.take_state_sync(&state_key);
         prop_assert!(first_take.is_some());
         let record = first_take.unwrap();
-        prop_assert_eq!(record.state, state_key.clone());
+        prop_assert_eq!(record.state(), state_key.as_str());
 
         // Second take is None
         let second_take = store.take_state_sync(&state_key);
@@ -814,7 +827,7 @@ mod actix_adversarial_tests {
         assert!(matches!(
             err,
             IntegrationError::OAuthError { error, description }
-                if error == "invalid_scope" && description == "The requested scope is invalid"
+                if error == "invalid_scope" && description.is_empty()
         ));
     }
 
@@ -862,10 +875,14 @@ async fn test_challenge_multiple_concurrent_pruners_and_rapid_cancel_cycles() {
             } else {
                 Duration::from_secs(60)
             };
-            store
-                .insert_state(key, mock_stored_state("item", 60), ttl)
-                .await
-                .unwrap();
+            let result = store
+                .insert_state(key.clone(), mock_stored_state(&key, 60), ttl)
+                .await;
+            if ttl.is_zero() {
+                assert!(result.is_err());
+            } else {
+                result.unwrap();
+            }
         }
 
         // Brief yield
@@ -873,8 +890,8 @@ async fn test_challenge_multiple_concurrent_pruners_and_rapid_cancel_cycles() {
 
         // Cancel all pruners and join
         cancel_token.cancel();
-        for h in pruner_handles {
-            let res = h.await;
+        for mut handle in pruner_handles {
+            let res = handle.shutdown().await;
             assert!(res.is_ok());
         }
     }
@@ -896,44 +913,17 @@ fn test_challenge_extreme_key_sizes_and_special_character_encodings() {
     // 1. Empty string key
     let empty_key = "";
     assert!(!store.contains_state_sync(empty_key));
-    store
-        .insert_state_sync(
-            empty_key.to_string(),
-            mock_stored_state("empty", 60),
-            Duration::from_secs(60),
-        )
-        .unwrap();
-    assert!(store.contains_state_sync(empty_key));
-    let taken = store.take_state_sync(empty_key);
-    assert!(taken.is_some());
+    let result = try_mock_stored_state(empty_key, 60);
+    assert!(result.is_err());
     assert!(!store.contains_state_sync(empty_key));
 
     // 2. Extremely large key (64 KB string)
     let large_key = "a".repeat(65536);
-    store
-        .insert_state_sync(
-            large_key.clone(),
-            mock_stored_state("large", 60),
-            Duration::from_secs(60),
-        )
-        .unwrap();
-    assert!(store.contains_state_sync(&large_key));
-    let taken = store.take_state_sync(&large_key);
-    assert!(taken.is_some());
+    assert!(try_mock_stored_state(&large_key, 60).is_err());
     assert!(!store.contains_state_sync(&large_key));
 
     // 3. Multi-byte Unicode and Emoji keys
     let unicode_key = "🔐_state_token_with_emoji_🚀_and_arabic_مرحبا_and_cjk_你好_123";
-    store
-        .insert_state_sync(
-            unicode_key.to_string(),
-            mock_stored_state(unicode_key, 60),
-            Duration::from_secs(60),
-        )
-        .unwrap();
-    assert!(store.contains_state_sync(unicode_key));
-    let taken = store.take_state_sync(unicode_key);
-    assert!(taken.is_some());
-    assert_eq!(taken.unwrap().state, unicode_key);
+    assert!(try_mock_stored_state(unicode_key, 60).is_err());
     assert!(!store.contains_state_sync(unicode_key));
 }

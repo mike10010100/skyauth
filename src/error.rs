@@ -6,6 +6,27 @@
 
 use thiserror::Error;
 
+pub(crate) fn sanitize_oauth_error_code(value: Option<&str>, fallback: &'static str) -> String {
+    match value {
+        Some(
+            code @ ("access_denied"
+            | "invalid_client"
+            | "invalid_grant"
+            | "invalid_redirect_uri"
+            | "invalid_request"
+            | "invalid_scope"
+            | "invalid_token"
+            | "server_error"
+            | "temporarily_unavailable"
+            | "unauthorized_client"
+            | "unsupported_grant_type"
+            | "unsupported_response_type"
+            | "use_dpop_nonce"),
+        ) => code.to_string(),
+        _ => fallback.to_string(),
+    }
+}
+
 /// Root error type encompassing all failure modes across the `atproto-oauth` library.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum AtprotoOAuthError {
@@ -48,6 +69,84 @@ pub enum AtprotoOAuthError {
     /// Framework integration and extractor error.
     #[error("Integration error: {0}")]
     Integration(#[from] IntegrationError),
+
+    /// AT Protocol scope parsing or policy failure.
+    #[error("Scope error: {0}")]
+    Scope(#[from] ScopeError),
+
+    /// OAuth client metadata validation failure.
+    #[error("Client metadata error: {0}")]
+    ClientMetadata(#[from] ClientMetadataError),
+}
+
+/// Errors produced while validating OAuth client configuration or metadata documents.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum ClientMetadataError {
+    /// The client identifier is not a canonical metadata URL.
+    #[error("Invalid client identifier")]
+    InvalidClientId,
+    /// A redirect URI is invalid for the declared application type.
+    #[error("Invalid redirect URI")]
+    InvalidRedirectUri,
+    /// The fetched document does not identify itself with the fetch URL.
+    #[error("Client metadata document identifier mismatch")]
+    ClientIdMismatch,
+    /// A required metadata value is missing or unsupported.
+    #[error("Client metadata profile requirement failed: {0}")]
+    Profile(&'static str),
+    /// Confidential clients are not supported by this client implementation.
+    #[error("Confidential client configuration is not supported")]
+    ConfidentialClientUnsupported,
+    /// No atomic authorization-state and refresh store was configured.
+    #[error("OAuth state store is required")]
+    MissingStateStore,
+}
+
+/// Errors produced while parsing AT Protocol permissions and OAuth scope sets.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum ScopeError {
+    /// The space-separated scope set is malformed.
+    #[error("Invalid OAuth scope set")]
+    InvalidSet,
+    /// The mandatory `atproto` scope is absent.
+    #[error("OAuth scope set is missing 'atproto'")]
+    MissingAtproto,
+    /// A scope or parameter appears more than once.
+    #[error("Duplicate scope or parameter: {0}")]
+    Duplicate(String),
+    /// A permission contains invalid bytes or percent encoding.
+    #[error("Invalid permission percent encoding")]
+    InvalidEncoding,
+    /// The permission resource is not defined by the current profile.
+    #[error("Unknown permission resource: {0}")]
+    UnknownResource(String),
+    /// The permission contains a parameter unknown for its resource.
+    #[error("Unknown permission parameter")]
+    UnknownParameter,
+    /// A required permission parameter is absent.
+    #[error("Missing permission parameter: {0}")]
+    MissingParameter(&'static str),
+    /// A positional parameter was also supplied by name.
+    #[error("Conflicting positional permission parameter: {0}")]
+    ConflictingPositional(&'static str),
+    /// An RPC permission attempts to cover every method and audience.
+    #[error("RPC permission must constrain its method or audience")]
+    UnboundedRpc,
+    /// A permission is syntactically or semantically invalid.
+    #[error("Invalid AT Protocol permission: {0}")]
+    InvalidPermission(String),
+    /// A permission-set scope requires an authenticated resolver.
+    #[error("Permission-set resolution is required")]
+    ResolverRequired,
+    /// An authenticated Lexicon could not be resolved or validated.
+    #[error("Permission-set resolution failed")]
+    ResolutionFailed,
+    /// A resolved Lexicon is not a valid permission set.
+    #[error("Invalid Lexicon permission set")]
+    InvalidPermissionSet,
+    /// The bounded permission-set cache is full.
+    #[error("Permission-set cache capacity is exhausted")]
+    CacheCapacity,
 }
 
 /// Errors originating from cryptographic operations and primitive transformations.
@@ -175,26 +274,16 @@ pub enum DPoPError {
     },
 
     /// The `nonce` claim does not match the server-issued challenge nonce.
-    #[error("DPoP nonce mismatch: expected '{expected}', got '{actual}'")]
-    NonceMismatch {
-        /// The expected nonce issued by the server.
-        expected: String,
-        /// The actual nonce provided in the proof.
-        actual: String,
-    },
+    #[error("DPoP nonce mismatch")]
+    NonceMismatch,
 
     /// The server requires a DPoP nonce, but none was supplied in the proof.
     #[error("Missing server-required DPoP nonce")]
     MissingNonce,
 
     /// The access token hash (`ath`) claim does not match the SHA-256 hash of the presented access token.
-    #[error("Access token hash (ath) mismatch: expected '{expected}', got '{actual}'")]
-    AthMismatch {
-        /// The expected access token hash.
-        expected: String,
-        /// The actual access token hash in the proof.
-        actual: String,
-    },
+    #[error("Access token hash (ath) mismatch")]
+    AthMismatch,
 
     /// An access token was presented against a protected resource without an `ath` claim in the DPoP proof.
     #[error("Missing access token hash (ath) claim for protected resource access")]
@@ -205,11 +294,16 @@ pub enum DPoPError {
     SignatureVerificationFailed,
 
     /// A duplicate `jti` token identifier was presented, indicating a potential replay attack.
-    #[error("DPoP proof replay detected: jti '{jti}' already consumed")]
-    ReplayDetected {
-        /// The duplicated JWT unique identifier.
-        jti: String,
-    },
+    #[error("DPoP proof replay detected")]
+    ReplayDetected,
+
+    /// Replay state could not be checked within its configured bound.
+    #[error("DPoP replay state unavailable")]
+    ReplayStoreUnavailable,
+
+    /// Nonce state could not be checked within its configured bound.
+    #[error("DPoP nonce state unavailable")]
+    NonceStoreUnavailable,
 
     /// Automatic nonce retry loop exceeded the maximum allowed attempts (1 retry).
     #[error("DPoP nonce retry limit exceeded")]
@@ -333,10 +427,7 @@ pub enum TokenError {
 
     /// The server challenged the client with a DPoP nonce requirement (`use_dpop_nonce`).
     #[error("Server requires DPoP nonce challenge (use_dpop_nonce)")]
-    UseDPoPNonce {
-        /// New nonce value provided by the server, if any.
-        nonce: Option<String>,
-    },
+    UseDPoPNonce,
 
     /// The token format or claims payload is malformed.
     #[error("Malformed token: {0}")]
@@ -363,6 +454,22 @@ pub enum TokenError {
     #[error("Token scope '{0}' is missing mandatory 'atproto' scope")]
     MissingAtprotoScope(String),
 
+    /// The token response contains scopes outside the authorization grant.
+    #[error("Token response scope exceeds the authorization grant")]
+    ScopeEscalation,
+
+    /// The resolved token subject is not hosted by the expected resource authority.
+    #[error("Token subject authority does not match the authorization transaction")]
+    IdentityAuthorityMismatch,
+
+    /// An explicit session persistence payload is malformed or unsupported.
+    #[error("Invalid session persistence payload")]
+    Persistence,
+
+    /// The session token-set generation cannot be advanced.
+    #[error("Session token-set generation is exhausted")]
+    SessionGenerationExhausted,
+
     /// The token endpoint rejected the request.
     #[error("Token request failed with HTTP status {status}: {error} ({description:?})")]
     RequestFailed {
@@ -379,12 +486,16 @@ pub enum TokenError {
     MissingRefreshToken,
 
     /// The callback state parameter is invalid or missing.
-    #[error("Invalid or missing OAuth state parameter: {0}")]
-    InvalidState(String),
+    #[error("Invalid or missing OAuth state parameter")]
+    InvalidState,
 
     /// The OAuth state entry has expired.
     #[error("OAuth state entry has expired")]
     StateExpired,
+
+    /// The callback transaction has already been consumed.
+    #[error("OAuth state transaction has already been consumed")]
+    StateReplayed,
 
     /// HTTP error during token exchange or refresh.
     #[error("HTTP error during token operation: {0}")]
@@ -476,6 +587,25 @@ pub enum SsrfError {
     /// Redirect chain exceeded the maximum allowed depth limit.
     #[error("Too many redirects: exceeded maximum permitted redirect limit")]
     TooManyRedirects,
+
+    /// A redirect attempted to leave the validated origin.
+    #[error("Cross-origin redirect is not permitted")]
+    CrossOriginRedirect,
+
+    /// A production URL used a nonstandard network port.
+    #[error("Nonstandard outbound port is not permitted: {0}")]
+    DisallowedPort(u16),
+
+    /// Response headers exceeded the configured byte limit.
+    #[error("Response headers exceeded the {max_bytes}-byte limit")]
+    HeadersTooLarge {
+        /// Maximum permitted aggregate header size.
+        max_bytes: usize,
+    },
+
+    /// A response selected an unsupported content encoding.
+    #[error("Unsupported response content encoding")]
+    UnsupportedContentEncoding,
 
     /// Response body exceeded the maximum permitted size limit.
     #[error(
@@ -630,6 +760,10 @@ pub enum DiscoveryError {
     #[error("Invalid endpoint URL in discovery metadata: {0}")]
     InvalidEndpointUrl(String),
 
+    /// Metadata does not satisfy the AT Protocol OAuth profile.
+    #[error("AT Protocol OAuth metadata violation: {0}")]
+    ProfileViolation(String),
+
     /// Identity resolution error during discovery.
     #[error("Identity resolution error during discovery: {0}")]
     Identity(#[from] IdentityError),
@@ -650,13 +784,17 @@ pub enum DiscoveryError {
 /// Errors originating from OAuth state and session storage backends.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum StoreError {
+    /// A state token already exists in the store.
+    #[error("State token already exists")]
+    StateCollision,
+
     /// The requested authorization state token has expired.
-    #[error("State token has expired: '{0}'")]
-    StateExpired(String),
+    #[error("State token has expired")]
+    StateExpired,
 
     /// The requested authorization state token was not found (or already consumed).
-    #[error("State token not found or already consumed: '{0}'")]
-    StateNotFound(String),
+    #[error("State token not found")]
+    StateNotFound,
 
     /// An error occurred in the underlying storage backend.
     #[error("Storage backend error: {0}")]
@@ -669,6 +807,26 @@ pub enum StoreError {
     /// A lock acquisition or concurrency invariant violation occurred.
     #[error("Lock acquisition or concurrency error: {0}")]
     Lock(String),
+
+    /// A refresh operation could not establish exclusive ownership.
+    #[error("Refresh lease conflict")]
+    RefreshConflict,
+
+    /// A refresh result could not be safely committed.
+    #[error("Refresh transaction outcome is uncertain")]
+    RefreshInDoubt,
+
+    /// The bounded refresh-session store is full.
+    #[error("Refresh session capacity is exhausted")]
+    RefreshCapacity,
+
+    /// Managed background tasks did not stop before their shutdown deadline.
+    #[error("Background task shutdown timed out")]
+    ShutdownTimeout,
+
+    /// A pending authorization transaction failed validation.
+    #[error("Invalid stored authorization transaction: {0}")]
+    InvalidStateEntry(&'static str),
 }
 
 /// Errors originating from web framework integrations and extractors.

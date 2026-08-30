@@ -688,18 +688,22 @@ fn test_b14_02_empty_nonce_header_returns_none() {
 fn test_b14_03_large_nonce_512_chars() {
     let large_nonce = "n".repeat(512);
     let cache = DPoPNonceCache::new();
-    cache.set_nonce("https://auth.com", large_nonce.clone());
-    assert_eq!(cache.get_nonce("https://auth.com"), Some(large_nonce));
+    let key = DPoPKey::generate();
+    cache.set_nonce(&key, "https://auth.com", large_nonce.clone());
+    assert_eq!(cache.get_nonce(&key, "https://auth.com"), Some(large_nonce));
 }
 
 #[test]
 fn test_b14_04_nonce_overwrite() {
     let cache = DPoPNonceCache::new();
-    cache.set_nonce("https://auth.com", "first".to_string());
-    cache.set_nonce("https://auth.com", "second".to_string());
+    let key = DPoPKey::generate();
+    let first_nonce = DPoPKey::generate().jwk_thumbprint();
+    let second_nonce = DPoPKey::generate().jwk_thumbprint();
+    cache.set_nonce(&key, "https://auth.com", first_nonce);
+    cache.set_nonce(&key, "https://auth.com", second_nonce.clone());
     assert_eq!(
-        cache.get_nonce("https://auth.com"),
-        Some("second".to_string())
+        cache.get_nonce(&key, "https://auth.com"),
+        Some(second_nonce)
     );
 }
 

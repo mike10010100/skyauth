@@ -78,6 +78,7 @@ impl MockPds {
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "application/json")
+                    .insert_header("dpop-nonce", "pds-success-nonce")
                     .set_body_json(profile_response),
             )
             .mount(&self.server)

@@ -1,45 +1,46 @@
 //! Integration Tests for Framework Adapters (Axum, Actix, Tower).
 
-use std::convert::Infallible;
-use std::sync::Arc;
-use std::time::SystemTime;
+mod support;
 
-use http::{header, Request, Response, StatusCode};
-use skyauth::client::{AuthorizationRequest, OAuthClientMetadata, StoredStateEntry};
+#[cfg(feature = "tower")]
+use std::convert::Infallible;
+#[cfg(feature = "tower")]
+use std::sync::Arc;
+
+#[cfg(feature = "tower")]
+use http::Response;
+#[cfg(any(feature = "axum", feature = "tower"))]
+use http::{header, Request, StatusCode};
+#[cfg(any(feature = "actix", feature = "axum"))]
+use skyauth::client::{AuthorizationRequest, OAuthClientMetadata};
+#[cfg(feature = "tower")]
 use skyauth::dpop::{compute_access_token_hash, DPoPKey, DPoPVerifier};
+#[cfg(feature = "axum")]
 use skyauth::error::IntegrationError;
-use skyauth::integrations::{AuthenticatedUser, OAuthCallbackQuery, OAuthSessionExtension};
+#[cfg(any(feature = "actix", feature = "axum", feature = "tower"))]
+use skyauth::integrations::AuthenticatedUser;
+#[cfg(any(feature = "actix", feature = "axum"))]
+use skyauth::integrations::{OAuthCallbackQuery, OAuthSessionExtension};
+#[cfg(feature = "tower")]
 use tower_layer::Layer;
+#[cfg(feature = "tower")]
 use tower_service::Service;
+#[cfg(any(feature = "actix", feature = "axum"))]
 use url::Url;
 
+#[cfg(any(feature = "actix", feature = "axum"))]
 fn mock_authorization_request() -> AuthorizationRequest {
     let url = Url::parse("https://auth.bsky.social/oauth/authorize?client_id=https%3A%2F%2Ffeed.example.com%2Fclient-metadata.json&request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3Apar_12345").unwrap();
-    let stored_state = StoredStateEntry {
-        state: "state_entropy_secret_123".to_string(),
-        client_id: "https://feed.example.com/client-metadata.json".to_string(),
-        code_verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk".to_string(),
-        dpop_key: DPoPKey::generate(),
-        issuer: "https://auth.bsky.social".to_string(),
-        did: Some("did:plc:ragtjsm2j2vknq6tfur4vg6u".to_string()),
-        handle: Some("alice.bsky.social".to_string()),
-        redirect_uri: "https://feed.example.com/oauth/callback".to_string(),
-        pds_endpoint: "https://morel.us-east.host.bsky.network".to_string(),
-        token_endpoint: "https://auth.bsky.social/oauth/token".to_string(),
-        scopes: "atproto transition:generic".to_string(),
-        created_at: SystemTime::now(),
-        expires_in_secs: 300,
-    };
-
-    AuthorizationRequest {
-        authorization_url: url,
-        state: "state_entropy_secret_123".to_string(),
-        request_uri: "urn:ietf:params:oauth:request_uri:par_12345".to_string(),
-        expires_in: 300,
-        stored_state,
-    }
+    AuthorizationRequest::new(
+        url,
+        "state_entropy_secret_123",
+        "urn:ietf:params:oauth:request_uri:par_12345",
+        300,
+    )
+    .unwrap()
 }
 
+#[cfg(any(feature = "actix", feature = "axum"))]
 fn mock_client_metadata() -> OAuthClientMetadata {
     OAuthClientMetadata::new(
         "https://feed.example.com/oauth/client-metadata.json",
@@ -72,14 +73,14 @@ mod axum_tests {
             .await
             .unwrap();
 
-        assert_eq!(query.code.as_deref(), Some("oauth_code_789"));
-        assert_eq!(query.state.as_deref(), Some("state_entropy_123"));
-        assert_eq!(query.iss.as_deref(), Some("https://auth.bsky.social"));
+        assert_eq!(query.expose_code(), Some("oauth_code_789"));
+        assert_eq!(query.expose_state(), Some("state_entropy_123"));
+        assert_eq!(query.issuer(), Some("https://auth.bsky.social"));
 
         let params = query.to_callback_params().unwrap();
-        assert_eq!(params.code, "oauth_code_789");
-        assert_eq!(params.state, "state_entropy_123");
-        assert_eq!(params.iss.as_deref(), Some("https://auth.bsky.social"));
+        assert_eq!(params.expose_code(), "oauth_code_789");
+        assert_eq!(params.expose_state(), "state_entropy_123");
+        assert_eq!(params.issuer(), Some("https://auth.bsky.social"));
     }
 
     #[tokio::test]
@@ -95,7 +96,7 @@ mod axum_tests {
             .await
             .unwrap();
 
-        assert_eq!(query.error.as_deref(), Some("access_denied"));
+        assert_eq!(query.error_code(), Some("access_denied"));
         let err = query.to_callback_params().unwrap_err();
         assert!(matches!(
             err,
@@ -108,12 +109,9 @@ mod axum_tests {
 
     #[tokio::test]
     async fn test_axum_extract_authenticated_user_from_extensions() {
-        let user = AuthenticatedUser::new(
-            "did:plc:ragtjsm2j2vknq6tfur4vg6u",
-            "at_access_token_sample",
-            "jkt_sample_thumbprint",
-        )
-        .with_scope("atproto transition:generic");
+        let user =
+            AuthenticatedUser::new("did:plc:ragtjsm2j2vknq6tfur4vg6u", "jkt_sample_thumbprint")
+                .with_scope("atproto transition:generic");
 
         let ext = OAuthSessionExtension::new(user.clone());
 
@@ -128,13 +126,9 @@ mod axum_tests {
             .await
             .unwrap();
 
-        assert_eq!(extracted.did, "did:plc:ragtjsm2j2vknq6tfur4vg6u");
-        assert_eq!(extracted.access_token, "at_access_token_sample");
-        assert_eq!(extracted.dpop_thumbprint, "jkt_sample_thumbprint");
-        assert_eq!(
-            extracted.scope.as_deref(),
-            Some("atproto transition:generic")
-        );
+        assert_eq!(extracted.did(), "did:plc:ragtjsm2j2vknq6tfur4vg6u");
+        assert_eq!(extracted.dpop_thumbprint(), "jkt_sample_thumbprint");
+        assert_eq!(extracted.scope(), Some("atproto transition:generic"));
     }
 
     #[tokio::test]
@@ -163,7 +157,7 @@ mod axum_tests {
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         assert_eq!(
             resp.headers().get(header::LOCATION).unwrap(),
-            auth_req.authorization_url.as_str()
+            auth_req.authorization_url().as_str()
         );
         assert_eq!(
             resp.headers().get(header::CACHE_CONTROL).unwrap(),
@@ -197,22 +191,19 @@ mod actix_tests {
             .await
             .unwrap();
 
-        assert_eq!(query.code.as_deref(), Some("actix_auth_code_99"));
-        assert_eq!(query.state.as_deref(), Some("actix_state_88"));
-        assert_eq!(query.iss.as_deref(), Some("https://auth.bsky.social"));
+        assert_eq!(query.expose_code(), Some("actix_auth_code_99"));
+        assert_eq!(query.expose_state(), Some("actix_state_88"));
+        assert_eq!(query.issuer(), Some("https://auth.bsky.social"));
 
         let params = query.to_callback_params().unwrap();
-        assert_eq!(params.code, "actix_auth_code_99");
-        assert_eq!(params.state, "actix_state_88");
+        assert_eq!(params.expose_code(), "actix_auth_code_99");
+        assert_eq!(params.expose_state(), "actix_state_88");
     }
 
     #[tokio::test]
     async fn test_actix_extract_authenticated_user_from_extensions() {
-        let user = AuthenticatedUser::new(
-            "did:plc:ragtjsm2j2vknq6tfur4vg6u",
-            "at_actix_token",
-            "jkt_actix_thumbprint",
-        );
+        let user =
+            AuthenticatedUser::new("did:plc:ragtjsm2j2vknq6tfur4vg6u", "jkt_actix_thumbprint");
         let ext = OAuthSessionExtension::new(user.clone());
 
         let req = TestRequest::get()
@@ -225,9 +216,8 @@ mod actix_tests {
             .await
             .unwrap();
 
-        assert_eq!(extracted.did, "did:plc:ragtjsm2j2vknq6tfur4vg6u");
-        assert_eq!(extracted.access_token, "at_actix_token");
-        assert_eq!(extracted.dpop_thumbprint, "jkt_actix_thumbprint");
+        assert_eq!(extracted.did(), "did:plc:ragtjsm2j2vknq6tfur4vg6u");
+        assert_eq!(extracted.dpop_thumbprint(), "jkt_actix_thumbprint");
     }
 
     #[test]
@@ -260,7 +250,7 @@ mod actix_tests {
                 .unwrap()
                 .to_str()
                 .unwrap(),
-            auth_req.authorization_url.as_str()
+            auth_req.authorization_url().as_str()
         );
         assert_eq!(
             resp.headers()
@@ -280,22 +270,23 @@ mod actix_tests {
 #[cfg(feature = "tower")]
 mod tower_tests {
     use super::*;
-    use skyauth::integrations::tower::OAuthAuthLayer;
+    use support::TestTokenAuthority;
     use tower::service_fn;
 
     #[tokio::test]
     async fn test_tower_middleware_full_dpop_handshake_flow() {
         let key = DPoPKey::generate();
         let jkt = key.jwk_thumbprint();
-        let access_token = "valid_skyauth_token_12345";
-        let ath = compute_access_token_hash(access_token);
+        let auth = TestTokenAuthority::new();
+        let access_token = auth.issue(&jkt);
+        let ath = compute_access_token_hash(&access_token);
         let uri = "https://pds.example.com/xrpc/app.bsky.feed.getTimeline";
 
         // Generate valid DPoP proof for GET uri with ath
         let proof = key.create_proof("GET", uri, None, Some(&ath)).unwrap();
 
         let verifier = Arc::new(DPoPVerifier::new());
-        let layer = OAuthAuthLayer::new(verifier).with_require_ath(true);
+        let layer = auth.layer(verifier);
 
         let target_jkt = jkt.clone();
         let inner = service_fn(move |req: Request<()>| {
@@ -307,8 +298,7 @@ mod tower_tests {
                     "AuthenticatedUser must be injected into extensions"
                 );
                 let u = user.unwrap();
-                assert_eq!(u.access_token, "valid_skyauth_token_12345");
-                assert_eq!(u.dpop_thumbprint, expected_jkt);
+                assert_eq!(u.dpop_thumbprint(), expected_jkt);
                 Ok::<Response<String>, Infallible>(Response::new("XRPC Response Data".to_string()))
             }
         });
@@ -341,6 +331,13 @@ mod tower_tests {
         assert!(resp_missing
             .headers()
             .contains_key(header::WWW_AUTHENTICATE));
+        assert_eq!(
+            resp_missing
+                .headers()
+                .get(header::WWW_AUTHENTICATE)
+                .unwrap(),
+            "DPoP error=\"invalid_dpop_proof\""
+        );
 
         // 3. Unauthorized Request: Wrong HTTP method in proof (POST vs GET)
         let post_proof = key.create_proof("POST", uri, None, Some(&ath)).unwrap();

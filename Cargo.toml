@@ -1,13 +1,15 @@
 [package]
 name = "skyauth"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-authors = ["Mike <mike@example.com>"]
-description = "High-assurance, formally verified OAuth 2.1 and RFC 9449 DPoP authentication engine for the AT Protocol (Bluesky)"
+rust-version = "1.85"
+authors = ["Mike"]
+description = "AT Protocol OAuth client, DPoP primitives, hardened discovery, and framework integrations"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/mike10010100/skyauth"
 homepage = "https://github.com/mike10010100/skyauth"
 documentation = "https://docs.rs/skyauth"
+exclude = ["REMEDIATION_PLAN.md"]
 keywords = ["atproto", "bluesky", "oauth", "dpop", "pkce"]
 categories = ["authentication", "cryptography", "web-programming"]
 readme = "README.md"
@@ -55,26 +57,33 @@ tower-service = { version = "0.3", optional = true }
 tower-layer = { version = "0.3", optional = true }
 
 [features]
-default = ["axum", "actix", "tower"]
+default = []
 axum = ["dep:axum"]
 actix = ["dep:actix-web"]
 tower = ["dep:tower", "dep:tower-service", "dep:tower-layer"]
+proof-mutations = []
+# Internal-only authority used by adversarial integration tests that sign malformed proofs.
+test-export = []
+
+[package.metadata.kani.flags]
+default-unwind = "5"
 
 [dev-dependencies]
 proptest = "1.5"
-wiremock = "0.6"
+wiremock = "=0.6.4"
 jsonschema = "0.26"
 hex = "0.4"
 serde_urlencoded = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 http-body-util = "0.1"
+static_assertions = "1.1"
+tokio = { version = "1.40", features = ["test-util"] }
 
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "deny"
 rust_2018_idioms = { level = "deny", priority = -1 }
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(verus_keep_ghost)'] }
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
-

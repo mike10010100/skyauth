@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "RFC 9449 DPoP Proof Claims",
-  "description": "JSON Schema for RFC 9449 Demonstrating Proof of Possession (DPoP) JWT payload claims.",
+  "description": "Project-derived validation schema encoding RFC 9449 Sections 4.2 and 4.3 DPoP proof claims. This schema is not published by the RFC authors.",
   "type": "object",
   "required": [
     "jti",

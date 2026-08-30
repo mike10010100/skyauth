@@ -1,71 +1,34 @@
-//! # `atproto-oauth`
+//! # SkyAuth
 //!
-//! A pure safe Rust (`#![forbid(unsafe_code)]`), zero-panic OAuth 2.1 client library
-//! for the AT Protocol (Bluesky).
+//! SkyAuth implements the public-client path of the current AT Protocol OAuth profile. It includes
+//! identity and strict metadata discovery, RFC 7636 PKCE, RFC 9126 PAR, RFC 9449 DPoP, atomic
+//! authorization state, serialized refresh rotation, granular scopes, and protected XRPC calls.
 //!
-//! ## Overview
+//! All outbound requests use a bounded transport with address validation, socket pinning, and
+//! explicit redirect rules. The in-memory state store uses 64 independent shards. Axum, Actix, and
+//! Tower integrations are opt-in features.
 //!
-//! `atproto-oauth` provides production-grade implementations of the foundational
-//! security standards mandated by the AT Protocol OAuth 2.1 specification:
+//! ```no_run
+//! use skyauth::client::{AtprotoOAuthClient, OAuthClientMetadata};
 //!
-//! - **RFC 9449 DPoP (Demonstrating Proof-of-Possession)**: Ephemeral ECDSA P-256 keypair
-//!   generation, RFC 7517 JWK formatting, RFC 7638 JWK Thumbprints (`jkt`), unpadded Base64URL
-//!   signing input formatting, 64-byte raw IEEE P1363 signatures, access token hashing (`ath`),
-//!   inbound proof verification, and transparent auto-nonce retry loops.
-//! - **RFC 7636 PKCE (Proof Key for Code Exchange)**: Cryptographic S256 verifier/challenge
-//!   generation and constant-time verification.
-//! - **RFC 9126 PAR (Pushed Authorization Requests)**: Back-channel parameter pushing with
-//!   signed DPoP headers and authorization URL generation.
-//! - **OAuth 2.1 Code Exchange & Refresh Token Rotation**: DPoP-bound code exchange, strict
-//!   single-use refresh token rotation semantics, and authenticated [`OAuthSession`] management.
-//! - **64-Shard Partitioned Concurrent State Store**: Lock-free scaling state storage across 64
-//!   independent [`parking_lot::RwLock`] shards with atomic single-use state consumption ([`OAuthStore::take_state`])
-//!   and drift-free background TTL pruning.
-//! - **Web Framework Integrations**: Ready-to-use extractors, response generators, and middleware
-//!   for Axum, Actix-web, and Tower.
-//! - **Decentralized Identity & Handle Resolution**: Handle normalization, DNS TXT resolution
-//!   (`_atproto.<handle>`), HTTPS fallback (`/.well-known/atproto-did`), DID resolution (`did:plc`, `did:web`),
-//!   and bidirectional handle verification against `alsoKnownAs`.
-//! - **OAuth 2.0 Discovery (RFC 8414 & RFC 9728)**: Protected Resource Metadata and Authorization
-//!   Server Metadata discovery with automatic OIDC fallback and capability enforcement.
-//! - **Strict SSRF & DNS Rebinding Security**: Full IP boundary filtering blocking RFC 1918 private IPs,
-//!   loopback, link-local / cloud metadata (`169.254.169.254`), IPv6 ULA, and DNS socket pinning.
-//! - **Pure Safe Cryptography**: ECDSA P-256 (`p256`), SHA-256 (`sha2`), HMAC-SHA256 (`hmac`),
-//!   and constant-time equality comparisons (`subtle`).
-//! - **Zero-Panic Invariant**: Every fallible operation returns strongly typed [`AtprotoOAuthError`].
+//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! let client = AtprotoOAuthClient::builder()
+//!     .client_metadata(OAuthClientMetadata::new(
+//!         "https://app.example.com/oauth-client-metadata.json",
+//!         "https://app.example.com/oauth/callback",
+//!     ))
+//!     .in_memory_state_store()
+//!     .build()?;
 //!
-//! ## Quick Start
-//!
-//! ```rust
-//! use skyauth::dpop::{DPoPKey, DPoPVerifier, compute_access_token_hash};
-//! use skyauth::pkce::PkcePair;
-//!
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! // 1. Generate PKCE code challenge
-//! let pkce = PkcePair::generate();
-//! assert_eq!(pkce.verifier.len(), 43);
-//!
-//! // 2. Generate ephemeral DPoP keypair
-//! let dpop_key = DPoPKey::generate();
-//! let jkt = dpop_key.jwk_thumbprint();
-//!
-//! // 3. Create a DPoP proof for a token request
-//! let proof = dpop_key.create_proof("POST", "https://pds.example.com/oauth/token", None, None)?;
-//!
-//! // 4. Verify inbound DPoP proof
-//! let verifier = DPoPVerifier::new();
-//! let (claims, jwk) = verifier.verify_proof(
-//!     &proof,
-//!     "POST",
-//!     "https://pds.example.com/oauth/token",
-//!     None,
-//!     None,
-//!     None,
-//! )?;
-//! assert_eq!(claims.htm, "POST");
+//! let request = client.initiate_login("alice.example.com").await?;
+//! println!("{}", request.authorization_url());
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! The formal gate checks documented policy properties with pinned Verus and Kani versions. It does
+//! not prove cryptographic primitives, the network stack, clocks, or external server data. See
+//! `docs/formal-verification.md` in the repository for the proof inventory and bounds.
 
 #![forbid(unsafe_code)]
 #![deny(
@@ -87,11 +50,17 @@ pub mod error;
 pub mod identity;
 pub mod integrations;
 pub mod par;
+pub mod permission;
 pub mod pkce;
+/// Pure policy decisions shared by runtime code and proof targets.
+pub mod policy;
+pub mod scope;
+mod secret;
 pub mod session;
 pub mod ssrf;
 pub mod store;
-pub mod verification;
+#[cfg(kani)]
+mod verification;
 
 pub use client::{
     AtprotoOAuthClient, AtprotoOAuthClientBuilder, AuthorizationRequest, CallbackParams,
@@ -128,7 +97,3 @@ pub use ssrf::{
     is_blocked_hostname, is_restricted_ip, is_restricted_ipv4, is_restricted_ipv6, SsrfFilter,
 };
 pub use store::{OAuthStateStore, OAuthStore, DEFAULT_STATE_TTL, NUM_SHARDS};
-pub use verification::{
-    ConstantTimeEqSpec, DPoPHtuFormalSpec, OAuthStateTransitionModel, PkceFormalSpec,
-    SsrfFormalSpec, StateTransitionStatus,
-};

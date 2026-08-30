@@ -155,6 +155,7 @@ fn test_rfc8414_rust_struct_serialization_compliance() {
         scopes_supported: vec!["atproto".to_string()],
         authorization_response_iss_parameter_supported: true,
         client_id_metadata_document_supported: true,
+        require_request_uri_registration: Some(true),
     };
 
     let serialized = serde_json::to_value(&rust_metadata)
@@ -692,16 +693,17 @@ fn test_token_response_schema_compliance() {
     });
     let validator = compile_validator(&token_schema);
 
-    let rust_token = TokenResponse {
-        access_token: "dpop_access_token_value".to_string(),
-        token_type: "DPoP".to_string(),
-        expires_in: Some(3600),
-        refresh_token: Some("refresh_token_value".to_string()),
-        scope: Some("atproto".to_string()),
-        sub: "did:plc:ragtjsm2j2vknwk6zui0p4kb".to_string(),
-    };
-    let serialized = serde_json::to_value(&rust_token).unwrap();
-    assert!(validator.is_valid(&serialized));
+    let wire_token = json!({
+        "access_token": "dpop_access_token_value",
+        "token_type": "DPoP",
+        "expires_in": 3600,
+        "refresh_token": "refresh_token_value",
+        "scope": "atproto",
+        "sub": "did:plc:ragtjsm2j2vknwk6zui0p4kb"
+    });
+    assert!(validator.is_valid(&wire_token));
+    let parsed: TokenResponse = serde_json::from_value(wire_token).unwrap();
+    assert_eq!(parsed.token_type(), "DPoP");
 
     let invalid_token_type = json!({
         "access_token": "token",
@@ -826,13 +828,13 @@ fn test_sync_specs_script_execution_and_drift_verification() {
 
     assert!(
         output.status.success(),
-        "scripts/sync_specs.sh --verify must exit with code 0 (no drift). Output: {}\nError: {}",
+        "scripts/sync_specs.sh --verify must exit with code 0. Output: {}\nError: {}",
         stdout,
         stderr
     );
     assert!(
-        stdout.contains("Zero drift detected") || stdout.contains("[OK]"),
-        "Script output must confirm zero drift"
+        stdout.contains("local specification integrity verified"),
+        "Script output must confirm local integrity"
     );
 }
 

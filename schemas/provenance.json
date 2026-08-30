@@ -1,0 +1,83 @@
+{
+  "format": 1,
+  "retrieved_at": "2026-08-30T05:16:14Z",
+  "artifacts": [
+    {
+      "local_path": "lexicons/com/atproto/identity/resolveHandle.json",
+      "kind": "upstream",
+      "source_url": "https://raw.githubusercontent.com/bluesky-social/atproto/main/lexicons/com/atproto/identity/resolveHandle.json",
+      "upstream_commit": "328a4a86a999357eeae12a6da897bf686b4da88e",
+      "upstream_date": "2026-08-28T21:29:41Z",
+      "upstream_sha256": "d1cdbbc2a1a89d905228e0dc65546a140bd96262c60c4756e51027597ec5ebea",
+      "local_sha256": "f320458e13582fe21ef1e0dd5997b31d56687adb66efaec67add6cc1b9cd283f",
+      "retrieval": "HTTPS GET from the authoritative atproto repository",
+      "transformation": "jq canonical pretty formatting"
+    },
+    {
+      "local_path": "lexicons/com/atproto/server/createSession.json",
+      "kind": "upstream",
+      "source_url": "https://raw.githubusercontent.com/bluesky-social/atproto/main/lexicons/com/atproto/server/createSession.json",
+      "upstream_commit": "328a4a86a999357eeae12a6da897bf686b4da88e",
+      "upstream_date": "2026-08-28T21:29:41Z",
+      "upstream_sha256": "1b2f2f0e4957722924c4adcca7d87d64f1684ad2a49c4f2e4546083148b54fd0",
+      "local_sha256": "f07e288586c5a8cda5ccf514e8df57cd4af9d873d36af7a669484d00c82fe8a2",
+      "retrieval": "HTTPS GET from the authoritative atproto repository",
+      "transformation": "jq canonical pretty formatting"
+    },
+    {
+      "local_path": "lexicons/com/atproto/server/refreshSession.json",
+      "kind": "upstream",
+      "source_url": "https://raw.githubusercontent.com/bluesky-social/atproto/main/lexicons/com/atproto/server/refreshSession.json",
+      "upstream_commit": "328a4a86a999357eeae12a6da897bf686b4da88e",
+      "upstream_date": "2026-08-28T21:29:41Z",
+      "upstream_sha256": "d2de6665d92e4ee055ab400a54484ab24530baedfb5b9b35bb19329f27141437",
+      "local_sha256": "193a693fd36a71c93bfa2869daa49fe06737e3d8165285b032fd0762b559c3b5",
+      "retrieval": "HTTPS GET from the authoritative atproto repository",
+      "transformation": "jq canonical pretty formatting"
+    },
+    {
+      "local_path": "schemas/rfc8414_authorization_server.json",
+      "kind": "derived",
+      "source_url": "https://www.rfc-editor.org/rfc/rfc8414.html#section-2",
+      "upstream_commit": "RFC 8414",
+      "upstream_date": "2018-06",
+      "upstream_sha256": null,
+      "local_sha256": "cd98fb8e60a9e436a7594224bf57e411c2ecb21ee00126d691b62ccefc3fa4be",
+      "retrieval": "Maintainer review of the published RFC",
+      "transformation": "Project-authored JSON Schema derived from Section 2"
+    },
+    {
+      "local_path": "schemas/rfc9728_protected_resource.json",
+      "kind": "derived",
+      "source_url": "https://www.rfc-editor.org/rfc/rfc9728.html#section-2",
+      "upstream_commit": "RFC 9728",
+      "upstream_date": "2025-04",
+      "upstream_sha256": null,
+      "local_sha256": "7304fba247dcdccc125838fee2009c6bc325f1702bfce5ee8d72e7698dd66387",
+      "retrieval": "Maintainer review of the published RFC",
+      "transformation": "Project-authored JSON Schema derived from Section 2"
+    },
+    {
+      "local_path": "schemas/rfc9449_dpop_proof.json",
+      "kind": "derived",
+      "source_url": "https://www.rfc-editor.org/rfc/rfc9449.html#section-4",
+      "upstream_commit": "RFC 9449",
+      "upstream_date": "2023-09",
+      "upstream_sha256": null,
+      "local_sha256": "1a462d13c223b611d9b4535698c74d90b13e28490f2ab0854f22bf0d0972e657",
+      "retrieval": "Maintainer review of the published RFC",
+      "transformation": "Project-authored JSON Schema derived from Sections 4.2 and 4.3"
+    },
+    {
+      "local_path": "schemas/atproto_client_metadata.json",
+      "kind": "live-derived",
+      "source_url": "https://atproto.com/specs/oauth#clients",
+      "upstream_commit": "live-page-sha256",
+      "upstream_date": "2026-08-30",
+      "upstream_sha256": "6abf24c39c462628e91a8c7f2cae4239f967196eb8e6fb8df7ca9dcf8ede9914",
+      "local_sha256": "4c92d4f1cef4f7f460e67638ae87c3893bfcc89ea7a11b34380b6ef82e9f7e70",
+      "retrieval": "Maintainer review of the live authoritative specification",
+      "transformation": "Project-authored JSON Schema derived from the Clients section"
+    }
+  ]
+}

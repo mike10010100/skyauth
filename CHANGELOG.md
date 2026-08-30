@@ -1,22 +1,31 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+## 0.2.0
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+- Enforce current AT Protocol protected-resource, authorization-server, client metadata, callback,
+  token, redirect, scope, and permission-set rules.
+- Route all outbound traffic through bounded, DNS-pinned transport with explicit redirect policy.
+- Make authorization state client-owned, collision-safe, expiring, and atomically single-use.
+- Serialize refresh rotation through the configured store and commit complete replacement sessions.
+- Require independent access-token validation, DPoP key binding, replay storage, nonces, trusted URL
+  reconstruction, and route scopes for Tower authorization.
+- Partition client nonce state by DPoP key and origin.
+- Make credential-bearing fields private and redacted, and require explicit session/key export.
+- Replace proof-like tests with pinned Verus proofs and symbolic Kani harnesses over production policy.
+- Separate offline specification integrity from upstream freshness and record source provenance.
+- Declare Rust 1.85 as the MSRV, make framework features opt-in, and add release-quality CI gates.
 
----
+### Migration from 0.1
 
-## [0.1.0] - 2026-08-29
+- Add `.in_memory_state_store()` or `.state_store(...)` to every client builder.
+- Pass only `CallbackParams` to `handle_callback`; pending state is loaded and consumed internally.
+- Use getters and the `StoredStateEntry` builder instead of public fields.
+- Use `expose_access_token()` and `expose_refresh_token()` only at credential use sites.
+- Pass `SecretExportPermit::for_encrypted_persistence()` to private-key or session export methods.
+- Update DPoP nonce-cache calls to include the session DPoP key.
+- Configure a complete Tower validation policy; permissive proof-only construction is unavailable.
+- Explicitly enable `axum`, `actix`, or `tower` features when needed.
 
-### Added
-- Initial production release of **`skyauth`**: pure-Rust (`#![forbid(unsafe_code)]`), zero-panic OAuth 2.1 client library for the AT Protocol.
-- **RFC 9449 DPoP (Demonstrating Proof-of-Possession)**: Ephemeral ECDSA P-256 key generation, RFC 7517 JWK formatting, RFC 7638 JWK Thumbprints (`jkt`), access token hash (`ath`), and transparent auto-nonce retry loops (RFC 9449 § 4.3).
-- **RFC 9126 PAR (Pushed Authorization Requests)**: Direct back-channel pushing of authorization parameters with signed DPoP headers.
-- **RFC 7636 PKCE (Proof Key for Code Exchange)**: S256 verifier/challenge generation and constant-time verification.
-- **Decentralized Identity Discovery**: Handle resolution (DNS TXT `_atproto.<handle>` and HTTPS fallback), DID resolution (`did:plc`, `did:web`), RFC 9728 protected resource discovery, and RFC 8414 OAuth authorization server metadata discovery.
-- **Strict SSRF & DNS Rebinding Security**: Full IP boundary filtering blocking RFC 1918 private IPs, loopback, link-local, cloud metadata (`169.254.169.254`), IPv6 ULA, and DNS socket pinning.
-- **64-Shard Partitioned Concurrent State Store**: Lock-free scaling state storage across 64 independent `RwLock` shards with atomic single-use state consumption ([`OAuthStore::take_state`]) and drift-free background TTL pruning.
-- **Web Framework Integrations**: Ready-to-use extractors, response generators, and middleware for **Axum 0.7**, **Actix-Web 4**, and **Tower**.
-- **Formal Mathematical Verification**: Verified using **Verus** (deductive contracts) and **Kani** (bounded model checking with 36 mandatory anti-vacuity reachability checks).
-- **Dynamic Schema Invariants**: Bundled official ATProto Lexicons and RFC schemas with continuous automated upstream drift detection.
+## 0.1.0
+
+- Initial experimental release.

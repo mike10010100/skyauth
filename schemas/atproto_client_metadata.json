@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "AT Protocol OAuth Client Metadata",
-  "description": "JSON Schema for ATProto OAuth Client Metadata Documents (RFC 7591 / ATProto OAuth specification).",
+  "description": "Project-derived validation schema for the AT Protocol OAuth Client ID Metadata Document profile, Clients section. This schema is not published by the protocol authors.",
   "type": "object",
   "required": [
     "client_id",

@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "RFC 8414 OAuth 2.0 Authorization Server Metadata",
-  "description": "JSON Schema for RFC 8414 OAuth 2.0 Authorization Server Metadata, including RFC 9126 PAR and RFC 9449 DPoP extensions.",
+  "description": "Project-derived validation schema encoding RFC 8414 Section 2 plus RFC 9126 and RFC 9449 metadata extensions. This schema is not published by the RFC authors.",
   "type": "object",
   "required": [
     "issuer",

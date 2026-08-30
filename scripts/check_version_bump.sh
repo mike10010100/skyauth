@@ -15,6 +15,22 @@ NC='\033[0m' # No Color
 
 echo -e "${BLUE}=== 📦 Checking Semantic Version Bump & CHANGELOG ===${NC}"
 
+changelog_has_version() {
+    local version="$1"
+    awk -v version="${version}" '
+        $0 == "## " version ||
+        index($0, "## " version " ") == 1 ||
+        index($0, "## " version "\t") == 1 ||
+        $0 == "## [" version "]" ||
+        index($0, "## [" version "] ") == 1 ||
+        index($0, "## [" version "]\t") == 1 {
+            found = 1
+            exit
+        }
+        END { exit(found ? 0 : 1) }
+    ' CHANGELOG.md
+}
+
 # Determine base git reference
 CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
 BASE_REF=""
@@ -30,7 +46,7 @@ if [[ -z "${BASE_REF}" ]]; then
     echo -e "${YELLOW}Notice: On main branch or no base branch to compare against. Validating current CHANGELOG entry only.${NC}"
     # Verify CHANGELOG.md entry
     CURRENT_VERSION=$(grep -m1 '^[[:space:]]*version[[:space:]]*=' Cargo.toml | awk -F'"' '{print $2}')
-    if ! grep -q "## \[${CURRENT_VERSION}\]" CHANGELOG.md; then
+    if ! changelog_has_version "${CURRENT_VERSION}"; then
         echo -e "${RED}❌ CHANGELOG Check Failed!${NC}"
         echo -e "${RED}CHANGELOG.md does not contain an entry for version [${CURRENT_VERSION}].${NC}"
         exit 1
@@ -108,7 +124,7 @@ if [[ ! -f "CHANGELOG.md" ]]; then
     exit 1
 fi
 
-if ! grep -q "## \[${CURRENT_VERSION}\]" CHANGELOG.md; then
+if ! changelog_has_version "${CURRENT_VERSION}"; then
     echo -e "${RED}❌ CHANGELOG Check Failed!${NC}"
     echo -e "${RED}CHANGELOG.md does not contain an entry for version [${CURRENT_VERSION}].${NC}"
     echo -e "${YELLOW}Please document the changes for [${CURRENT_VERSION}] in CHANGELOG.md following Keep a Changelog format.${NC}"

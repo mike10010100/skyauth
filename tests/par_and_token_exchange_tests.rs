@@ -13,13 +13,13 @@
 mod e2e_harness;
 
 use std::time::{Duration, SystemTime};
-use wiremock::matchers::{header, header_exists, method, path};
+use wiremock::matchers::{body_string_contains, header, header_exists, method, path};
 use wiremock::{Mock, ResponseTemplate};
 
 use skyauth::client::{AtprotoOAuthClient, CallbackParams, OAuthClientMetadata, StoredStateEntry};
 use skyauth::crypto::constant_time_eq;
 use skyauth::dpop::{compute_access_token_hash, DPoPKey, DPoPNonceCache, DPoPVerifier};
-use skyauth::error::{AtprotoOAuthError, DPoPError, ParError, TokenError};
+use skyauth::error::{AtprotoOAuthError, DPoPError, ParError, StoreError, TokenError};
 use skyauth::identity::{IdentityResolverBuilder, ResolvedIdentity};
 use skyauth::par::{build_authorization_url, execute_par_request, ParParameters};
 use skyauth::pkce::PkcePair;
@@ -50,6 +50,7 @@ async fn test_full_login_and_code_exchange_e2e() {
         .build();
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .identity_resolver(resolver)
         .allow_insecure_localhost(true)
@@ -57,27 +58,25 @@ async fn test_full_login_and_code_exchange_e2e() {
         .unwrap();
 
     // 1. Initiate Login
-    let (auth_req, stored_state) = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
+    let auth_req = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
 
-    assert_eq!(auth_req.request_uri, request_uri);
-    assert_eq!(auth_req.expires_in, 90);
-    assert_eq!(auth_req.state, stored_state.state);
+    assert_eq!(auth_req.request_uri(), request_uri);
+    assert_eq!(auth_req.expires_in(), 90);
     assert!(auth_req
-        .authorization_url
+        .authorization_url()
         .as_str()
         .contains("request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3Areq-alice-m3-01"));
 
     // 2. Exchange Code
-    let session = client
-        .exchange_code("auth_code_from_redirect", &stored_state)
-        .await
-        .unwrap();
+    let callback = CallbackParams::new("auth_code_from_redirect", auth_req.expose_state())
+        .with_iss(env.auth_server.uri());
+    let session = client.handle_callback(&callback).await.unwrap();
 
     assert_eq!(session.sub(), TEST_ALICE_DID);
-    assert_eq!(session.access_token(), access_token);
-    assert_eq!(session.refresh_token(), Some(refresh_token));
+    assert_eq!(session.expose_access_token(), access_token);
+    assert_eq!(session.expose_refresh_token(), Some(refresh_token));
     assert_eq!(session.token_type(), "DPoP");
-    assert_eq!(session.scope(), Some("atproto transition:generic"));
+    assert_eq!(session.scope(), Some("atproto"));
     assert!(!session.is_expired());
     assert_eq!(session.dpop_auth_header(), format!("DPoP {access_token}"));
 
@@ -117,39 +116,36 @@ async fn test_callback_handler_with_iss_and_state_validation() {
         .build();
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .identity_resolver(resolver)
         .allow_insecure_localhost(true)
         .build()
         .unwrap();
 
-    let (_, stored_state) = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
+    let auth_req = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
 
     // Valid callback with matching state and iss
-    let valid_cb =
-        CallbackParams::new("code_valid_123", &stored_state.state).with_iss(&env.auth_server.uri());
+    let valid_cb = CallbackParams::new("code_valid_123", auth_req.expose_state())
+        .with_iss(env.auth_server.uri());
 
-    let session = client
-        .handle_callback(&valid_cb, &stored_state)
-        .await
-        .unwrap();
+    let session = client.handle_callback(&valid_cb).await.unwrap();
     assert_eq!(session.sub(), TEST_ALICE_DID);
 
     // Mismatched state should fail
     let invalid_state_cb =
         CallbackParams::new("code_valid_123", "wrong_state_token").with_iss(&env.auth_server.uri());
-    let err_state = client
-        .handle_callback(&invalid_state_cb, &stored_state)
-        .await;
+    let err_state = client.handle_callback(&invalid_state_cb).await;
     assert!(matches!(
         err_state,
-        Err(AtprotoOAuthError::Token(TokenError::InvalidState(_)))
+        Err(AtprotoOAuthError::Store(StoreError::StateNotFound))
     ));
 
     // Mismatched issuer should fail
-    let invalid_iss_cb = CallbackParams::new("code_valid_123", &stored_state.state)
+    let issuer_req = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
+    let invalid_iss_cb = CallbackParams::new("code_valid_123", issuer_req.expose_state())
         .with_iss("https://attacker-issuer.com");
-    let err_iss = client.handle_callback(&invalid_iss_cb, &stored_state).await;
+    let err_iss = client.handle_callback(&invalid_iss_cb).await;
     assert!(matches!(
         err_iss,
         Err(AtprotoOAuthError::Token(TokenError::IssuerMismatch { .. }))
@@ -176,18 +172,15 @@ async fn test_par_auto_nonce_retry_success() {
         .build();
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .identity_resolver(resolver)
         .allow_insecure_localhost(true)
         .build()
         .unwrap();
 
-    let (auth_req, _) = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
-    assert_eq!(auth_req.request_uri, request_uri);
-    assert_eq!(
-        client.nonce_cache().get_nonce(&env.auth_server.uri()),
-        Some("fresh-par-nonce-turn-1".to_string())
-    );
+    let auth_req = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
+    assert_eq!(auth_req.request_uri(), request_uri);
 }
 
 #[tokio::test]
@@ -207,6 +200,7 @@ async fn test_par_nonce_retry_exhaustion_fails() {
         .build();
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .identity_resolver(resolver)
         .allow_insecure_localhost(true)
@@ -246,22 +240,23 @@ async fn test_token_exchange_auto_nonce_retry_success() {
         .build();
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .identity_resolver(resolver)
         .allow_insecure_localhost(true)
         .build()
         .unwrap();
 
-    let (_, stored_state) = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
-
-    let session = client
-        .exchange_code("auth_code_xyz", &stored_state)
-        .await
-        .unwrap();
-    assert_eq!(session.access_token(), access_token);
+    let auth_req = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
+    let callback = CallbackParams::new("auth_code_xyz", auth_req.expose_state())
+        .with_iss(env.auth_server.uri());
+    let session = client.handle_callback(&callback).await.unwrap();
+    assert_eq!(session.expose_access_token(), access_token);
     assert_eq!(
-        client.nonce_cache().get_nonce(&env.auth_server.uri()),
-        Some("token-fresh-nonce-99".to_string())
+        client
+            .nonce_cache()
+            .get_nonce(session.dpop_key(), &env.auth_server.uri()),
+        Some("token-success-nonce".to_string())
     );
 }
 
@@ -278,6 +273,7 @@ async fn test_token_exchange_invalid_token_type_rejected() {
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "nonce-token-type")
                 .set_body_json(serde_json::json!({
                     "access_token": "bearer_token_123",
                     "token_type": "Bearer",
@@ -298,15 +294,17 @@ async fn test_token_exchange_invalid_token_type_rejected() {
         .build();
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .identity_resolver(resolver)
         .allow_insecure_localhost(true)
         .build()
         .unwrap();
 
-    let (_, stored_state) = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
-
-    let res = client.exchange_code("code_123", &stored_state).await;
+    let auth_req = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
+    let callback =
+        CallbackParams::new("code_123", auth_req.expose_state()).with_iss(env.auth_server.uri());
+    let res = client.handle_callback(&callback).await;
     assert!(matches!(
         res,
         Err(AtprotoOAuthError::Token(TokenError::InvalidTokenType(_)))
@@ -338,15 +336,17 @@ async fn test_token_exchange_sub_mismatch_rejected() {
         .build();
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .identity_resolver(resolver)
         .allow_insecure_localhost(true)
         .build()
         .unwrap();
 
-    let (_, stored_state) = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
-
-    let res = client.exchange_code("code_123", &stored_state).await;
+    let auth_req = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
+    let callback =
+        CallbackParams::new("code_123", auth_req.expose_state()).with_iss(env.auth_server.uri());
+    let res = client.handle_callback(&callback).await;
     assert!(matches!(
         res,
         Err(AtprotoOAuthError::Token(TokenError::SubMismatch { .. }))
@@ -365,6 +365,7 @@ async fn test_token_exchange_missing_atproto_scope_rejected() {
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "nonce-missing-scope")
                 .set_body_json(serde_json::json!({
                     "access_token": "at_123",
                     "token_type": "DPoP",
@@ -385,15 +386,17 @@ async fn test_token_exchange_missing_atproto_scope_rejected() {
         .build();
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .identity_resolver(resolver)
         .allow_insecure_localhost(true)
         .build()
         .unwrap();
 
-    let (_, stored_state) = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
-
-    let res = client.exchange_code("code_123", &stored_state).await;
+    let auth_req = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
+    let callback =
+        CallbackParams::new("code_123", auth_req.expose_state()).with_iss(env.auth_server.uri());
+    let res = client.handle_callback(&callback).await;
     assert!(matches!(
         res,
         Err(AtprotoOAuthError::Token(TokenError::MissingAtprotoScope(_)))
@@ -432,6 +435,7 @@ async fn test_refresh_session_and_rotation_success() {
         .await;
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .allow_insecure_localhost(true)
         .build()
@@ -439,8 +443,8 @@ async fn test_refresh_session_and_rotation_success() {
 
     client.refresh_session(&mut session).await.unwrap();
 
-    assert_eq!(session.access_token(), rotated_access_token);
-    assert_eq!(session.refresh_token(), Some(rotated_refresh_token));
+    assert_eq!(session.expose_access_token(), rotated_access_token);
+    assert_eq!(session.expose_refresh_token(), Some(rotated_refresh_token));
     assert!(!session.is_expired());
 }
 
@@ -480,6 +484,7 @@ async fn test_refresh_session_nonce_retry_success() {
         .await;
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .allow_insecure_localhost(true)
         .build()
@@ -487,11 +492,13 @@ async fn test_refresh_session_nonce_retry_success() {
 
     client.refresh_session(&mut session).await.unwrap();
 
-    assert_eq!(session.access_token(), rotated_access_token);
-    assert_eq!(session.refresh_token(), Some(rotated_refresh_token));
+    assert_eq!(session.expose_access_token(), rotated_access_token);
+    assert_eq!(session.expose_refresh_token(), Some(rotated_refresh_token));
     assert_eq!(
-        client.nonce_cache().get_nonce(&auth_server.uri()),
-        Some("refresh-challenge-nonce-88".to_string())
+        client
+            .nonce_cache()
+            .get_nonce(session.dpop_key(), &auth_server.uri()),
+        Some("token-success-nonce".to_string())
     );
 }
 
@@ -513,6 +520,7 @@ async fn test_refresh_session_missing_refresh_token_rejected() {
     .unwrap();
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .allow_insecure_localhost(true)
         .build()
@@ -540,6 +548,7 @@ async fn test_send_dpop_request_for_xrpc_with_nonce_challenge_recovery() {
         .await;
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .allow_insecure_localhost(true)
         .build()
@@ -562,8 +571,8 @@ async fn test_send_dpop_request_for_xrpc_with_nonce_challenge_recovery() {
     assert_eq!(profile["did"], TEST_ALICE_DID);
     assert_eq!(profile["handle"], TEST_ALICE_HANDLE);
     assert_eq!(
-        client.nonce_cache().get_nonce(&pds.uri()),
-        Some("pds-xrpc-nonce-challenge-55".to_string())
+        client.nonce_cache().get_nonce(&dpop_key, &pds.uri()),
+        Some("pds-success-nonce".to_string())
     );
 }
 
@@ -572,7 +581,23 @@ async fn test_initiate_login_with_custom_scope() {
     let env = MockOAuthEnvironment::start_default().await;
 
     let request_uri = "urn:ietf:params:oauth:request_uri:req-custom-scope";
-    env.auth_server.mount_par_success(request_uri, 90).await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/par"))
+        .and(header_exists("dpop"))
+        .and(body_string_contains(
+            "scope=atproto+transition%3Ageneric+transition%3Achat",
+        ))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "par-custom-scope-nonce")
+                .set_body_json(serde_json::json!({
+                    "request_uri": request_uri,
+                    "expires_in": 90
+                })),
+        )
+        .mount(&env.auth_server.server)
+        .await;
 
     let ssrf_filter = SsrfFilter::new(true);
     let resolver = IdentityResolverBuilder::new()
@@ -581,21 +606,28 @@ async fn test_initiate_login_with_custom_scope() {
         .dns_resolver(std::sync::Arc::new(env.dns.clone()))
         .build();
 
+    let custom_scope = "atproto transition:generic transition:chat";
     let client = AtprotoOAuthClient::builder()
-        .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
+        .in_memory_state_store()
+        .client_metadata(
+            OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI).with_scope(custom_scope),
+        )
         .identity_resolver(resolver)
         .allow_insecure_localhost(true)
         .build()
         .unwrap();
 
-    let custom_scope = "atproto transition:generic transition:chat";
-    let (auth_req, stored_state) = client
+    let auth_req = client
         .initiate_login_with_scope(TEST_ALICE_HANDLE, custom_scope)
         .await
         .unwrap();
 
-    assert_eq!(auth_req.request_uri, request_uri);
-    assert_eq!(stored_state.scopes, custom_scope);
+    assert_eq!(auth_req.request_uri(), request_uri);
+    assert!(client
+        .state_store()
+        .contains_state(auth_req.expose_state())
+        .await
+        .unwrap());
 }
 
 #[tokio::test]
@@ -624,6 +656,7 @@ async fn test_refresh_token_returns_new_session_instance() {
         .await;
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .allow_insecure_localhost(true)
         .build()
@@ -631,9 +664,9 @@ async fn test_refresh_token_returns_new_session_instance() {
 
     let updated_session = client.refresh_token(&session).await.unwrap();
 
-    assert_eq!(updated_session.access_token(), new_at);
-    assert_eq!(updated_session.refresh_token(), Some(new_rt));
-    assert_eq!(session.access_token(), "at_old_token"); // Original unchanged
+    assert_eq!(updated_session.expose_access_token(), new_at);
+    assert_eq!(updated_session.expose_refresh_token(), Some(new_rt));
+    assert_eq!(session.expose_access_token(), "at_old_token"); // Original unchanged
 }
 
 #[test]

@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "RFC 9728 OAuth 2.0 Protected Resource Metadata",
-  "description": "JSON Schema for RFC 9728 OAuth 2.0 Protected Resource Metadata used for PDS discovery.",
+  "description": "Project-derived validation schema encoding RFC 9728 Section 2 protected resource metadata. This schema is not published by the RFC authors.",
   "type": "object",
   "required": [
     "resource",

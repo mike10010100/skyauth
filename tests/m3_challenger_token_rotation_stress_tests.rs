@@ -23,19 +23,78 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use serde_json::json;
-use wiremock::matchers::{header_exists, method, path};
+use wiremock::matchers::{body_string_contains, header_exists, method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use skyauth::client::{AtprotoOAuthClient, CallbackParams, OAuthClientMetadata, StoredStateEntry};
-use skyauth::crypto::constant_time_eq;
+use skyauth::crypto::{base64url_decode, constant_time_eq, jwk_thumbprint_ec_p256};
 use skyauth::dpop::{compute_access_token_hash, DPoPKey, DPoPNonceCache, DPoPVerifier};
 use skyauth::error::{AtprotoOAuthError, DPoPError, ParError, SsrfError, TokenError};
 use skyauth::identity::IdentityResolverBuilder;
 use skyauth::session::OAuthSession;
 use skyauth::ssrf::SsrfFilter;
+use skyauth::store::DEFAULT_STATE_TTL;
 
 use e2e_harness::fixtures::*;
 use e2e_harness::MockOAuthEnvironment;
+
+async fn exchange_via_callback(
+    client: &AtprotoOAuthClient,
+    code: &str,
+    entry: StoredStateEntry,
+) -> Result<OAuthSession, AtprotoOAuthError> {
+    let issuer = entry.issuer().to_string();
+    let state = format!("{}-{}", entry.state(), rand::random::<u64>());
+    let entry = entry.with_state(state.clone())?;
+    client
+        .state_store()
+        .insert_state(state.clone(), entry, DEFAULT_STATE_TTL)
+        .await?;
+    client
+        .handle_callback(&CallbackParams::new(code, state).with_iss(issuer))
+        .await
+}
+
+fn test_state_entry(
+    state: &str,
+    issuer: &str,
+    token_endpoint: &str,
+    scopes: &str,
+    dpop_key: DPoPKey,
+) -> StoredStateEntry {
+    test_state_entry_for_identity(
+        state,
+        issuer,
+        token_endpoint,
+        scopes,
+        dpop_key,
+        TEST_ALICE_DID,
+        TEST_ALICE_HANDLE,
+    )
+}
+
+fn test_state_entry_for_identity(
+    state: &str,
+    issuer: &str,
+    token_endpoint: &str,
+    scopes: &str,
+    dpop_key: DPoPKey,
+    did: &str,
+    handle: &str,
+) -> StoredStateEntry {
+    StoredStateEntry::builder(state, dpop_key)
+        .client_id(TEST_CLIENT_ID)
+        .code_verifier(RFC7636_VERIFIER)
+        .issuer(issuer)
+        .identity(Some(did.to_string()), Some(handle.to_string()))
+        .redirect_uri(TEST_REDIRECT_URI)
+        .pds_endpoint("https://pds.example.com")
+        .token_endpoint(token_endpoint)
+        .scopes(scopes)
+        .lifetime(SystemTime::now(), 300)
+        .build()
+        .unwrap()
+}
 
 // ============================================================================
 // Custom WireMock Responders for Stateful Protocol Emulation
@@ -78,6 +137,7 @@ impl Respond for StatefulRefreshTokenResponder {
         if grant_type.as_deref() != Some("refresh_token") {
             return ResponseTemplate::new(400)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "test-response-nonce")
                 .set_body_json(json!({
                     "error": "unsupported_grant_type",
                     "error_description": "Expected grant_type=refresh_token"
@@ -94,18 +154,20 @@ impl Respond for StatefulRefreshTokenResponder {
 
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "application/json")
+                    .insert_header("dpop-nonce", "test-response-nonce")
                     .set_body_json(json!({
                         "access_token": next_at,
                         "token_type": "DPoP",
                         "expires_in": 3600,
                         "refresh_token": next_rt,
-                        "scope": "atproto transition:generic",
+                        "scope": "atproto",
                         "sub": self.sub_did
                     }))
             } else {
                 // Stale / Replayed refresh token
                 ResponseTemplate::new(400)
                     .insert_header("content-type", "application/json")
+                    .insert_header("dpop-nonce", "test-response-nonce")
                     .set_body_json(json!({
                         "error": "invalid_grant",
                         "error_description": "Stale or revoked refresh token presented (replay detected)"
@@ -114,6 +176,7 @@ impl Respond for StatefulRefreshTokenResponder {
         } else {
             ResponseTemplate::new(400)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "test-response-nonce")
                 .set_body_json(json!({
                     "error": "invalid_request",
                     "error_description": "Missing refresh_token parameter"
@@ -158,6 +221,7 @@ impl Respond for SingleUseCodeResponder {
                     // Already consumed!
                     ResponseTemplate::new(400)
                         .insert_header("content-type", "application/json")
+                        .insert_header("dpop-nonce", "test-response-nonce")
                         .set_body_json(json!({
                             "error": "invalid_grant",
                             "error_description": "Authorization code has already been consumed"
@@ -166,6 +230,7 @@ impl Respond for SingleUseCodeResponder {
                     *lock = true;
                     ResponseTemplate::new(200)
                         .insert_header("content-type", "application/json")
+                        .insert_header("dpop-nonce", "test-response-nonce")
                         .set_body_json(json!({
                             "access_token": "at_single_use_success",
                             "token_type": "DPoP",
@@ -178,6 +243,7 @@ impl Respond for SingleUseCodeResponder {
             } else {
                 ResponseTemplate::new(400)
                     .insert_header("content-type", "application/json")
+                    .insert_header("dpop-nonce", "test-response-nonce")
                     .set_body_json(json!({
                         "error": "invalid_grant",
                         "error_description": "Unknown or invalid authorization code"
@@ -186,6 +252,7 @@ impl Respond for SingleUseCodeResponder {
         } else {
             ResponseTemplate::new(400)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "test-response-nonce")
                 .set_body_json(json!({
                     "error": "invalid_request",
                     "error_description": "Missing code parameter"
@@ -227,6 +294,7 @@ async fn test_refresh_token_rotation_single_use_and_replay_detection() {
     .unwrap();
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .allow_insecure_localhost(true)
         .build()
@@ -234,9 +302,9 @@ async fn test_refresh_token_rotation_single_use_and_replay_detection() {
 
     // 1. First rotation: rt_initial -> rt_gen_1
     client.refresh_session(&mut session).await.unwrap();
-    let rt_gen_1 = session.refresh_token().unwrap().to_string();
+    let rt_gen_1 = session.expose_refresh_token().unwrap().to_string();
     assert_ne!(rt_gen_1, initial_rt);
-    assert!(session.access_token().starts_with("at_gen_1_"));
+    assert!(session.expose_access_token().starts_with("at_gen_1_"));
 
     // 2. Attacker attempts to replay initial_rt: must be rejected with invalid_grant!
     let mut stale_session = OAuthSession::new(
@@ -268,9 +336,9 @@ async fn test_refresh_token_rotation_single_use_and_replay_detection() {
 
     // 3. Legitimate user refreshes with rt_gen_1: succeeds and advances to rt_gen_2
     client.refresh_session(&mut session).await.unwrap();
-    let rt_gen_2 = session.refresh_token().unwrap().to_string();
+    let rt_gen_2 = session.expose_refresh_token().unwrap().to_string();
     assert_ne!(rt_gen_2, rt_gen_1);
-    assert!(session.access_token().starts_with("at_gen_2_"));
+    assert!(session.expose_access_token().starts_with("at_gen_2_"));
 
     // 4. Replaying rt_gen_1 now fails
     let mut stale_session_2 = OAuthSession::new(
@@ -326,6 +394,7 @@ async fn test_refresh_token_rotation_multi_hop_chain() {
     .unwrap();
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .allow_insecure_localhost(true)
         .build()
@@ -336,9 +405,9 @@ async fn test_refresh_token_rotation_multi_hop_chain() {
     // Execute 10 consecutive rotations
     for hop in 1..=10 {
         client.refresh_session(&mut session).await.unwrap();
-        let current_rt = session.refresh_token().unwrap().to_string();
+        let current_rt = session.expose_refresh_token().unwrap().to_string();
         assert!(session
-            .access_token()
+            .expose_access_token()
             .starts_with(&format!("at_gen_{hop}_")));
         past_tokens.push(current_rt);
     }
@@ -400,6 +469,7 @@ async fn test_refresh_token_rotation_concurrent_race() {
 
     let client = Arc::new(
         AtprotoOAuthClient::builder()
+            .in_memory_state_store()
             .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
             .allow_insecure_localhost(true)
             .build()
@@ -441,19 +511,13 @@ async fn test_refresh_token_rotation_concurrent_race() {
         })
         .await;
 
-    assert_eq!(
-        successes, 1,
-        "Exactly 1 concurrent refresh request should succeed on single-use refresh token"
-    );
-    assert_eq!(
-        failures,
-        concurrency - 1,
-        "All other concurrent refresh requests should fail with invalid_grant"
-    );
+    assert_eq!(successes, concurrency);
+    assert_eq!(failures, 0);
+    assert_eq!(auth_server.received_requests().await.unwrap().len(), 1);
 }
 
 #[tokio::test]
-async fn test_refresh_token_omitted_by_server_sets_none() {
+async fn test_refresh_token_omitted_by_server_preserves_existing_token() {
     let auth_server = MockServer::start().await;
 
     // Server returns access_token without a new refresh_token
@@ -462,6 +526,7 @@ async fn test_refresh_token_omitted_by_server_sets_none() {
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "test-response-nonce")
                 .set_body_json(json!({
                     "access_token": "at_new_without_rt",
                     "token_type": "DPoP",
@@ -489,22 +554,16 @@ async fn test_refresh_token_omitted_by_server_sets_none() {
     .unwrap();
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .allow_insecure_localhost(true)
         .build()
         .unwrap();
 
     client.refresh_session(&mut session).await.unwrap();
-
-    assert_eq!(session.access_token(), "at_new_without_rt");
-    assert_eq!(session.refresh_token(), None);
-
-    // Subsequent refresh attempts must immediately fail locally with MissingRefreshToken
-    let next_err = client.refresh_session(&mut session).await;
-    assert!(matches!(
-        next_err,
-        Err(AtprotoOAuthError::Token(TokenError::MissingRefreshToken))
-    ));
+    assert_eq!(session.expose_access_token(), "at_new_without_rt");
+    assert_eq!(session.expose_refresh_token(), Some("rt_initial"));
+    assert_eq!(session.generation(), 1);
 }
 
 // ============================================================================
@@ -527,6 +586,7 @@ async fn test_concurrent_independent_logins_20_actors() {
 
     let client = Arc::new(
         AtprotoOAuthClient::builder()
+            .in_memory_state_store()
             .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
             .identity_resolver(resolver)
             .allow_insecure_localhost(true)
@@ -545,30 +605,38 @@ async fn test_concurrent_independent_logins_20_actors() {
     }
 
     let mut state_tokens = HashSet::new();
-    let mut dpop_thumbprints = HashSet::new();
 
     for h in handles {
-        let (auth_req, stored_state) = h.await.unwrap().unwrap();
-        assert_eq!(auth_req.request_uri, request_uri);
-        assert_eq!(auth_req.state, stored_state.state);
-        assert_eq!(stored_state.did.as_deref(), Some(TEST_ALICE_DID));
+        let auth_req = h.await.unwrap().unwrap();
+        assert_eq!(auth_req.request_uri(), request_uri);
 
         // State tokens must have 256-bit entropy and zero collisions
         assert!(
-            state_tokens.insert(auth_req.state),
+            state_tokens.insert(auth_req.expose_state().to_string()),
             "Detected state token collision!"
-        );
-
-        // Ephemeral DPoP keypairs must be unique per session
-        let jkt = stored_state.dpop_key.jwk_thumbprint();
-        assert!(
-            dpop_thumbprints.insert(jkt),
-            "Detected DPoP key collision across logins!"
         );
     }
 
     assert_eq!(state_tokens.len(), actor_count);
-    assert_eq!(dpop_thumbprints.len(), actor_count);
+
+    let requests = env.auth_server.server.received_requests().await.unwrap();
+    let thumbprints = requests
+        .iter()
+        .filter(|request| request.url.path() == "/oauth/par")
+        .map(|request| {
+            let proof = request.headers.get("dpop").unwrap().to_str().unwrap();
+            let header_segment = proof.split('.').next().unwrap();
+            let header: serde_json::Value =
+                serde_json::from_slice(&base64url_decode(header_segment).unwrap()).unwrap();
+            let jwk = &header["jwk"];
+            jwk_thumbprint_ec_p256(jwk["x"].as_str().unwrap(), jwk["y"].as_str().unwrap())
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        thumbprints.len(),
+        actor_count,
+        "every concurrent authorization transaction needs a distinct DPoP key"
+    );
 }
 
 #[tokio::test]
@@ -586,6 +654,7 @@ async fn test_concurrent_authorization_code_single_use_race() {
 
     let client = Arc::new(
         AtprotoOAuthClient::builder()
+            .in_memory_state_store()
             .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
             .allow_insecure_localhost(true)
             .build()
@@ -593,21 +662,20 @@ async fn test_concurrent_authorization_code_single_use_race() {
     );
 
     let dpop_key = DPoPKey::generate();
-    let state_entry = StoredStateEntry {
-        state: "state_race_123".to_string(),
-        client_id: TEST_CLIENT_ID.to_string(),
-        code_verifier: "pkce_verifier_123".to_string(),
+    let state_entry = test_state_entry(
+        "state_race_123",
+        &auth_server.uri(),
+        &format!("{}/oauth/token", auth_server.uri()),
+        "atproto",
         dpop_key,
-        issuer: auth_server.uri(),
-        did: Some(TEST_ALICE_DID.to_string()),
-        handle: Some(TEST_ALICE_HANDLE.to_string()),
-        redirect_uri: TEST_REDIRECT_URI.to_string(),
-        pds_endpoint: "https://pds.example.com".to_string(),
-        token_endpoint: format!("{}/oauth/token", auth_server.uri()),
-        scopes: "atproto".to_string(),
-        created_at: SystemTime::now(),
-        expires_in_secs: 300,
-    };
+    );
+    let callback_state = state_entry.state().to_string();
+    let callback_issuer = state_entry.issuer().to_string();
+    client
+        .state_store()
+        .insert_state(callback_state.clone(), state_entry, DEFAULT_STATE_TTL)
+        .await
+        .unwrap();
 
     let concurrency = 20;
     let local = tokio::task::LocalSet::new();
@@ -618,10 +686,13 @@ async fn test_concurrent_authorization_code_single_use_race() {
 
             for _ in 0..concurrency {
                 let client_clone = client.clone();
-                let entry_clone = state_entry.clone();
+                let state = callback_state.clone();
+                let issuer = callback_issuer.clone();
 
                 handles.push(tokio::task::spawn_local(async move {
-                    client_clone.exchange_code(single_code, &entry_clone).await
+                    client_clone
+                        .handle_callback(&CallbackParams::new(single_code, state).with_iss(issuer))
+                        .await
                 }));
             }
 
@@ -632,13 +703,10 @@ async fn test_concurrent_authorization_code_single_use_race() {
                 match h.await.unwrap() {
                     Ok(session) => {
                         assert_eq!(session.sub(), TEST_ALICE_DID);
-                        assert_eq!(session.access_token(), "at_single_use_success");
+                        assert_eq!(session.expose_access_token(), "at_single_use_success");
                         succ += 1;
                     }
-                    Err(AtprotoOAuthError::Token(TokenError::RequestFailed {
-                        status: 400,
-                        ..
-                    })) => {
+                    Err(AtprotoOAuthError::Token(TokenError::StateReplayed)) => {
                         fail += 1;
                     }
                     Err(other) => panic!("Unexpected error in code race: {other:?}"),
@@ -660,77 +728,125 @@ async fn test_concurrent_authorization_code_single_use_race() {
 }
 
 #[tokio::test]
-async fn test_callback_state_swapping_under_concurrency() {
+async fn test_callback_with_unknown_state_is_rejected() {
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .allow_insecure_localhost(true)
         .build()
         .unwrap();
 
-    let user_count = 30;
-    let mut stored_states = Vec::new();
+    let callback = CallbackParams::new("auth_code_123", "caller-supplied-state")
+        .with_iss("https://auth.example.com");
+    assert!(matches!(
+        client.handle_callback(&callback).await,
+        Err(AtprotoOAuthError::Store(
+            skyauth::error::StoreError::StateNotFound
+        ))
+    ));
+}
 
-    for i in 0..user_count {
-        let state = format!("state_user_{i}_{}", rand::random::<u64>());
-        let entry = StoredStateEntry {
-            state: state.clone(),
-            client_id: TEST_CLIENT_ID.to_string(),
-            code_verifier: format!("verifier_{i}"),
-            dpop_key: DPoPKey::generate(),
-            issuer: "https://auth.example.com".to_string(),
-            did: Some(format!("did:plc:user_{i}")),
-            handle: Some(format!("user_{i}.bsky.social")),
-            redirect_uri: TEST_REDIRECT_URI.to_string(),
-            pds_endpoint: "https://pds.example.com".to_string(),
-            token_endpoint: "https://auth.example.com/oauth/token".to_string(),
-            scopes: "atproto".to_string(),
-            created_at: SystemTime::now(),
-            expires_in_secs: 300,
-        };
-        stored_states.push(entry);
+#[tokio::test]
+async fn test_cross_user_code_and_state_swap_is_rejected() {
+    let auth_server = MockServer::start().await;
+    let issuer = auth_server.uri();
+    let token_endpoint = format!("{issuer}/oauth/token");
+    for (code, did, token) in [
+        ("alice-code", TEST_ALICE_DID, "alice-access"),
+        ("bob-code", "did:plc:bob987654321", "bob-access"),
+    ] {
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .and(body_string_contains(format!("code={code}")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .insert_header("dpop-nonce", format!("{code}-nonce"))
+                    .set_body_json(json!({
+                        "access_token": token,
+                        "refresh_token": format!("{token}-refresh"),
+                        "token_type": "DPoP",
+                        "expires_in": 300,
+                        "scope": "atproto",
+                        "sub": did
+                    })),
+            )
+            .mount(&auth_server)
+            .await;
     }
 
-    // Attempt callbacks where state parameter is mismatched/swapped with a different user
-    for i in 0..user_count {
-        let other_idx = (i + 1) % user_count;
-        let swapped_cb = CallbackParams::new("auth_code_123", &stored_states[other_idx].state)
-            .with_iss("https://auth.example.com");
+    let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
+        .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
+        .allow_insecure_localhost(true)
+        .build()
+        .unwrap();
+    let alice = test_state_entry_for_identity(
+        "alice-state-cross-user",
+        &issuer,
+        &token_endpoint,
+        "atproto",
+        DPoPKey::generate(),
+        TEST_ALICE_DID,
+        TEST_ALICE_HANDLE,
+    );
+    let bob = test_state_entry_for_identity(
+        "bob-state-cross-user",
+        &issuer,
+        &token_endpoint,
+        "atproto",
+        DPoPKey::generate(),
+        "did:plc:bob987654321",
+        "bob.example.com",
+    );
+    client
+        .state_store()
+        .insert_state(
+            "alice-state-cross-user".to_string(),
+            alice,
+            DEFAULT_STATE_TTL,
+        )
+        .await
+        .unwrap();
+    client
+        .state_store()
+        .insert_state("bob-state-cross-user".to_string(), bob, DEFAULT_STATE_TTL)
+        .await
+        .unwrap();
 
-        let err = client.handle_callback(&swapped_cb, &stored_states[i]).await;
-        assert!(
-            matches!(
-                err,
-                Err(AtprotoOAuthError::Token(TokenError::InvalidState(_)))
-            ),
-            "Swapped state callback for user {i} should be rejected with InvalidState"
-        );
-    }
+    let swapped = client
+        .handle_callback(
+            &CallbackParams::new("bob-code", "alice-state-cross-user").with_iss(&issuer),
+        )
+        .await;
+    assert!(matches!(
+        swapped,
+        Err(AtprotoOAuthError::Token(TokenError::SubMismatch { .. }))
+    ));
+    let bob_session = client
+        .handle_callback(&CallbackParams::new("bob-code", "bob-state-cross-user").with_iss(&issuer))
+        .await
+        .unwrap();
+    assert_eq!(bob_session.sub(), "did:plc:bob987654321");
 }
 
 #[tokio::test]
 async fn test_callback_issuer_tampering_variants() {
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .allow_insecure_localhost(true)
         .build()
         .unwrap();
 
     let expected_issuer = "https://auth.bsky.social";
-    let state_entry = StoredStateEntry {
-        state: "valid_state_123".to_string(),
-        client_id: TEST_CLIENT_ID.to_string(),
-        code_verifier: "verifier_123".to_string(),
-        dpop_key: DPoPKey::generate(),
-        issuer: expected_issuer.to_string(),
-        did: Some(TEST_ALICE_DID.to_string()),
-        handle: Some(TEST_ALICE_HANDLE.to_string()),
-        redirect_uri: TEST_REDIRECT_URI.to_string(),
-        pds_endpoint: "https://pds.bsky.social".to_string(),
-        token_endpoint: "https://auth.bsky.social/oauth/token".to_string(),
-        scopes: "atproto".to_string(),
-        created_at: SystemTime::now(),
-        expires_in_secs: 300,
-    };
+    let state_entry = test_state_entry(
+        "valid_state_123",
+        expected_issuer,
+        "https://auth.bsky.social/oauth/token",
+        "atproto",
+        DPoPKey::generate(),
+    );
 
     let invalid_issuers = vec![
         "https://evil-auth.bsky.social",
@@ -741,9 +857,16 @@ async fn test_callback_issuer_tampering_variants() {
         "",
     ];
 
-    for bad_iss in invalid_issuers {
-        let cb = CallbackParams::new("code_123", "valid_state_123").with_iss(bad_iss);
-        let err = client.handle_callback(&cb, &state_entry).await;
+    for (index, bad_iss) in invalid_issuers.into_iter().enumerate() {
+        let state = format!("valid_state_{index}");
+        let entry = state_entry.clone().with_state(state.clone()).unwrap();
+        client
+            .state_store()
+            .insert_state(state.clone(), entry, DEFAULT_STATE_TTL)
+            .await
+            .unwrap();
+        let cb = CallbackParams::new("code_123", state).with_iss(bad_iss);
+        let err = client.handle_callback(&cb).await;
         assert!(
             matches!(
                 err,
@@ -753,19 +876,22 @@ async fn test_callback_issuer_tampering_variants() {
         );
     }
 
-    // Trailing slash normalization: https://auth.bsky.social/ vs https://auth.bsky.social
-    // (Both normalize to the same authority/path)
-    let trailing_slash_cb =
-        CallbackParams::new("code_123", "valid_state_123").with_iss("https://auth.bsky.social/");
-    let res = client
-        .handle_callback(&trailing_slash_cb, &state_entry)
-        .await;
+    let trailing_state = "valid_state_trailing".to_string();
+    let trailing_entry = state_entry.with_state(trailing_state.clone()).unwrap();
+    client
+        .state_store()
+        .insert_state(trailing_state, trailing_entry, DEFAULT_STATE_TTL)
+        .await
+        .unwrap();
+    let trailing_slash_cb = CallbackParams::new("code_123", "valid_state_trailing")
+        .with_iss("https://auth.bsky.social/");
+    let res = client.handle_callback(&trailing_slash_cb).await;
     assert!(
-        !matches!(
+        matches!(
             res,
             Err(AtprotoOAuthError::Token(TokenError::IssuerMismatch { .. }))
         ),
-        "Trailing slash in issuer should be normalized and pass issuer check"
+        "Issuer comparison must be exact"
     );
 }
 
@@ -785,6 +911,7 @@ async fn test_token_response_sub_mismatch_and_empty_did_variants() {
     ];
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .allow_insecure_localhost(true)
         .build()
@@ -798,6 +925,7 @@ async fn test_token_response_sub_mismatch_and_empty_did_variants() {
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "application/json")
+                    .insert_header("dpop-nonce", "test-response-nonce")
                     .set_body_json(json!({
                         "access_token": "at_test",
                         "token_type": "DPoP",
@@ -810,23 +938,15 @@ async fn test_token_response_sub_mismatch_and_empty_did_variants() {
             .mount(&auth_server)
             .await;
 
-        let state_entry = StoredStateEntry {
-            state: "state_123".to_string(),
-            client_id: TEST_CLIENT_ID.to_string(),
-            code_verifier: "verifier_123".to_string(),
-            dpop_key: DPoPKey::generate(),
-            issuer: auth_server.uri(),
-            did: Some(TEST_ALICE_DID.to_string()),
-            handle: Some(TEST_ALICE_HANDLE.to_string()),
-            redirect_uri: TEST_REDIRECT_URI.to_string(),
-            pds_endpoint: "https://pds.example.com".to_string(),
-            token_endpoint: format!("{}/oauth/token", auth_server.uri()),
-            scopes: "atproto".to_string(),
-            created_at: SystemTime::now(),
-            expires_in_secs: 300,
-        };
+        let state_entry = test_state_entry(
+            "state_123",
+            &auth_server.uri(),
+            &format!("{}/oauth/token", auth_server.uri()),
+            "atproto",
+            DPoPKey::generate(),
+        );
 
-        let res = client.exchange_code("code_123", &state_entry).await;
+        let res = exchange_via_callback(&client, "code_123", state_entry).await;
         match expected_err {
             "sub_mismatch" => {
                 assert!(
@@ -858,6 +978,7 @@ async fn test_token_response_sub_tampering_during_refresh() {
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "test-response-nonce")
                 .set_body_json(json!({
                     "access_token": "at_bob_tampered",
                     "token_type": "DPoP",
@@ -886,6 +1007,7 @@ async fn test_token_response_sub_tampering_during_refresh() {
     .unwrap();
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .allow_insecure_localhost(true)
         .build()
@@ -922,6 +1044,7 @@ async fn test_token_response_token_type_tampering_exhaustive() {
     ];
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .allow_insecure_localhost(true)
         .build()
@@ -934,6 +1057,7 @@ async fn test_token_response_token_type_tampering_exhaustive() {
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "application/json")
+                    .insert_header("dpop-nonce", "test-response-nonce")
                     .set_body_json(json!({
                         "access_token": "at_valid",
                         "token_type": vtype,
@@ -946,24 +1070,15 @@ async fn test_token_response_token_type_tampering_exhaustive() {
             .mount(&auth_server)
             .await;
 
-        let state_entry = StoredStateEntry {
-            state: "state_123".to_string(),
-            client_id: TEST_CLIENT_ID.to_string(),
-            code_verifier: "verifier_123".to_string(),
-            dpop_key: DPoPKey::generate(),
-            issuer: auth_server.uri(),
-            did: Some(TEST_ALICE_DID.to_string()),
-            handle: Some(TEST_ALICE_HANDLE.to_string()),
-            redirect_uri: TEST_REDIRECT_URI.to_string(),
-            pds_endpoint: "https://pds.example.com".to_string(),
-            token_endpoint: format!("{}/oauth/token", auth_server.uri()),
-            scopes: "atproto".to_string(),
-            created_at: SystemTime::now(),
-            expires_in_secs: 300,
-        };
+        let state_entry = test_state_entry(
+            "state_123",
+            &auth_server.uri(),
+            &format!("{}/oauth/token", auth_server.uri()),
+            "atproto",
+            DPoPKey::generate(),
+        );
 
-        let session = client
-            .exchange_code("code_123", &state_entry)
+        let session = exchange_via_callback(&client, "code_123", state_entry)
             .await
             .unwrap();
         assert_eq!(session.token_type(), vtype);
@@ -976,6 +1091,7 @@ async fn test_token_response_token_type_tampering_exhaustive() {
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "application/json")
+                    .insert_header("dpop-nonce", "test-response-nonce")
                     .set_body_json(json!({
                         "access_token": "at_invalid",
                         "token_type": itype,
@@ -988,23 +1104,15 @@ async fn test_token_response_token_type_tampering_exhaustive() {
             .mount(&auth_server)
             .await;
 
-        let state_entry = StoredStateEntry {
-            state: "state_123".to_string(),
-            client_id: TEST_CLIENT_ID.to_string(),
-            code_verifier: "verifier_123".to_string(),
-            dpop_key: DPoPKey::generate(),
-            issuer: auth_server.uri(),
-            did: Some(TEST_ALICE_DID.to_string()),
-            handle: Some(TEST_ALICE_HANDLE.to_string()),
-            redirect_uri: TEST_REDIRECT_URI.to_string(),
-            pds_endpoint: "https://pds.example.com".to_string(),
-            token_endpoint: format!("{}/oauth/token", auth_server.uri()),
-            scopes: "atproto".to_string(),
-            created_at: SystemTime::now(),
-            expires_in_secs: 300,
-        };
+        let state_entry = test_state_entry(
+            "state_123",
+            &auth_server.uri(),
+            &format!("{}/oauth/token", auth_server.uri()),
+            "atproto",
+            DPoPKey::generate(),
+        );
 
-        let err = client.exchange_code("code_123", &state_entry).await;
+        let err = exchange_via_callback(&client, "code_123", state_entry).await;
         assert!(
             matches!(
                 err,
@@ -1029,6 +1137,7 @@ async fn test_token_response_missing_atproto_scope_variants() {
     ];
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .allow_insecure_localhost(true)
         .build()
@@ -1041,6 +1150,7 @@ async fn test_token_response_missing_atproto_scope_variants() {
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "application/json")
+                    .insert_header("dpop-nonce", "test-response-nonce")
                     .set_body_json(json!({
                         "access_token": "at_scope_test",
                         "token_type": "DPoP",
@@ -1053,23 +1163,15 @@ async fn test_token_response_missing_atproto_scope_variants() {
             .mount(&auth_server)
             .await;
 
-        let state_entry = StoredStateEntry {
-            state: "state_123".to_string(),
-            client_id: TEST_CLIENT_ID.to_string(),
-            code_verifier: "verifier_123".to_string(),
-            dpop_key: DPoPKey::generate(),
-            issuer: auth_server.uri(),
-            did: Some(TEST_ALICE_DID.to_string()),
-            handle: Some(TEST_ALICE_HANDLE.to_string()),
-            redirect_uri: TEST_REDIRECT_URI.to_string(),
-            pds_endpoint: "https://pds.example.com".to_string(),
-            token_endpoint: format!("{}/oauth/token", auth_server.uri()),
-            scopes: "atproto".to_string(),
-            created_at: SystemTime::now(),
-            expires_in_secs: 300,
-        };
+        let state_entry = test_state_entry(
+            "state_123",
+            &auth_server.uri(),
+            &format!("{}/oauth/token", auth_server.uri()),
+            "atproto",
+            DPoPKey::generate(),
+        );
 
-        let err = client.exchange_code("code_123", &state_entry).await;
+        let err = exchange_via_callback(&client, "code_123", state_entry).await;
         assert!(
             matches!(
                 err,
@@ -1094,6 +1196,7 @@ async fn test_token_response_missing_atproto_scope_variants() {
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "application/json")
+                    .insert_header("dpop-nonce", "test-response-nonce")
                     .set_body_json(json!({
                         "access_token": "at_valid_scope",
                         "token_type": "DPoP",
@@ -1106,24 +1209,15 @@ async fn test_token_response_missing_atproto_scope_variants() {
             .mount(&auth_server)
             .await;
 
-        let state_entry = StoredStateEntry {
-            state: "state_123".to_string(),
-            client_id: TEST_CLIENT_ID.to_string(),
-            code_verifier: "verifier_123".to_string(),
-            dpop_key: DPoPKey::generate(),
-            issuer: auth_server.uri(),
-            did: Some(TEST_ALICE_DID.to_string()),
-            handle: Some(TEST_ALICE_HANDLE.to_string()),
-            redirect_uri: TEST_REDIRECT_URI.to_string(),
-            pds_endpoint: "https://pds.example.com".to_string(),
-            token_endpoint: format!("{}/oauth/token", auth_server.uri()),
-            scopes: "atproto".to_string(),
-            created_at: SystemTime::now(),
-            expires_in_secs: 300,
-        };
+        let state_entry = test_state_entry(
+            "state_123",
+            &auth_server.uri(),
+            &format!("{}/oauth/token", auth_server.uri()),
+            good_scope,
+            DPoPKey::generate(),
+        );
 
-        let session = client
-            .exchange_code("code_123", &state_entry)
+        let session = exchange_via_callback(&client, "code_123", state_entry)
             .await
             .unwrap();
         assert_eq!(session.scope(), Some(good_scope));
@@ -1143,6 +1237,7 @@ async fn test_token_response_corrupted_json_and_wrong_types() {
     ];
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .allow_insecure_localhost(true)
         .build()
@@ -1155,28 +1250,21 @@ async fn test_token_response_corrupted_json_and_wrong_types() {
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "application/json")
+                    .insert_header("dpop-nonce", "test-response-nonce")
                     .set_body_raw(payload.as_bytes(), "application/json"),
             )
             .mount(&auth_server)
             .await;
 
-        let state_entry = StoredStateEntry {
-            state: "state_123".to_string(),
-            client_id: TEST_CLIENT_ID.to_string(),
-            code_verifier: "verifier_123".to_string(),
-            dpop_key: DPoPKey::generate(),
-            issuer: auth_server.uri(),
-            did: Some(TEST_ALICE_DID.to_string()),
-            handle: Some(TEST_ALICE_HANDLE.to_string()),
-            redirect_uri: TEST_REDIRECT_URI.to_string(),
-            pds_endpoint: "https://pds.example.com".to_string(),
-            token_endpoint: format!("{}/oauth/token", auth_server.uri()),
-            scopes: "atproto".to_string(),
-            created_at: SystemTime::now(),
-            expires_in_secs: 300,
-        };
+        let state_entry = test_state_entry(
+            "state_123",
+            &auth_server.uri(),
+            &format!("{}/oauth/token", auth_server.uri()),
+            "atproto",
+            DPoPKey::generate(),
+        );
 
-        let res = client.exchange_code("code_123", &state_entry).await;
+        let res = exchange_via_callback(&client, "code_123", state_entry).await;
         assert!(
             matches!(res, Err(AtprotoOAuthError::Token(TokenError::Json(_)))),
             "Expected Json error on payload '{payload}', got: {res:?}"
@@ -1211,6 +1299,7 @@ async fn test_token_response_http_error_codes_mapping() {
     ];
 
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .allow_insecure_localhost(true)
         .build()
@@ -1223,6 +1312,7 @@ async fn test_token_response_http_error_codes_mapping() {
             .respond_with(
                 ResponseTemplate::new(status)
                     .insert_header("content-type", "application/json")
+                    .insert_header("dpop-nonce", "test-response-nonce")
                     .set_body_json(json!({
                         "error": err_code,
                         "error_description": desc
@@ -1231,23 +1321,15 @@ async fn test_token_response_http_error_codes_mapping() {
             .mount(&auth_server)
             .await;
 
-        let state_entry = StoredStateEntry {
-            state: "state_123".to_string(),
-            client_id: TEST_CLIENT_ID.to_string(),
-            code_verifier: "verifier_123".to_string(),
-            dpop_key: DPoPKey::generate(),
-            issuer: auth_server.uri(),
-            did: Some(TEST_ALICE_DID.to_string()),
-            handle: Some(TEST_ALICE_HANDLE.to_string()),
-            redirect_uri: TEST_REDIRECT_URI.to_string(),
-            pds_endpoint: "https://pds.example.com".to_string(),
-            token_endpoint: format!("{}/oauth/token", auth_server.uri()),
-            scopes: "atproto".to_string(),
-            created_at: SystemTime::now(),
-            expires_in_secs: 300,
-        };
+        let state_entry = test_state_entry(
+            "state_123",
+            &auth_server.uri(),
+            &format!("{}/oauth/token", auth_server.uri()),
+            "atproto",
+            DPoPKey::generate(),
+        );
 
-        let res = client.exchange_code("code_123", &state_entry).await;
+        let res = exchange_via_callback(&client, "code_123", state_entry).await;
         assert!(
             matches!(
                 &res,
@@ -1255,7 +1337,7 @@ async fn test_token_response_http_error_codes_mapping() {
                     status: s,
                     error: e,
                     description: d
-                })) if *s == status && e == err_code && d.as_deref() == desc
+                })) if *s == status && e == err_code && d.is_none()
             ),
             "Expected structured RequestFailed for status {status}, got: {res:?}"
         );
@@ -1265,6 +1347,7 @@ async fn test_token_response_http_error_codes_mapping() {
 #[tokio::test]
 async fn test_token_endpoint_ssrf_filtering() {
     let client = AtprotoOAuthClient::builder()
+        .in_memory_state_store()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
         .allow_insecure_localhost(false) // Strict SSRF on
         .build()
@@ -1281,23 +1364,15 @@ async fn test_token_endpoint_ssrf_filtering() {
     ];
 
     for ssrf_url in ssrf_endpoints {
-        let state_entry = StoredStateEntry {
-            state: "state_123".to_string(),
-            client_id: TEST_CLIENT_ID.to_string(),
-            code_verifier: "verifier_123".to_string(),
-            dpop_key: DPoPKey::generate(),
-            issuer: "https://auth.example.com".to_string(),
-            did: Some(TEST_ALICE_DID.to_string()),
-            handle: Some(TEST_ALICE_HANDLE.to_string()),
-            redirect_uri: TEST_REDIRECT_URI.to_string(),
-            pds_endpoint: "https://pds.example.com".to_string(),
-            token_endpoint: ssrf_url.to_string(),
-            scopes: "atproto".to_string(),
-            created_at: SystemTime::now(),
-            expires_in_secs: 300,
-        };
+        let state_entry = test_state_entry(
+            "state_123",
+            "https://auth.example.com",
+            ssrf_url,
+            "atproto",
+            DPoPKey::generate(),
+        );
 
-        let err = client.exchange_code("code_123", &state_entry).await;
+        let err = exchange_via_callback(&client, "code_123", state_entry).await;
         assert!(
             matches!(err, Err(AtprotoOAuthError::Token(TokenError::Ssrf(_)))),
             "Token endpoint '{ssrf_url}' must be blocked by SSRF filter, got: {err:?}"

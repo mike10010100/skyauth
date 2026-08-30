@@ -266,7 +266,9 @@ fn test_f4_04_dpop_access_token_hash_calculation() {
 #[test]
 fn test_f4_05_dpop_pkcs8_pem_key_roundtrip() {
     let original_key = DPoPKey::generate();
-    let pem = original_key.to_pkcs8_pem().expect("serialize PEM");
+    let pem = original_key
+        .export_pkcs8_pem(skyauth::session::SecretExportPermit::for_encrypted_persistence())
+        .expect("serialize PEM");
     let imported_key = DPoPKey::from_pkcs8_pem(&pem).expect("import PEM");
     assert_eq!(original_key.jwk_thumbprint(), imported_key.jwk_thumbprint());
 }
@@ -294,18 +296,21 @@ fn test_f5_01_dpop_verifier_valid_proof() {
 #[test]
 fn test_f5_02_dpop_nonce_cache_origin_isolation() {
     let cache = DPoPNonceCache::new();
-    cache.set_nonce("https://as1.example.com", "nonce-1".to_string());
-    cache.set_nonce("https://as2.example.com", "nonce-2".to_string());
+    let key = DPoPKey::generate();
+    let first_nonce = DPoPKey::generate().jwk_thumbprint();
+    let second_nonce = DPoPKey::generate().jwk_thumbprint();
+    cache.set_nonce(&key, "https://as1.example.com", first_nonce.clone());
+    cache.set_nonce(&key, "https://as2.example.com", second_nonce.clone());
 
     assert_eq!(
-        cache.get_nonce("https://as1.example.com").as_deref(),
-        Some("nonce-1")
+        cache.get_nonce(&key, "https://as1.example.com").as_deref(),
+        Some(first_nonce.as_str())
     );
     assert_eq!(
-        cache.get_nonce("https://as2.example.com").as_deref(),
-        Some("nonce-2")
+        cache.get_nonce(&key, "https://as2.example.com").as_deref(),
+        Some(second_nonce.as_str())
     );
-    assert_eq!(cache.get_nonce("https://as3.example.com"), None);
+    assert_eq!(cache.get_nonce(&key, "https://as3.example.com"), None);
 }
 
 #[test]
@@ -318,7 +323,7 @@ fn test_f5_03_dpop_verifier_nonce_mismatch() {
 
     let verifier = DPoPVerifier::new();
     let res = verifier.verify_proof(&proof, "POST", uri, Some("required-nonce"), None, None);
-    assert!(matches!(res, Err(DPoPError::NonceMismatch { .. })));
+    assert!(matches!(res, Err(DPoPError::NonceMismatch)));
 }
 
 #[test]
@@ -331,7 +336,7 @@ fn test_f5_04_dpop_verifier_ath_mismatch() {
 
     let verifier = DPoPVerifier::new();
     let res = verifier.verify_proof(&proof, "GET", uri, None, Some("token-beta"), None);
-    assert!(matches!(res, Err(DPoPError::AthMismatch { .. })));
+    assert!(matches!(res, Err(DPoPError::AthMismatch)));
 }
 
 #[test]
@@ -967,19 +972,22 @@ fn test_f13_05_dpop_ath_matching_during_resource_call() {
 #[test]
 fn test_f14_01_nonce_cache_update_and_lookup() {
     let cache = DPoPNonceCache::new();
+    let key = DPoPKey::generate();
     let server_origin = "https://auth.example.com";
-    assert_eq!(cache.get_nonce(server_origin), None);
+    let first_nonce = DPoPKey::generate().jwk_thumbprint();
+    let second_nonce = DPoPKey::generate().jwk_thumbprint();
+    assert_eq!(cache.get_nonce(&key, server_origin), None);
 
-    cache.set_nonce(server_origin, "nonce_turn_1".to_string());
+    cache.set_nonce(&key, server_origin, first_nonce.clone());
     assert_eq!(
-        cache.get_nonce(server_origin).as_deref(),
-        Some("nonce_turn_1")
+        cache.get_nonce(&key, server_origin).as_deref(),
+        Some(first_nonce.as_str())
     );
 
-    cache.set_nonce(server_origin, "nonce_turn_2".to_string());
+    cache.set_nonce(&key, server_origin, second_nonce.clone());
     assert_eq!(
-        cache.get_nonce(server_origin).as_deref(),
-        Some("nonce_turn_2")
+        cache.get_nonce(&key, server_origin).as_deref(),
+        Some(second_nonce.as_str())
     );
 }
 

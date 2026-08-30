@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::crypto::{base64url_encode, constant_time_eq, sha256_digest};
 use crate::error::PkceError;
+use crate::policy::{pkce_byte_allowed, pkce_length_allowed};
 
 /// The PKCE code challenge transformation method.
 ///
@@ -147,7 +148,7 @@ pub fn derive_s256_challenge(verifier: &str) -> String {
 /// Returns [`PkceError::InvalidVerifierLength`] or [`PkceError::InvalidVerifierCharacter`].
 pub fn validate_verifier(verifier: &str) -> Result<(), PkceError> {
     let len = verifier.len();
-    if !(43..=128).contains(&len) {
+    if !pkce_length_allowed(len) {
         return Err(PkceError::InvalidVerifierLength {
             len,
             min: 43,
@@ -156,13 +157,7 @@ pub fn validate_verifier(verifier: &str) -> Result<(), PkceError> {
     }
 
     for (position, byte) in verifier.bytes().enumerate() {
-        let is_unreserved = byte.is_ascii_alphanumeric()
-            || byte == b'-'
-            || byte == b'.'
-            || byte == b'_'
-            || byte == b'~';
-
-        if !is_unreserved {
+        if !pkce_byte_allowed(byte) {
             return Err(PkceError::InvalidVerifierCharacter {
                 char: byte as char,
                 position,

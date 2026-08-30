@@ -196,7 +196,7 @@ async fn test_w2_multi_hop_auto_nonce_negotiation_loop() {
         .mount_par_nonce_challenge_once("nonce-par-step1")
         .await;
 
-    let mut par_nonce = nonce_cache.get_nonce(&env.auth_server.uri());
+    let mut par_nonce = nonce_cache.get_nonce(&dpop_key, &env.auth_server.uri());
     let proof_1 = dpop_key
         .create_proof("POST", &par_url, par_nonce.as_deref(), None)
         .unwrap();
@@ -218,7 +218,7 @@ async fn test_w2_multi_hop_auto_nonce_negotiation_loop() {
         .to_str()
         .unwrap()
         .to_string();
-    nonce_cache.set_nonce(&env.auth_server.uri(), new_nonce.clone());
+    nonce_cache.set_nonce(&dpop_key, &env.auth_server.uri(), new_nonce.clone());
     par_nonce = Some(new_nonce);
 
     // Retry PAR with fresh nonce -> 201 Created
@@ -244,7 +244,7 @@ async fn test_w2_multi_hop_auto_nonce_negotiation_loop() {
         .mount_token_nonce_challenge_once("nonce-token-step2")
         .await;
 
-    let mut token_nonce = nonce_cache.get_nonce(&env.auth_server.uri());
+    let mut token_nonce = nonce_cache.get_nonce(&dpop_key, &env.auth_server.uri());
     let token_proof_1 = dpop_key
         .create_proof("POST", &token_url, token_nonce.as_deref(), None)
         .unwrap();
@@ -263,7 +263,7 @@ async fn test_w2_multi_hop_auto_nonce_negotiation_loop() {
         .to_str()
         .unwrap()
         .to_string();
-    nonce_cache.set_nonce(&env.auth_server.uri(), fresh_token_nonce.clone());
+    nonce_cache.set_nonce(&dpop_key, &env.auth_server.uri(), fresh_token_nonce.clone());
     token_nonce = Some(fresh_token_nonce);
 
     // Retry Token exchange with fresh nonce -> 200 OK
@@ -308,7 +308,7 @@ async fn test_w2_multi_hop_auto_nonce_negotiation_loop() {
         .unwrap()
         .to_str()
         .unwrap();
-    nonce_cache.set_nonce(&pds.uri(), fresh_pds_nonce.to_string());
+    nonce_cache.set_nonce(&dpop_key, &pds.uri(), fresh_pds_nonce.to_string());
 
     // Retry XRPC resource request with fresh PDS nonce -> 200 OK
     pds.mount_xrpc_get_profile(TEST_ALICE_DID, TEST_ALICE_HANDLE)
@@ -447,7 +447,9 @@ fn test_w4_stolen_token_without_private_key_fails_dpop() {
 fn test_w5_daemon_key_rotation_and_session_persistence() {
     // 1. Initial Keypair and Session
     let initial_key = DPoPKey::generate();
-    let initial_pem = initial_key.to_pkcs8_pem().unwrap();
+    let initial_pem = initial_key
+        .export_pkcs8_pem(skyauth::session::SecretExportPermit::for_encrypted_persistence())
+        .unwrap();
     let initial_refresh_token = "rt_session_init".to_string();
 
     // 2. Simulate Daemon Restart & Key Reload

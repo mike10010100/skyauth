@@ -5,39 +5,59 @@
 //!
 //! Reference: <https://datatracker.ietf.org/doc/html/rfc9126>
 
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::dpop::{extract_dpop_nonce, DPoPKey, DPoPNonceCache};
-use crate::error::{AtprotoOAuthError, DPoPError, ParError};
-use crate::ssrf::SsrfFilter;
+use crate::error::{sanitize_oauth_error_code, AtprotoOAuthError, DPoPError, ParError};
+use crate::secret::SecretString;
+use crate::ssrf::{collect_limited, SafeHttpClient, SsrfFilter};
 
 /// Parameters for an RFC 9126 Pushed Authorization Request.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct ParParameters {
     /// Canonical OAuth client ID (metadata URL or registered client identifier).
-    pub client_id: String,
+    client_id: String,
     /// OAuth redirect callback URI.
-    pub redirect_uri: String,
+    redirect_uri: String,
     /// Space-separated requested OAuth scopes (e.g. `"atproto transition:generic"`).
-    pub scope: String,
+    scope: String,
     /// Cryptographic state token for CSRF defense and session tracking.
-    pub state: String,
+    state: String,
     /// Derived S256 PKCE code challenge.
-    pub code_challenge: String,
+    code_challenge: String,
     /// PKCE code challenge transformation method (defaults to `"S256"`).
-    pub code_challenge_method: String,
+    code_challenge_method: String,
     /// OAuth response type (defaults to `"code"`).
-    pub response_type: String,
+    response_type: String,
     /// Optional user handle or DID login hint.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub login_hint: Option<String>,
+    login_hint: Option<String>,
     /// Optional client assertion type for confidential clients.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_assertion_type: Option<String>,
+    client_assertion_type: Option<String>,
     /// Optional client assertion JWT for confidential clients.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_assertion: Option<String>,
+    client_assertion: Option<SecretString>,
+}
+
+impl std::fmt::Debug for ParParameters {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ParParameters")
+            .field("client_id", &self.client_id)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("scope", &self.scope)
+            .field("state", &"[REDACTED]")
+            .field("code_challenge", &self.code_challenge)
+            .field("code_challenge_method", &self.code_challenge_method)
+            .field("response_type", &self.response_type)
+            .field("login_hint", &self.login_hint)
+            .field("client_assertion_type", &self.client_assertion_type)
+            .field(
+                "client_assertion",
+                &self.client_assertion.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 impl ParParameters {
@@ -79,7 +99,7 @@ impl ParParameters {
         assertion: impl Into<String>,
     ) -> Self {
         self.client_assertion_type = Some(assertion_type.into());
-        self.client_assertion = Some(assertion.into());
+        self.client_assertion = Some(SecretString::new(assertion));
         self
     }
 
@@ -102,7 +122,7 @@ impl ParParameters {
             serializer.append_pair("client_assertion_type", cat);
         }
         if let Some(ref ca) = self.client_assertion {
-            serializer.append_pair("client_assertion", ca);
+            serializer.append_pair("client_assertion", ca.expose());
         }
 
         serializer.finish()
@@ -179,46 +199,26 @@ pub async fn execute_par_request(
         .map_err(ParError::from)?;
 
     let server_origin = parsed_url.origin().ascii_serialization();
-
-    let form_body = params.to_form_urlencoded();
-
-    // 1. Initial Attempt with cached nonce (if any)
-    let initial_nonce = nonce_cache.get_nonce(&server_origin);
+    let form_body = params.to_form_urlencoded().into_bytes();
+    let client = SafeHttpClient::new(*ssrf_filter);
+    let initial_nonce = nonce_cache.get_nonce(dpop_key, &server_origin);
     let proof = dpop_key.create_proof("POST", par_endpoint, initial_nonce.as_deref(), None)?;
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| ParError::Http(e.to_string()))?;
-
     let resp = client
-        .post(par_endpoint)
-        .header("content-type", "application/x-www-form-urlencoded")
-        .header("accept", "application/json")
-        .header("dpop", proof)
-        .body(form_body.clone())
-        .send()
+        .send(
+            reqwest::Method::POST,
+            par_endpoint,
+            par_headers(&proof)?,
+            Some(form_body.clone()),
+        )
         .await
-        .map_err(|e| ParError::Http(e.to_string()))?;
-
-    // Opportunistically cache returned DPoP nonce header
-    if let Some(new_nonce) = extract_dpop_nonce(
-        resp.headers()
-            .get("dpop-nonce")
-            .and_then(|h| h.to_str().ok()),
-    ) {
-        nonce_cache.set_nonce(&server_origin, new_nonce);
-    }
+        .map_err(ParError::from)?;
+    cache_required_nonce(&resp, nonce_cache, dpop_key, &server_origin)?;
 
     let status = resp.status();
-
-    // 2. Check for use_dpop_nonce error challenge
+    let resp_bytes = collect_limited(resp, 65_536)
+        .await
+        .map_err(ParError::from)?;
     if status == reqwest::StatusCode::BAD_REQUEST || status == reqwest::StatusCode::UNAUTHORIZED {
-        let resp_bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| ParError::Http(e.to_string()))?;
-
         let json_err: Option<serde_json::Value> = serde_json::from_slice(&resp_bytes).ok();
         let is_nonce_error = json_err
             .as_ref()
@@ -227,55 +227,36 @@ pub async fn execute_par_request(
             == Some("use_dpop_nonce");
 
         if is_nonce_error {
-            let fresh_nonce =
-                nonce_cache
-                    .get_nonce(&server_origin)
-                    .ok_or_else(|| ParError::RequestFailed {
-                        status: status.as_u16(),
-                        error: "use_dpop_nonce".to_string(),
-                        description: Some(
-                            "Missing DPoP-Nonce header in challenge response".to_string(),
-                        ),
-                    })?;
+            let fresh_nonce = nonce_cache
+                .get_nonce(dpop_key, &server_origin)
+                .ok_or_else(|| ParError::RequestFailed {
+                    status: status.as_u16(),
+                    error: "use_dpop_nonce".to_string(),
+                    description: Some(
+                        "Missing DPoP-Nonce header in challenge response".to_string(),
+                    ),
+                })?;
 
-            // 3. Single Retry with fresh nonce and fresh jti
             let retry_proof =
                 dpop_key.create_proof("POST", par_endpoint, Some(&fresh_nonce), None)?;
-
             let retry_resp = client
-                .post(par_endpoint)
-                .header("content-type", "application/x-www-form-urlencoded")
-                .header("accept", "application/json")
-                .header("dpop", retry_proof)
-                .body(form_body)
-                .send()
+                .send(
+                    reqwest::Method::POST,
+                    par_endpoint,
+                    par_headers(&retry_proof)?,
+                    Some(form_body),
+                )
                 .await
-                .map_err(|e| ParError::Http(e.to_string()))?;
-
-            if let Some(new_nonce) = extract_dpop_nonce(
-                retry_resp
-                    .headers()
-                    .get("dpop-nonce")
-                    .and_then(|h| h.to_str().ok()),
-            ) {
-                nonce_cache.set_nonce(&server_origin, new_nonce);
-            }
-
+                .map_err(ParError::from)?;
+            cache_required_nonce(&retry_resp, nonce_cache, dpop_key, &server_origin)?;
             let retry_status = retry_resp.status();
-            if retry_status.is_success() {
-                let body_bytes = retry_resp
-                    .bytes()
-                    .await
-                    .map_err(|e| ParError::Http(e.to_string()))?;
-                return parse_par_response(&body_bytes);
-            }
-
-            // If retry also fails
-            let err_bytes = retry_resp
-                .bytes()
+            let retry_bytes = collect_limited(retry_resp, 65_536)
                 .await
-                .map_err(|e| ParError::Http(e.to_string()))?;
-            let err_json: Option<serde_json::Value> = serde_json::from_slice(&err_bytes).ok();
+                .map_err(ParError::from)?;
+            if retry_status.is_success() {
+                return parse_par_response(&retry_bytes);
+            }
+            let err_json: Option<serde_json::Value> = serde_json::from_slice(&retry_bytes).ok();
             if err_json
                 .as_ref()
                 .and_then(|j| j.get("error"))
@@ -285,78 +266,90 @@ pub async fn execute_par_request(
                 return Err(DPoPError::NonceRetryLimitExceeded.into());
             }
 
-            let error_code = err_json
-                .as_ref()
-                .and_then(|j| j.get("error"))
-                .and_then(|e| e.as_str())
-                .unwrap_or("par_request_failed")
-                .to_string();
-            let error_desc = err_json
-                .as_ref()
-                .and_then(|j| j.get("error_description"))
-                .and_then(|d| d.as_str())
-                .map(ToString::to_string);
+            let error_code = sanitize_oauth_error_code(
+                err_json
+                    .as_ref()
+                    .and_then(|j| j.get("error"))
+                    .and_then(|e| e.as_str()),
+                "par_request_failed",
+            );
 
             return Err(ParError::RequestFailed {
                 status: retry_status.as_u16(),
                 error: error_code,
-                description: error_desc,
+                description: None,
             }
             .into());
         }
 
-        // Other 400 error
-        let error_code = json_err
-            .as_ref()
-            .and_then(|j| j.get("error"))
-            .and_then(|e| e.as_str())
-            .unwrap_or("par_request_failed")
-            .to_string();
-        let error_desc = json_err
-            .as_ref()
-            .and_then(|j| j.get("error_description"))
-            .and_then(|d| d.as_str())
-            .map(ToString::to_string);
+        let error_code = sanitize_oauth_error_code(
+            json_err
+                .as_ref()
+                .and_then(|j| j.get("error"))
+                .and_then(|e| e.as_str()),
+            "par_request_failed",
+        );
 
         return Err(ParError::RequestFailed {
             status: status.as_u16(),
             error: error_code,
-            description: error_desc,
+            description: None,
         }
         .into());
     }
 
     if !status.is_success() {
-        let err_bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| ParError::Http(e.to_string()))?;
-        let err_json: Option<serde_json::Value> = serde_json::from_slice(&err_bytes).ok();
-        let error_code = err_json
-            .as_ref()
-            .and_then(|j| j.get("error"))
-            .and_then(|e| e.as_str())
-            .unwrap_or("par_request_failed")
-            .to_string();
-        let error_desc = err_json
-            .as_ref()
-            .and_then(|j| j.get("error_description"))
-            .and_then(|d| d.as_str())
-            .map(ToString::to_string);
+        let err_json: Option<serde_json::Value> = serde_json::from_slice(&resp_bytes).ok();
+        let error_code = sanitize_oauth_error_code(
+            err_json
+                .as_ref()
+                .and_then(|j| j.get("error"))
+                .and_then(|e| e.as_str()),
+            "par_request_failed",
+        );
 
         return Err(ParError::RequestFailed {
             status: status.as_u16(),
             error: error_code,
-            description: error_desc,
+            description: None,
         }
         .into());
     }
+    parse_par_response(&resp_bytes)
+}
 
-    let body_bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| ParError::Http(e.to_string()))?;
-    parse_par_response(&body_bytes)
+fn par_headers(proof: &str) -> Result<HeaderMap, ParError> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/x-www-form-urlencoded"),
+    );
+    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    let proof = HeaderValue::from_str(proof).map_err(|error| ParError::Http(error.to_string()))?;
+    headers.insert(HeaderName::from_static("dpop"), proof);
+    Ok(headers)
+}
+
+fn cache_required_nonce(
+    response: &reqwest::Response,
+    cache: &DPoPNonceCache,
+    key: &DPoPKey,
+    origin: &str,
+) -> Result<(), ParError> {
+    let raw_nonce = response
+        .headers()
+        .get("dpop-nonce")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| ParError::Http("DPoP-Nonce response header is required".to_string()))?;
+    if raw_nonce.len() > 1_024 {
+        return Err(ParError::Http(
+            "DPoP-Nonce response header exceeds 1024 bytes".to_string(),
+        ));
+    }
+    let nonce = extract_dpop_nonce(Some(raw_nonce))
+        .ok_or_else(|| ParError::Http("DPoP-Nonce response header is empty".to_string()))?;
+    cache.set_nonce(key, origin, nonce);
+    Ok(())
 }
 
 fn parse_par_response(bytes: &[u8]) -> Result<ParResponse, AtprotoOAuthError> {
