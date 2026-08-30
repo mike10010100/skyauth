@@ -506,6 +506,15 @@ impl SsrfFormalSpec {
         || (seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2] == 0 && seg[3] == 0 && seg[4] == 0 && seg[5] == 0)
         // 2001:db8::/32 (Documentation)
         || (seg[0] == 0x2001 && seg[1] == 0x0db8)
+        // 2001::/32 (Teredo, RFC 4380, deprecated per RFC 8194): unconditionally blocked
+        || (seg[0] == 0x2001 && seg[1] == 0)
+        // 2002::/16 (6to4, RFC 7526 deprecated): embedded IPv4 re-evaluated
+        || (seg[0] == 0x2002 && Self::spec_is_restricted_ipv4(&Ipv4Addr::new(
+            ((seg[1] >> 8) & 0xff) as u8,
+            (seg[1] & 0xff) as u8,
+            ((seg[2] >> 8) & 0xff) as u8,
+            (seg[2] & 0xff) as u8,
+        )))
         // fc00::/7 (Unique Local Address - ULA)
         || ((seg[0] & 0xfe00) == 0xfc00)
         // fe80::/10 (Link-Local)
@@ -672,5 +681,27 @@ mod tests {
         assert!(!SsrfFormalSpec::spec_is_restricted_ipv4(&Ipv4Addr::new(
             8, 8, 8, 8
         )));
+    }
+
+    #[test]
+    fn test_ssrf_formal_spec_6to4_embedded_ipv4() {
+        // Formal spec and implementation must agree on 6to4 embedded-IPv4 handling.
+        // Embedded RFC 1918 10.0.0.1 → restricted
+        let v6 = Ipv6Addr::new(0x2002, 0x0a00, 0x0001, 0, 0, 0, 0, 1);
+        assert!(SsrfFormalSpec::spec_is_restricted_ipv6(&v6));
+
+        // Embedded public 198.140.33.116 → not restricted by the embedded address
+        let public_6to4 = Ipv6Addr::new(0x2002, 0xc68c, 0x2174, 0, 0, 0, 0, 1);
+        assert!(!SsrfFormalSpec::spec_is_restricted_ipv6(&public_6to4));
+
+        // Implementation/spec equivalence
+        assert_eq!(
+            crate::ssrf::is_restricted_ipv6(&v6),
+            SsrfFormalSpec::spec_is_restricted_ipv6(&v6)
+        );
+        assert_eq!(
+            crate::ssrf::is_restricted_ipv6(&public_6to4),
+            SsrfFormalSpec::spec_is_restricted_ipv6(&public_6to4)
+        );
     }
 }

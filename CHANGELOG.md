@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-08-30
+
+### Added
+
+- **Confidential Client Support (`client_secret_post`)**: `client_secret` is now automatically included in PAR, authorization-code exchange, and refresh-token requests (RFC 6749 § 2.3.1); `execute_par_request_with_credentials` exposes the same capability for custom credential parameters.
+- **Tower `htu` Origin Override**: `OAuthAuthLayer::with_htu_override` / `OAuthAuthService::with_htu_override` reconstruct the absolute DPoP target URI for servers behind reverse proxies receiving origin-form request targets.
+- **Single-Use Server Nonces**: `InMemoryServerNonceSource::with_single_use` enforces strict RFC 9449 § 8 semantics by atomically consuming nonces on first successful verification.
+- **6to4 (`2002::/16`) and Teredo (`2001::/32`) SSRF Filtering**: Deprecated tunneling addresses are rejected. 6to4 addresses additionally re-evaluate the embedded IPv4 address, mirrored in the formal spec models (Verus/Kani equivalence).
+
+### Fixed
+
+- **SSRF Hostname Blocking in Test Mode**: `allow_insecure_localhost(true)` no longer disables cloud-metadata and `.internal` hostname blocking; only explicit loopback targets are exempted.
+- **Bare `localhost` Hostname Blocked**: `is_blocked_hostname` now rejects `localhost` explicitly (previously only matched via IP checks).
+- **Refresh Scope Revalidation**: Refresh responses whose scope drops the mandatory `atproto` scope are rejected, preventing silent scope narrowing on rotation.
+- **Rotate-Time Zeroization**: `OAuthSession::rotate_tokens` zeroizes outgoing access/refresh tokens in memory before replacing them.
+- **Redacted Debug for `ParParameters`**: `client_assertion` no longer leaks through `Debug` output.
+- **Client Error-Deduplication**: Token endpoint request handling consolidated into a single shared routine with unified OAuth error-field parsing.
+
+### Documentation
+
+- `DPoPKey` documents the `ecdsa` crate's `ZeroizeOnDrop` guarantee for the private scalar and the sensitivity of string exports.
+- `rust-version = "1.81"` MSRV declared in `Cargo.toml`.
+
 ## [0.1.1] - 2026-08-30
 
 ### Fixed

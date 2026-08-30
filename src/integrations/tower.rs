@@ -21,6 +21,10 @@ use crate::dpop::{
 };
 use crate::error::DPoPError;
 
+/// Hook reconstructing the externally visible absolute `htu` from a request URI
+/// (used when the server sits behind a reverse proxy).
+pub type HtuOverrideFn = Arc<dyn Fn(&http::Uri) -> String + Send + Sync>;
+
 /// Tower layer that enforces AT Protocol DPoP OAuth authentication on inbound HTTP requests.
 ///
 /// Inspects the `Authorization: DPoP <access_token>` and `DPoP: <proof_jwt>` headers,
@@ -34,6 +38,7 @@ pub struct OAuthAuthLayer {
     token_validator: Arc<dyn AccessTokenValidator>,
     nonce_source: Option<Arc<dyn DPoPServerNonceSource>>,
     require_ath: bool,
+    htu_override: Option<HtuOverrideFn>,
 }
 
 impl std::fmt::Debug for OAuthAuthLayer {
@@ -57,6 +62,7 @@ impl OAuthAuthLayer {
             token_validator,
             nonce_source: None,
             require_ath: true,
+            htu_override: None,
         }
     }
 
@@ -107,6 +113,29 @@ impl OAuthAuthLayer {
         self.require_ath = require_ath;
         self
     }
+
+    /// Overrides how the DPoP target URI (`htu`) is derived from inbound request URIs.
+    ///
+    /// By default the raw request URI string is used as `htu`. HTTP servers behind reverse
+    /// proxies or load balancers typically receive origin-form request targets (e.g.
+    /// `/xrpc/foo`) while clients sign the absolute URI (e.g.
+    /// `https://pds.example.com/xrpc/foo`). Configure this hook to reconstruct the
+    /// externally visible absolute URL:
+    ///
+    /// ```ignore
+    /// layer.with_htu_override(|uri| {
+    ///     let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    ///     format!("https://pds.example.com{path_and_query}")
+    /// })
+    /// ```
+    #[must_use]
+    pub fn with_htu_override<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&http::Uri) -> String + Send + Sync + 'static,
+    {
+        self.htu_override = Some(Arc::new(f));
+        self
+    }
 }
 
 impl<S> Layer<S> for OAuthAuthLayer {
@@ -119,6 +148,7 @@ impl<S> Layer<S> for OAuthAuthLayer {
             token_validator: Arc::clone(&self.token_validator),
             nonce_source: self.nonce_source.clone(),
             require_ath: self.require_ath,
+            htu_override: self.htu_override.clone(),
         }
     }
 }
@@ -131,6 +161,7 @@ pub struct OAuthAuthService<S> {
     token_validator: Arc<dyn AccessTokenValidator>,
     nonce_source: Option<Arc<dyn DPoPServerNonceSource>>,
     require_ath: bool,
+    htu_override: Option<HtuOverrideFn>,
 }
 
 impl<S: std::fmt::Debug> std::fmt::Debug for OAuthAuthService<S> {
@@ -156,6 +187,7 @@ impl<S> OAuthAuthService<S> {
             token_validator,
             nonce_source: None,
             require_ath: true,
+            htu_override: None,
         }
     }
 
@@ -177,6 +209,18 @@ impl<S> OAuthAuthService<S> {
     #[must_use]
     pub fn with_require_ath(mut self, require_ath: bool) -> Self {
         self.require_ath = require_ath;
+        self
+    }
+
+    /// Overrides how the DPoP target URI (`htu`) is derived from inbound request URIs.
+    ///
+    /// See [`OAuthAuthLayer::with_htu_override`] for details.
+    #[must_use]
+    pub fn with_htu_override<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&http::Uri) -> String + Send + Sync + 'static,
+    {
+        self.htu_override = Some(Arc::new(f));
         self
     }
 }
@@ -248,7 +292,10 @@ where
 
         // 3. Compute expected values
         let htm = req.method().as_str();
-        let htu = req.uri().to_string();
+        let htu = match self.htu_override.as_ref() {
+            Some(f) => f(req.uri()),
+            None => req.uri().to_string(),
+        };
         let ath = if self.require_ath {
             Some(compute_access_token_hash(access_token))
         } else {
@@ -735,5 +782,57 @@ mod tests {
         let resp = service.call(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         assert!(resp.headers().contains_key(header::WWW_AUTHENTICATE));
+    }
+
+    #[tokio::test]
+    async fn test_tower_htu_override_for_proxied_origin_form_requests() {
+        let key = DPoPKey::generate();
+        let jkt = key.jwk_thumbprint();
+        let access_token = "proxied_request_token_abc";
+        let ath = compute_access_token_hash(access_token);
+
+        // Client signs the externally visible absolute URL...
+        let public_uri = "https://pds.example.com/xrpc/test";
+
+        let proof = key
+            .create_proof("GET", public_uri, None, Some(&ath))
+            .unwrap();
+
+        let store = InMemoryTokenValidator::new();
+        store.register_token(
+            access_token,
+            "did:plc:proxy",
+            &jkt,
+            Some("atproto".to_string()),
+            None,
+        );
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let layer = OAuthAuthLayer::from_token_store(verifier, store).with_htu_override(|uri| {
+            // ...while the proxy delivers origin-form targets to the service.
+            let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+            format!("https://pds.example.com{path_and_query}")
+        });
+
+        let inner_service = service_fn(|_req: Request<()>| async move {
+            Ok::<Response<String>, Infallible>(Response::new("OK".to_string()))
+        });
+
+        let mut service = layer.layer(inner_service);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/xrpc/test")
+            .header(header::AUTHORIZATION, format!("DPoP {access_token}"))
+            .header("DPoP", proof)
+            .body(())
+            .unwrap();
+
+        let resp = service.call(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "origin-form request must authenticate using the overridden absolute htu"
+        );
     }
 }

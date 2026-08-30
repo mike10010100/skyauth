@@ -84,6 +84,8 @@ pub fn is_restricted_ipv4(ip: &Ipv4Addr) -> bool {
 /// - `::ffff:0:0:0/96`: IPv4-translated (RFC 6052)
 /// - `64:ff9b::/96`: Well-Known IPv4/IPv6 translation prefix (RFC 6052)
 /// - `2001:db8::/32`: Documentation prefix (RFC 3849)
+/// - `2001::/32`: Teredo tunneling (RFC 4380, deprecated per RFC 8194), unconditionally blocked
+/// - `2002::/16`: 6to4 tunneling (RFC 7526, deprecated) with embedded IPv4 re-evaluated via [`is_restricted_ipv4`]
 /// - `fc00::/7`: Unique Local Address (ULA) (RFC 4193: `fc00::/8`, `fd00::/8`)
 /// - `fe80::/10`: Link-Local Unicast (RFC 4291)
 /// - `fec0::/10`: Deprecated Site-Local Unicast (RFC 3879)
@@ -108,6 +110,17 @@ pub fn is_restricted_ipv6(ip: &Ipv6Addr) -> bool {
     || (seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2] == 0 && seg[3] == 0 && seg[4] == 0 && seg[5] == 0)
     // 2001:db8::/32
     || (seg[0] == 0x2001 && seg[1] == 0x0db8)
+    // 2001::/32 (Teredo, RFC 4380, deprecated per RFC 8194): unconditionally blocked.
+    // The embedded IPv4 is XOR-0xffff obfuscated, making reliable re-evaluation
+    // impossible; the entire deprecated prefix is therefore treated as restricted.
+    || (seg[0] == 0x2001 && seg[1] == 0)
+    // 2002::/16 (6to4, RFC 7526 deprecated): embedded IPv4 in segment bytes
+    || (seg[0] == 0x2002 && is_restricted_ipv4(&Ipv4Addr::new(
+        ((seg[1] >> 8) & 0xff) as u8,
+        (seg[1] & 0xff) as u8,
+        ((seg[2] >> 8) & 0xff) as u8,
+        (seg[2] & 0xff) as u8,
+    )))
     // fc00::/7
     || ((seg[0] & 0xfe00) == 0xfc00)
     // fe80::/10
@@ -128,11 +141,16 @@ pub fn is_restricted_ip(ip: IpAddr) -> bool {
 }
 
 /// Checks if a hostname matches any cloud metadata or internal hostnames.
+///
+/// Bare `localhost` is also blocked; test/dev environments should use an explicit
+/// loopback IP literal (e.g. `127.0.0.1` or `::1`) instead, which [`SsrfFilter`]
+/// handles via `allow_insecure_localhost`.
 #[must_use]
 pub fn is_blocked_hostname(host: &str) -> bool {
     let lower = host.to_ascii_lowercase();
     let trimmed = lower.trim_end_matches('.');
-    trimmed == "metadata.google.internal"
+    trimmed == "localhost"
+        || trimmed == "metadata.google.internal"
         || trimmed == "instance-data"
         || trimmed == "metadata.internal"
         || trimmed == "169.254.169.254"
@@ -208,6 +226,21 @@ impl SsrfFilter {
 
         if !self.allow_insecure_localhost && is_blocked_hostname(host) {
             return Err(SsrfError::BlockedHost(host.to_string()));
+        }
+
+        // Even in insecure-localhost (test/dev) mode, cloud metadata and arbitrary
+        // `.internal` hostnames stay blocked; only explicit loopback targets are exempted.
+        if self.allow_insecure_localhost {
+            let lower_host = host.to_ascii_lowercase();
+            let trimmed_host = lower_host.trim_end_matches('.');
+            let metadata_or_internal = trimmed_host == "metadata.google.internal"
+                || trimmed_host == "instance-data"
+                || trimmed_host == "metadata.internal"
+                || trimmed_host == "169.254.169.254"
+                || trimmed_host.ends_with(".internal");
+            if metadata_or_internal {
+                return Err(SsrfError::BlockedHost(host.to_string()));
+            }
         }
 
         // If host is an IP literal, validate immediately
@@ -588,5 +621,51 @@ mod tests {
         assert!(local_filter
             .validate_url(&Url::parse("http://10.0.0.1:8080").unwrap())
             .is_err());
+    }
+
+    #[test]
+    fn test_test_mode_still_blocks_metadata_and_internal_hosts() {
+        let local_filter = SsrfFilter::new(true);
+        assert!(local_filter
+            .validate_url(&Url::parse("http://metadata.google.internal").unwrap())
+            .is_err());
+        assert!(local_filter
+            .validate_url(&Url::parse("https://instance-data").unwrap())
+            .is_err());
+        assert!(local_filter
+            .validate_url(&Url::parse("https://service.internal").unwrap())
+            .is_err());
+        assert!(local_filter
+            .validate_url(&Url::parse("https://169.254.169.254").unwrap())
+            .is_err());
+    }
+
+    #[test]
+    fn test_is_blocked_hostname_includes_bare_localhost() {
+        assert!(is_blocked_hostname("localhost"));
+        assert!(is_blocked_hostname("LOCALHOST"));
+        assert!(is_blocked_hostname("localhost."));
+    }
+
+    #[test]
+    fn test_6to4_embedded_ipv4_restriction() {
+        // 2002:0a00:0001:: → embedded 10.0.0.1 (RFC 1918) must be restricted
+        let v6 = Ipv6Addr::new(0x2002, 0x0a00, 0x0001, 0, 0, 0, 0, 1);
+        assert!(is_restricted_ipv6(&v6));
+
+        // 2002:c68c:2174:: → embedded 198.140.33.116 — public, must NOT be restricted
+        let public_6to4 = Ipv6Addr::new(0x2002, 0xc68c, 0x2174, 0, 0, 0, 0, 1);
+        assert!(!is_restricted_ipv6(&public_6to4));
+    }
+
+    #[test]
+    fn test_teredo_prefix_blocked() {
+        // The entire 2001:0000::/32 (Teredo, deprecated) prefix is unconditionally blocked,
+        // because the embedded IPv4 is XOR-0xffff obfuscated and cannot be reliably evaluated.
+        let teredo = Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0xf7f7, 0xf7f7);
+        assert!(is_restricted_ipv6(&teredo));
+
+        let teredo_plain = Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 0);
+        assert!(is_restricted_ipv6(&teredo_plain));
     }
 }

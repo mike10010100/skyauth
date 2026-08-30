@@ -13,7 +13,7 @@ use crate::error::{AtprotoOAuthError, DPoPError, ParError};
 use crate::ssrf::{read_bounded_body, SsrfFilter, MAX_OAUTH_RESPONSE_BYTES};
 
 /// Parameters for an RFC 9126 Pushed Authorization Request.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParParameters {
     /// Canonical OAuth client ID (metadata URL or registered client identifier).
     pub client_id: String,
@@ -38,6 +38,26 @@ pub struct ParParameters {
     /// Optional client assertion JWT for confidential clients.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_assertion: Option<String>,
+}
+
+impl std::fmt::Debug for ParParameters {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParParameters")
+            .field("client_id", &self.client_id)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("scope", &self.scope)
+            .field("state", &self.state)
+            .field("code_challenge", &self.code_challenge)
+            .field("code_challenge_method", &self.code_challenge_method)
+            .field("response_type", &self.response_type)
+            .field("login_hint", &self.login_hint)
+            .field("client_assertion_type", &self.client_assertion_type)
+            .field(
+                "client_assertion",
+                &self.client_assertion.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 impl ParParameters {
@@ -81,6 +101,37 @@ impl ParParameters {
         self.client_assertion_type = Some(assertion_type.into());
         self.client_assertion = Some(assertion.into());
         self
+    }
+
+    /// Serializes the parameters into standard `application/x-www-form-urlencoded` format
+    /// with additional credential parameters appended (e.g. `client_secret` for
+    /// confidential-client token endpoint authentication).
+    #[must_use]
+    pub fn to_form_urlencoded_with_credentials(&self, extra: &[(&str, &str)]) -> String {
+        let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+        serializer.append_pair("client_id", &self.client_id);
+        serializer.append_pair("response_type", &self.response_type);
+        serializer.append_pair("redirect_uri", &self.redirect_uri);
+        serializer.append_pair("scope", &self.scope);
+        serializer.append_pair("state", &self.state);
+        serializer.append_pair("code_challenge", &self.code_challenge);
+        serializer.append_pair("code_challenge_method", &self.code_challenge_method);
+
+        if let Some(ref hint) = self.login_hint {
+            serializer.append_pair("login_hint", hint);
+        }
+        if let Some(ref cat) = self.client_assertion_type {
+            serializer.append_pair("client_assertion_type", cat);
+        }
+        if let Some(ref ca) = self.client_assertion {
+            serializer.append_pair("client_assertion", ca);
+        }
+
+        for (key, value) in extra {
+            serializer.append_pair(key, value);
+        }
+
+        serializer.finish()
     }
 
     /// Serializes the parameters into standard `application/x-www-form-urlencoded` format.
@@ -170,6 +221,32 @@ pub async fn execute_par_request(
     dpop_key: &DPoPKey,
     nonce_cache: &DPoPNonceCache,
 ) -> Result<ParResponse, AtprotoOAuthError> {
+    execute_par_request_with_credentials(
+        ssrf_filter,
+        par_endpoint,
+        params,
+        dpop_key,
+        nonce_cache,
+        &[],
+    )
+    .await
+}
+
+/// Executes an RFC 9126 PAR request with DPoP signing, transparent auto-nonce retry,
+/// and additional credential form parameters (e.g. `client_secret`).
+///
+/// # Errors
+///
+/// Returns [`AtprotoOAuthError`] if SSRF validation, DPoP signing, HTTP transport,
+/// or response parsing fails.
+pub async fn execute_par_request_with_credentials(
+    ssrf_filter: &SsrfFilter,
+    par_endpoint: &str,
+    params: &ParParameters,
+    dpop_key: &DPoPKey,
+    nonce_cache: &DPoPNonceCache,
+    extra_credentials: &[(&str, &str)],
+) -> Result<ParResponse, AtprotoOAuthError> {
     let parsed_url = Url::parse(par_endpoint).map_err(|e| {
         ParError::InvalidEndpoint(format!("Invalid PAR endpoint URL '{par_endpoint}': {e}"))
     })?;
@@ -181,7 +258,11 @@ pub async fn execute_par_request(
 
     let server_origin = parsed_url.origin().ascii_serialization();
 
-    let form_body = params.to_form_urlencoded();
+    let form_body = if extra_credentials.is_empty() {
+        params.to_form_urlencoded()
+    } else {
+        params.to_form_urlencoded_with_credentials(extra_credentials)
+    };
 
     // 1. Initial Attempt with cached nonce (if any)
     let initial_nonce = nonce_cache.get_nonce(&server_origin);

@@ -13,7 +13,10 @@ use crate::crypto::base64url_encode;
 use crate::dpop::{compute_access_token_hash, extract_dpop_nonce, DPoPKey, DPoPNonceCache};
 use crate::error::{AtprotoOAuthError, DPoPError, ParError, TokenError};
 use crate::identity::{IdentityResolver, IdentityResolverBuilder};
-use crate::par::{build_authorization_url, execute_par_request, ParParameters};
+use crate::par::{
+    build_authorization_url, execute_par_request, execute_par_request_with_credentials,
+    ParParameters,
+};
 use crate::pkce::PkcePair;
 use crate::session::OAuthSession;
 use crate::ssrf::{read_bounded_body, SsrfFilter, MAX_OAUTH_RESPONSE_BYTES};
@@ -507,14 +510,26 @@ impl AtprotoOAuthClient {
         }
 
         // 5. Execute PAR with DPoP signing & auto-nonce retry
-        let par_res = execute_par_request(
-            &self.ssrf_filter,
-            &endpoints.par_endpoint,
-            &params,
-            &dpop_key,
-            &self.nonce_cache,
-        )
-        .await?;
+        let par_res = if let Some(ref secret) = self.metadata.client_secret {
+            execute_par_request_with_credentials(
+                &self.ssrf_filter,
+                &endpoints.par_endpoint,
+                &params,
+                &dpop_key,
+                &self.nonce_cache,
+                &[("client_secret", secret.as_str())],
+            )
+            .await?
+        } else {
+            execute_par_request(
+                &self.ssrf_filter,
+                &endpoints.par_endpoint,
+                &params,
+                &dpop_key,
+                &self.nonce_cache,
+            )
+            .await?
+        };
 
         // 6. Build Authorization Redirect URL
         let auth_url = build_authorization_url(
@@ -574,14 +589,21 @@ impl AtprotoOAuthClient {
         code: &str,
         state_entry: &StoredStateEntry,
     ) -> Result<OAuthSession, AtprotoOAuthError> {
-        let form_body = serde_urlencoded::to_string([
+        let mut form_pairs: Vec<(&str, &str)> = vec![
             ("grant_type", "authorization_code"),
             ("code", code),
-            ("redirect_uri", &state_entry.redirect_uri),
-            ("client_id", &state_entry.client_id),
-            ("code_verifier", &state_entry.code_verifier),
-        ])
-        .map_err(|e| TokenError::Http(e.to_string()))?;
+            ("redirect_uri", state_entry.redirect_uri.as_str()),
+            ("client_id", state_entry.client_id.as_str()),
+            ("code_verifier", state_entry.code_verifier.as_str()),
+        ];
+
+        // Confidential-client authentication (RFC 6749 § 2.3.1, client_secret_post)
+        if let Some(ref secret) = self.metadata.client_secret {
+            form_pairs.push(("client_secret", secret.as_str()));
+        }
+
+        let form_body =
+            serde_urlencoded::to_string(form_pairs).map_err(|e| TokenError::Http(e.to_string()))?;
 
         let resp_json: TokenResponse = self
             .send_dpop_token_request(
@@ -727,12 +749,19 @@ impl AtprotoOAuthClient {
             .ok_or(TokenError::MissingField("token_endpoint"))?
             .to_string();
 
-        let form_body = serde_urlencoded::to_string([
+        let mut form_pairs: Vec<(&str, &str)> = vec![
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
-            ("client_id", &self.metadata.client_id),
-        ])
-        .map_err(|e| TokenError::Http(e.to_string()))?;
+            ("client_id", self.metadata.client_id.as_str()),
+        ];
+
+        // Confidential-client authentication (RFC 6749 § 2.3.1, client_secret_post)
+        if let Some(ref secret) = self.metadata.client_secret {
+            form_pairs.push(("client_secret", secret.as_str()));
+        }
+
+        let form_body =
+            serde_urlencoded::to_string(form_pairs).map_err(|e| TokenError::Http(e.to_string()))?;
 
         let resp_json: TokenResponse = self
             .send_dpop_token_request(&token_endpoint, session.dpop_key(), form_body.into_bytes())
@@ -748,6 +777,15 @@ impl AtprotoOAuthClient {
                 actual: resp_json.sub,
             }
             .into());
+        }
+
+        // Scope revalidation: reject silent scope narrowing on rotation (RFC 6749 § 6:
+        // the refreshed scope MUST NOT exceed the original grant, and ATProto profiles
+        // mandate that "atproto" remains present).
+        if let Some(ref new_scope) = resp_json.scope {
+            if !new_scope.split_whitespace().any(|s| s == "atproto") {
+                return Err(TokenError::MissingAtprotoScope(new_scope.clone()).into());
+            }
         }
 
         session.rotate_tokens(
@@ -776,218 +814,14 @@ impl AtprotoOAuthClient {
         dpop_key: &DPoPKey,
         body_bytes: Vec<u8>,
     ) -> Result<TokenResponse, AtprotoOAuthError> {
-        let parsed_url = Url::parse(token_endpoint).map_err(|e| {
-            TokenError::Http(format!(
-                "Invalid token endpoint URL '{token_endpoint}': {e}"
-            ))
-        })?;
-
-        let (client, _pinned_addr, host_header) = self
-            .ssrf_filter
-            .build_pinned_client(&parsed_url)
-            .await
-            .map_err(TokenError::from)?;
-
-        let server_origin = parsed_url.origin().ascii_serialization();
-
-        // Initial Attempt with cached nonce (if any)
-        let initial_nonce = self.nonce_cache.get_nonce(&server_origin);
-        let proof =
-            dpop_key.create_proof("POST", token_endpoint, initial_nonce.as_deref(), None)?;
-
-        let resp = client
-            .post(token_endpoint)
-            .header(reqwest::header::HOST, host_header.clone())
-            .header("content-type", "application/x-www-form-urlencoded")
-            .header("accept", "application/json")
-            .header("dpop", proof)
-            .body(body_bytes.clone())
-            .send()
-            .await
-            .map_err(|e| TokenError::Http(e.to_string()))?;
-
-        // Cache any returned DPoP-Nonce header
-        if let Some(new_nonce) = extract_dpop_nonce(
-            resp.headers()
-                .get("dpop-nonce")
-                .and_then(|h| h.to_str().ok()),
-        ) {
-            self.nonce_cache.set_nonce(&server_origin, new_nonce);
-        }
-
-        let status = resp.status();
-
-        // Disallow redirects on token endpoints (RFC 6749)
-        if status.is_redirection() {
-            return Err(TokenError::RequestFailed {
-                status: status.as_u16(),
-                error: "invalid_request".to_string(),
-                description: Some("Redirects are not permitted for token endpoints".to_string()),
-            }
-            .into());
-        }
-
-        // Check for use_dpop_nonce error challenge
-        if status == reqwest::StatusCode::BAD_REQUEST || status == reqwest::StatusCode::UNAUTHORIZED
-        {
-            let resp_bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
-                .await
-                .map_err(|e| TokenError::Http(e.to_string()))?;
-
-            let json_err: Option<serde_json::Value> = serde_json::from_slice(&resp_bytes).ok();
-            let is_nonce_error = json_err
-                .as_ref()
-                .and_then(|j| j.get("error"))
-                .and_then(|e| e.as_str())
-                == Some("use_dpop_nonce");
-
-            if is_nonce_error {
-                let fresh_nonce = self.nonce_cache.get_nonce(&server_origin).ok_or_else(|| {
-                    TokenError::RequestFailed {
-                        status: status.as_u16(),
-                        error: "use_dpop_nonce".to_string(),
-                        description: Some(
-                            "Missing DPoP-Nonce header in challenge response".to_string(),
-                        ),
-                    }
-                })?;
-
-                // Single Retry with fresh nonce
-                let retry_proof =
-                    dpop_key.create_proof("POST", token_endpoint, Some(&fresh_nonce), None)?;
-
-                let (retry_client, _retry_pinned_addr, retry_host_header) = self
-                    .ssrf_filter
-                    .build_pinned_client(&parsed_url)
-                    .await
-                    .map_err(TokenError::from)?;
-
-                let retry_resp = retry_client
-                    .post(token_endpoint)
-                    .header(reqwest::header::HOST, retry_host_header)
-                    .header("content-type", "application/x-www-form-urlencoded")
-                    .header("accept", "application/json")
-                    .header("dpop", retry_proof)
-                    .body(body_bytes)
-                    .send()
-                    .await
-                    .map_err(|e| TokenError::Http(e.to_string()))?;
-
-                if let Some(new_nonce) = extract_dpop_nonce(
-                    retry_resp
-                        .headers()
-                        .get("dpop-nonce")
-                        .and_then(|h| h.to_str().ok()),
-                ) {
-                    self.nonce_cache.set_nonce(&server_origin, new_nonce);
-                }
-
-                let retry_status = retry_resp.status();
-
-                if retry_status.is_redirection() {
-                    return Err(TokenError::RequestFailed {
-                        status: retry_status.as_u16(),
-                        error: "invalid_request".to_string(),
-                        description: Some(
-                            "Redirects are not permitted for token endpoints".to_string(),
-                        ),
-                    }
-                    .into());
-                }
-
-                if retry_status.is_success() {
-                    let bytes = read_bounded_body(retry_resp, MAX_OAUTH_RESPONSE_BYTES)
-                        .await
-                        .map_err(|e| TokenError::Http(e.to_string()))?;
-                    let res: TokenResponse = serde_json::from_slice(&bytes)
-                        .map_err(|e| TokenError::Json(e.to_string()))?;
-                    return Ok(res);
-                }
-
-                let err_bytes = read_bounded_body(retry_resp, MAX_OAUTH_RESPONSE_BYTES)
-                    .await
-                    .map_err(|e| TokenError::Http(e.to_string()))?;
-                let err_json: Option<serde_json::Value> = serde_json::from_slice(&err_bytes).ok();
-                if err_json
-                    .as_ref()
-                    .and_then(|j| j.get("error"))
-                    .and_then(|e| e.as_str())
-                    == Some("use_dpop_nonce")
-                {
-                    return Err(DPoPError::NonceRetryLimitExceeded.into());
-                }
-
-                let error_code = err_json
-                    .as_ref()
-                    .and_then(|j| j.get("error"))
-                    .and_then(|e| e.as_str())
-                    .unwrap_or("token_request_failed")
-                    .to_string();
-                let error_desc = err_json
-                    .as_ref()
-                    .and_then(|j| j.get("error_description"))
-                    .and_then(|d| d.as_str())
-                    .map(ToString::to_string);
-
-                return Err(TokenError::RequestFailed {
-                    status: retry_status.as_u16(),
-                    error: error_code,
-                    description: error_desc,
-                }
-                .into());
-            }
-
-            let error_code = json_err
-                .as_ref()
-                .and_then(|j| j.get("error"))
-                .and_then(|e| e.as_str())
-                .unwrap_or("token_request_failed")
-                .to_string();
-            let error_desc = json_err
-                .as_ref()
-                .and_then(|j| j.get("error_description"))
-                .and_then(|d| d.as_str())
-                .map(ToString::to_string);
-
-            return Err(TokenError::RequestFailed {
-                status: status.as_u16(),
-                error: error_code,
-                description: error_desc,
-            }
-            .into());
-        }
-
-        if !status.is_success() {
-            let err_bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
-                .await
-                .map_err(|e| TokenError::Http(e.to_string()))?;
-            let err_json: Option<serde_json::Value> = serde_json::from_slice(&err_bytes).ok();
-            let error_code = err_json
-                .as_ref()
-                .and_then(|j| j.get("error"))
-                .and_then(|e| e.as_str())
-                .unwrap_or("token_request_failed")
-                .to_string();
-            let error_desc = err_json
-                .as_ref()
-                .and_then(|j| j.get("error_description"))
-                .and_then(|d| d.as_str())
-                .map(ToString::to_string);
-
-            return Err(TokenError::RequestFailed {
-                status: status.as_u16(),
-                error: error_code,
-                description: error_desc,
-            }
-            .into());
-        }
-
-        let bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
-            .await
-            .map_err(|e| TokenError::Http(e.to_string()))?;
-        let res: TokenResponse =
-            serde_json::from_slice(&bytes).map_err(|e| TokenError::Json(e.to_string()))?;
-        Ok(res)
+        send_dpop_token_request_inner(
+            &self.ssrf_filter,
+            &self.nonce_cache,
+            token_endpoint,
+            dpop_key,
+            body_bytes,
+        )
+        .await
     }
 
     /// Executes an arbitrary HTTP request authenticated with DPoP and automatic nonce retry handling.
@@ -1172,6 +1006,204 @@ impl AtprotoOAuthClient {
         )
         .await
     }
+}
+
+/// Extracts the OAuth `error` and `error_description` fields from a JSON body.
+fn parse_oauth_error_fields(json: Option<&serde_json::Value>) -> (String, Option<String>) {
+    let error_code = json
+        .and_then(|j| j.get("error"))
+        .and_then(|e| e.as_str())
+        .unwrap_or("token_request_failed")
+        .to_string();
+    let error_desc = json
+        .and_then(|j| j.get("error_description"))
+        .and_then(|d| d.as_str())
+        .map(ToString::to_string);
+    (error_code, error_desc)
+}
+
+/// Checks whether a parsed JSON body is a `use_dpop_nonce` DPoP challenge.
+fn is_use_dpop_nonce_error(json: Option<&serde_json::Value>) -> bool {
+    json.and_then(|j| j.get("error")).and_then(|e| e.as_str()) == Some("use_dpop_nonce")
+}
+
+/// Reads a bounded body and parses it as lenient JSON, returning `None` on non-JSON bodies.
+async fn read_bounded_json(
+    resp: reqwest::Response,
+) -> Result<Option<serde_json::Value>, TokenError> {
+    let bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
+        .await
+        .map_err(|e| TokenError::Http(e.to_string()))?;
+    Ok(serde_json::from_slice(&bytes).ok())
+}
+
+/// Free-function core for DPoP-bound token endpoint requests with transparent
+/// auto-nonce retry, shared by code exchange and session refresh.
+///
+/// Redirects are rejected per RFC 6749; a single retry is performed when the
+/// server responds with a `use_dpop_nonce` challenge.
+async fn send_dpop_token_request_inner(
+    ssrf_filter: &SsrfFilter,
+    nonce_cache: &DPoPNonceCache,
+    token_endpoint: &str,
+    dpop_key: &DPoPKey,
+    body_bytes: Vec<u8>,
+) -> Result<TokenResponse, AtprotoOAuthError> {
+    let parsed_url = Url::parse(token_endpoint).map_err(|e| {
+        TokenError::Http(format!(
+            "Invalid token endpoint URL '{token_endpoint}': {e}"
+        ))
+    })?;
+
+    let (client, _pinned_addr, host_header) = ssrf_filter
+        .build_pinned_client(&parsed_url)
+        .await
+        .map_err(TokenError::from)?;
+
+    let server_origin = parsed_url.origin().ascii_serialization();
+
+    // Initial Attempt with cached nonce (if any)
+    let initial_nonce = nonce_cache.get_nonce(&server_origin);
+    let proof = dpop_key.create_proof("POST", token_endpoint, initial_nonce.as_deref(), None)?;
+
+    let resp = client
+        .post(token_endpoint)
+        .header(reqwest::header::HOST, host_header.clone())
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("accept", "application/json")
+        .header("dpop", proof)
+        .body(body_bytes.clone())
+        .send()
+        .await
+        .map_err(|e| TokenError::Http(e.to_string()))?;
+
+    // Cache any returned DPoP-Nonce header
+    if let Some(new_nonce) = extract_dpop_nonce(
+        resp.headers()
+            .get("dpop-nonce")
+            .and_then(|h| h.to_str().ok()),
+    ) {
+        nonce_cache.set_nonce(&server_origin, new_nonce);
+    }
+
+    let status = resp.status();
+
+    // Disallow redirects on token endpoints (RFC 6749)
+    if status.is_redirection() {
+        return Err(TokenError::RequestFailed {
+            status: status.as_u16(),
+            error: "invalid_request".to_string(),
+            description: Some("Redirects are not permitted for token endpoints".to_string()),
+        }
+        .into());
+    }
+
+    // Check for use_dpop_nonce error challenge
+    if status == reqwest::StatusCode::BAD_REQUEST || status == reqwest::StatusCode::UNAUTHORIZED {
+        let json_err = read_bounded_json(resp).await?;
+        if is_use_dpop_nonce_error(json_err.as_ref()) {
+            let fresh_nonce =
+                nonce_cache
+                    .get_nonce(&server_origin)
+                    .ok_or_else(|| TokenError::RequestFailed {
+                        status: status.as_u16(),
+                        error: "use_dpop_nonce".to_string(),
+                        description: Some(
+                            "Missing DPoP-Nonce header in challenge response".to_string(),
+                        ),
+                    })?;
+
+            // Single Retry with fresh nonce
+            let retry_proof =
+                dpop_key.create_proof("POST", token_endpoint, Some(&fresh_nonce), None)?;
+
+            let (retry_client, _retry_pinned_addr, retry_host_header) = ssrf_filter
+                .build_pinned_client(&parsed_url)
+                .await
+                .map_err(TokenError::from)?;
+
+            let retry_resp = retry_client
+                .post(token_endpoint)
+                .header(reqwest::header::HOST, retry_host_header)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("accept", "application/json")
+                .header("dpop", retry_proof)
+                .body(body_bytes)
+                .send()
+                .await
+                .map_err(|e| TokenError::Http(e.to_string()))?;
+
+            if let Some(new_nonce) = extract_dpop_nonce(
+                retry_resp
+                    .headers()
+                    .get("dpop-nonce")
+                    .and_then(|h| h.to_str().ok()),
+            ) {
+                nonce_cache.set_nonce(&server_origin, new_nonce);
+            }
+
+            let retry_status = retry_resp.status();
+
+            if retry_status.is_redirection() {
+                return Err(TokenError::RequestFailed {
+                    status: retry_status.as_u16(),
+                    error: "invalid_request".to_string(),
+                    description: Some(
+                        "Redirects are not permitted for token endpoints".to_string(),
+                    ),
+                }
+                .into());
+            }
+
+            if retry_status.is_success() {
+                let bytes = read_bounded_body(retry_resp, MAX_OAUTH_RESPONSE_BYTES)
+                    .await
+                    .map_err(|e| TokenError::Http(e.to_string()))?;
+                let res: TokenResponse =
+                    serde_json::from_slice(&bytes).map_err(|e| TokenError::Json(e.to_string()))?;
+                return Ok(res);
+            }
+
+            let err_json = read_bounded_json(retry_resp).await?;
+            if is_use_dpop_nonce_error(err_json.as_ref()) {
+                return Err(DPoPError::NonceRetryLimitExceeded.into());
+            }
+
+            let (error_code, error_desc) = parse_oauth_error_fields(err_json.as_ref());
+            return Err(TokenError::RequestFailed {
+                status: retry_status.as_u16(),
+                error: error_code,
+                description: error_desc,
+            }
+            .into());
+        }
+
+        let (error_code, error_desc) = parse_oauth_error_fields(json_err.as_ref());
+        return Err(TokenError::RequestFailed {
+            status: status.as_u16(),
+            error: error_code,
+            description: error_desc,
+        }
+        .into());
+    }
+
+    if !status.is_success() {
+        let err_json = read_bounded_json(resp).await?;
+        let (error_code, error_desc) = parse_oauth_error_fields(err_json.as_ref());
+        return Err(TokenError::RequestFailed {
+            status: status.as_u16(),
+            error: error_code,
+            description: error_desc,
+        }
+        .into());
+    }
+
+    let bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
+        .await
+        .map_err(|e| TokenError::Http(e.to_string()))?;
+    let res: TokenResponse =
+        serde_json::from_slice(&bytes).map_err(|e| TokenError::Json(e.to_string()))?;
+    Ok(res)
 }
 
 #[cfg(test)]

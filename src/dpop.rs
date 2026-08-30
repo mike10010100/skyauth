@@ -80,6 +80,13 @@ impl JwkEc {
 }
 
 /// An ephemeral or persistent ECDSA P-256 keypair for DPoP proof signing.
+///
+/// # Memory Guarantees
+/// The underlying [`p256::ecdsa::SigningKey`] zeroizes the private scalar on drop
+/// (guaranteed by the `ecdsa` crate's `ZeroizeOnDrop` implementation). Auxiliary
+/// exports (`to_bytes`, `to_bytes_b64`, `to_pkcs8_pem`) wrap intermediate buffers
+/// in [`Zeroizing`] where possible; string exports (`to_bytes_b64`, `to_pkcs8_pem`)
+/// necessarily return heap copies the caller should treat as sensitive.
 #[derive(Clone)]
 pub struct DPoPKey {
     signing_key: SigningKey,
@@ -903,16 +910,30 @@ impl<T: DPoPServerNonceSource + ?Sized> DPoPServerNonceSource for Arc<T> {
 pub struct InMemoryServerNonceSource {
     nonces: Arc<RwLock<HashMap<String, u64>>>,
     ttl: Duration,
+    single_use: bool,
 }
 
 impl InMemoryServerNonceSource {
     /// Creates a new `InMemoryServerNonceSource` with the specified nonce time-to-live.
+    ///
+    /// By default nonces are reusable until expiry (`single_use: false`), accommodating
+    /// legitimate client retries. For strict RFC 9449 § 8 single-use semantics, build
+    /// with [`Self::with_single_use`].
     #[must_use]
     pub fn new(ttl: Duration) -> Self {
         Self {
             nonces: Arc::new(RwLock::new(HashMap::new())),
             ttl,
+            single_use: false,
         }
+    }
+
+    /// Enables strict single-use semantics: each nonce is consumed on first successful
+    /// verification and cannot be presented again (RFC 9449 § 8).
+    #[must_use]
+    pub fn with_single_use(mut self) -> Self {
+        self.single_use = true;
+        self
     }
 
     /// Prunes expired nonces from memory.
@@ -953,11 +974,25 @@ impl DPoPServerNonceSource for InMemoryServerNonceSource {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        let guard = self.nonces.read();
-        if let Some(&exp) = guard.get(nonce.trim()) {
-            exp > now_secs
-        } else {
+        let trimmed = nonce.trim();
+        if self.single_use {
+            // Single-use mode: acquire the write lock up-front so a valid nonce is
+            // consumed atomically with its verification (no TOCTOU window).
+            let mut guard = self.nonces.write();
+            if let Some(&exp) = guard.get(trimmed) {
+                if exp > now_secs {
+                    guard.remove(trimmed);
+                    return true;
+                }
+            }
             false
+        } else {
+            let guard = self.nonces.read();
+            if let Some(&exp) = guard.get(trimmed) {
+                exp > now_secs
+            } else {
+                false
+            }
         }
     }
 }
@@ -1206,6 +1241,28 @@ mod tests {
         rand::thread_rng().fill_bytes(&mut raw);
         let unissued_nonce = base64url_encode(&raw);
         assert!(!source.verify_nonce(&unissued_nonce));
+    }
+
+    #[test]
+    fn test_in_memory_server_nonce_source_single_use() {
+        // Default (multi-use): nonce remains valid until TTL expiry
+        let reusable = InMemoryServerNonceSource::new(Duration::from_secs(60));
+        let nonce = reusable.generate_nonce();
+        assert!(reusable.verify_nonce(&nonce));
+        assert!(reusable.verify_nonce(&nonce));
+
+        // Single-use mode: nonce consumed atomically on first verification
+        let strict = InMemoryServerNonceSource::new(Duration::from_secs(60)).with_single_use();
+        let nonce = strict.generate_nonce();
+        assert!(strict.verify_nonce(&nonce));
+        assert!(
+            !strict.verify_nonce(&nonce),
+            "consumed nonce must not verify again"
+        );
+
+        // Freshly generated nonce still verifies
+        let second = strict.generate_nonce();
+        assert!(strict.verify_nonce(&second));
     }
 
     #[test]

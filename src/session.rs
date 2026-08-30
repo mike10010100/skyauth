@@ -156,12 +156,20 @@ impl OAuthSession {
     /// Atomically rotates the session tokens upon successful refresh token exchange.
     ///
     /// Updates `access_token`, `refresh_token`, and recalculates `expires_at` based on current time.
+    /// Outgoing token strings are zeroized in memory before being replaced.
     pub fn rotate_tokens(
         &mut self,
         access_token: impl Into<String>,
         refresh_token: Option<String>,
         expires_in_secs: Option<u64>,
     ) {
+        // Explicitly zeroize outgoing credentials before overwriting so the previous
+        // secrets are scrubbed rather than simply dropped unzeroed.
+        self.access_token.zeroize();
+        if let Some(ref mut rt) = self.refresh_token {
+            rt.zeroize();
+        }
+
         self.access_token = access_token.into();
         self.refresh_token = refresh_token;
         let now = SystemTime::now();
