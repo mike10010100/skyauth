@@ -1127,6 +1127,45 @@ impl AtprotoOAuthClient {
 
         Ok(resp)
     }
+
+    /// Executes an authenticated XRPC request against the session's PDS endpoint with DPoP signing and auto-nonce retry.
+    ///
+    /// # Arguments
+    ///
+    /// - `session`: The authenticated [`OAuthSession`].
+    /// - `nsid`: The Lexicon method identifier (e.g. `"com.atproto.repo.describeRepo"`).
+    /// - `query_params`: Optional URL query parameter key-value pairs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AtprotoOAuthError`] if the PDS endpoint is missing or invalid, or if the request fails.
+    pub async fn send_xrpc_request(
+        &self,
+        session: &OAuthSession,
+        nsid: &str,
+        query_params: &[(&str, &str)],
+    ) -> Result<reqwest::Response, AtprotoOAuthError> {
+        let pds_endpoint = session
+            .pds_endpoint()
+            .ok_or(TokenError::MissingField("pds_endpoint"))?;
+        let mut url = Url::parse(pds_endpoint)
+            .map_err(|e| TokenError::Http(format!("Invalid PDS endpoint: {e}")))?;
+        let trimmed_nsid = nsid.trim_start_matches('/');
+        url.set_path(&format!("xrpc/{trimmed_nsid}"));
+        if !query_params.is_empty() {
+            url.query_pairs_mut()
+                .extend_pairs(query_params.iter().copied());
+        }
+        self.send_dpop_request(
+            session.dpop_key(),
+            reqwest::Method::GET,
+            url.as_str(),
+            Some(session.access_token()),
+            None,
+            None,
+        )
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -1226,5 +1265,41 @@ mod tests {
         assert_eq!(cb.code, "code123");
         assert_eq!(cb.state, "state123");
         assert_eq!(cb.iss.as_deref(), Some("https://auth.example.com"));
+    }
+
+    #[tokio::test]
+    async fn test_send_xrpc_request_missing_pds_endpoint() {
+        let client = AtprotoOAuthClient::builder()
+            .client_metadata(OAuthClientMetadata::new(
+                "https://app.example.com/client.json",
+                "https://app.example.com/callback",
+            ))
+            .allow_insecure_localhost(true)
+            .build()
+            .unwrap();
+
+        let session = OAuthSession::new(
+            "did:plc:alice123",
+            "at_123",
+            None,
+            "DPoP",
+            None,
+            None,
+            DPoPKey::generate(),
+            None, // Missing PDS endpoint
+            None,
+            None,
+        )
+        .unwrap();
+
+        let err = client
+            .send_xrpc_request(&session, "com.atproto.repo.describeRepo", &[])
+            .await;
+        assert!(matches!(
+            err,
+            Err(AtprotoOAuthError::Token(TokenError::MissingField(
+                "pds_endpoint"
+            )))
+        ));
     }
 }
