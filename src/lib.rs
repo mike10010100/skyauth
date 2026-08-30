@@ -29,7 +29,8 @@
 //! - **OAuth 2.0 Discovery (RFC 8414 & RFC 9728)**: Protected Resource Metadata and Authorization
 //!   Server Metadata discovery with automatic OIDC fallback and capability enforcement.
 //! - **Strict SSRF & DNS Rebinding Security**: Full IP boundary filtering blocking RFC 1918 private IPs,
-//!   loopback, link-local / cloud metadata (`169.254.169.254`), IPv6 ULA, and DNS socket pinning.
+//!   loopback, link-local / cloud metadata (`169.254.169.254`), IPv6 ULA, deprecated 6to4 (`2002::/16`)
+//!   and Teredo (`2001::/32`) tunneling prefixes, cloud-metadata/internal hostname blocking, and DNS socket pinning.
 //! - **Pure Safe Cryptography**: ECDSA P-256 (`p256`), SHA-256 (`sha2`), HMAC-SHA256 (`hmac`),
 //!   and constant-time equality comparisons (`subtle`).
 //! - **Zero-Panic Invariant**: Every fallible operation returns strongly typed [`AtprotoOAuthError`].

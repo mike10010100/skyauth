@@ -227,27 +227,27 @@ To prevent subtle schema divergence, naming errors, or casing bugs (e.g. `camelC
 
 ## 6. Implementation Milestones
 
-- [ ] **Milestone 1: Cryptographic & Token Primitives**
+- [x] **Milestone 1: Cryptographic & Token Primitives**
   - Extract `DPoPKey`, `PKCE`, `HMAC-SHA256`, and constant-time comparison into isolated modules.
   - Implement full RFC test vectors for RFC 7636 and RFC 9449.
-- [ ] **Milestone 2: Identity & Metadata Resolver**
+- [x] **Milestone 2: Identity & Metadata Resolver**
   - Implement handle resolution, `did:plc`, `did:web`, RFC 9728 protected resource discovery, and RFC 8414 metadata discovery.
   - Implement SSRF and restricted IP egress filters.
-- [ ] **Milestone 3: PAR & Token Exchange Pipeline**
+- [x] **Milestone 3: PAR & Token Exchange Pipeline**
   - Implement Pushed Authorization Requests (`/oauth/par`) with DPoP headers.
   - Implement `/oauth/token` exchange with automatic `DPoP-Nonce` replay-retry loop.
-- [ ] **Milestone 4: Storage & Web Framework Integrations**
+- [x] **Milestone 4: Storage & Web Framework Integrations**
   - Implement 64-shard `OAuthStateStore` with TTL pruning.
   - Provide Axum, Actix, and Tower middleware/handlers examples.
-- [ ] **Milestone 5: Dynamic Schema Compliance & Upstream Drift CI**
+- [x] **Milestone 5: Dynamic Schema Compliance & Upstream Drift CI**
   - Bundle official Lexicon and RFC schemas in `lexicons/` and `schemas/`.
   - Implement `tests/schema_compliance_tests.rs` with runtime AST validation.
   - Add `scripts/sync_specs.sh` and CI schema drift verification.
-- [ ] **Milestone 6: Verus & Kani Formal Verification Suite**
+- [x] **Milestone 6: Verus & Kani Formal Verification Suite**
   - Implement Verus specifications for `OAuthStateStore`, PKCE `S256` verification, and SSRF boundary filters.
   - Implement `tests/kani_harnesses.rs` with mandatory `kani::cover!()` anti-vacuity reachability checks.
   - Integrate formal verification checks into continuous integration pipeline.
-- [ ] **Milestone 7: Documentation, Benchmarks & Crates.io Publication**
+- [ ] **Milestone 7: Documentation, Benchmarks & Crates.io Publication** *(docs complete; latency benchmarks & crates.io publication pending → see §7.1 trade-off notes and release checklist)*
   - 100% rustdoc documentation coverage (`missing_docs` denied).
   - Latency benchmarks asserting $< 1.0\text{ms}$ proof generation.
   - Publish `v0.1.0` to crates.io and GitHub.

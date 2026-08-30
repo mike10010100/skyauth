@@ -20,7 +20,11 @@
 - **Strict SSRF & DNS Rebinding Security**: Full IP boundary filtering blocking RFC 1918 private IPs, loopback, link-local, cloud metadata (`169.254.169.254`), IPv6 ULA, and DNS socket pinning.
 - **64-Shard Partitioned State Store**: Lock-free scaling state storage across 64 independent `RwLock` shards with atomic single-use state consumption ([`OAuthStore::take_state`]) and drift-free background TTL pruning.
 - **Web Framework Integrations**: Ready-to-use extractors, response generators, and middleware for **Axum 0.7**, **Actix-Web 4**, and **Tower**.
-- **Formal Mathematical Verification**: Verified using **Verus** deductive proofs, **Kani** bounded model checking with 36 mandatory anti-vacuity reachability checks, and pure-Rust executable state transition models.
+- **Formal Mathematical Verification**: Verified using **Verus** deductive proofs, **Kani** bounded model checking with 53 mandatory anti-vacuity reachability checks, and pure-Rust executable state transition models.
+- **Confidential Client Support**: Automatic `client_secret` inclusion in PAR, code exchange, and refresh requests (RFC 6749 § 2.3.1 `client_secret_post`); extensible credential hook via `execute_par_request_with_credentials`.
+- **Proxied-Deployment DPoP**: `with_htu_override` on the Tower layer reconstructs absolute DPoP target URIs for servers behind reverse proxies receiving origin-form request targets.
+- **Hardened SSRF Boundary**: Deprecated 6to4 (`2002::/16`, with embedded-IPv4 re-evaluation) and Teredo (`2001::/32`) tunneling prefixes are blocked, mirrored in the formal verification models; test mode (`allow_insecure_localhost`) only exempts explicit loopback targets, never metadata/internal hosts.
+- **Single-Use Server Nonces**: Optional strict RFC 9449 § 8 nonce consumption (`InMemoryServerNonceSource::with_single_use`).
 - **Dynamic Schema Invariants**: Bundled official ATProto Lexicons and RFC schemas with continuous automated upstream drift detection.
 
 ---
@@ -126,7 +130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 `skyauth` incorporates a multi-layered formal verification hierarchy:
 
 1. **Verus Deductive Contracts (`verus!`)**: Deductive mathematical proofs in [`src/verification/verus_contracts.rs`](src/verification/verus_contracts.rs) using SMT solving (Z3) to prove single-use state transition safety, terminality, SSRF IP range isolation, and PKCE bounds.
-2. **Kani Bounded Model Checking (`kani::proof`)**: Exhaustive symbolic proof harnesses in [`src/verification/kani_harnesses.rs`](src/verification/kani_harnesses.rs) using symbolic `kani::any()` and `kani::assume()` inputs with 36 mandatory anti-vacuity reachability checks (`kani::cover!`).
+2. **Kani Bounded Model Checking (`kani::proof`)**: Exhaustive symbolic proof harnesses in [`src/verification/kani_harnesses.rs`](src/verification/kani_harnesses.rs) using symbolic `kani::any()` and `kani::assume()` inputs with 53 mandatory anti-vacuity reachability checks (`kani::cover!`).
 3. **Executable Formal State Models**: High-assurance transition models in [`src/verification/formal_models.rs`](src/verification/formal_models.rs) tested against property fuzzing and concurrent interleavings.
 
 ---
