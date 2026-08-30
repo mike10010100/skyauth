@@ -122,12 +122,33 @@ fn is_origin_only(url_str: &str) -> bool {
         if !parsed.username().is_empty() || parsed.password().is_some() {
             return false;
         }
-        // Reject explicit default port :443 for https or :80 for non-loopback http
-        if url_str.contains(":443") {
-            return false;
-        }
-        if scheme == "http" && !is_loopback && url_str.contains(":80") {
-            return false;
+        // Reject explicit default port spellings (`:443` for https, `:80` for http).
+        // The `url` crate normalizes default ports during parsing (`port()` returns
+        // `None` for an explicit `:443`), so the explicit form must be detected from
+        // the raw AUTHORITY segment of the original string — scanning only there
+        // avoids false positives from ports that merely contain ":443"/":80"
+        // (e.g. an ephemeral test-server port like 44371).
+        let after_scheme = url_str
+            .split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(url_str);
+        let authority = after_scheme
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or(after_scheme);
+        // userinfo was already rejected above; strip it defensively anyway.
+        let host_port = authority.rsplit('@').next().unwrap_or(authority);
+        // Bracketed IPv6 hosts carry the port (if any) after `]`; unbracketed hosts
+        // use a simple `host:port` form where the last ':' separator is the port.
+        let has_explicit_port = match host_port.rfind(']') {
+            Some(bracket_end) => host_port[bracket_end..].contains(':'),
+            None => host_port.contains(':'),
+        };
+        if has_explicit_port {
+            let port_str = host_port.rsplit(':').next().unwrap_or("");
+            if (scheme == "https" && port_str == "443") || (scheme == "http" && port_str == "80") {
+                return false;
+            }
         }
         let path = parsed.path();
         (path.is_empty() || path == "/") && parsed.query().is_none() && parsed.fragment().is_none()
