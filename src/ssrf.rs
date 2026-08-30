@@ -2,7 +2,7 @@
 //!
 //! This module provides strict, production-grade IP address filtering and socket
 //! connection pinning to prevent SSRF and DNS rebinding attacks across all outbound
-//! identity and discovery network requests in `atproto-oauth`.
+//! identity and discovery network requests in `skyauth`.
 //!
 //! ## Threat Model & Defense Strategy
 //!

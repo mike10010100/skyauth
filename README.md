@@ -1,7 +1,7 @@
 # 🔐 `skyauth`
 
-[![crates.io](https://img.shields.io/crates/v/atproto-oauth.svg)](https://crates.io/crates/atproto-oauth)
-[![docs.rs](https://docs.rs/atproto-oauth/badge.svg)](https://docs.rs/atproto-oauth)
+[![crates.io](https://img.shields.io/crates/v/skyauth.svg)](https://crates.io/crates/skyauth)
+[![docs.rs](https://docs.rs/skyauth/badge.svg)](https://docs.rs/skyauth)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![Safety Guard](https://img.shields.io/badge/unsafe-forbidden-success.svg)](src/lib.rs)
 
@@ -20,24 +20,24 @@
 - **Strict SSRF & DNS Rebinding Security**: Full IP boundary filtering blocking RFC 1918 private IPs, loopback, link-local, cloud metadata (`169.254.169.254`), IPv6 ULA, and DNS socket pinning.
 - **64-Shard Partitioned State Store**: Lock-free scaling state storage across 64 independent `RwLock` shards with atomic single-use state consumption ([`OAuthStore::take_state`]) and drift-free background TTL pruning.
 - **Web Framework Integrations**: Ready-to-use extractors, response generators, and middleware for **Axum 0.7**, **Actix-Web 4**, and **Tower**.
-- **Formal Mathematical Verification**: Verified using executable formal contracts and **Kani** bounded model checking with 36 mandatory anti-vacuity reachability checks.
+- **Formal Mathematical Verification**: Verified using **Verus** deductive proofs, **Kani** bounded model checking with 36 mandatory anti-vacuity reachability checks, and pure-Rust executable state transition models.
 - **Dynamic Schema Invariants**: Bundled official ATProto Lexicons and RFC schemas with continuous automated upstream drift detection.
 
 ---
 
 ## 🚀 Quick Start
 
-Add `atproto-oauth` to your `Cargo.toml`:
+Add `skyauth` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-atproto-oauth = "0.1"
+skyauth = "0.1"
 ```
 
 ### 1. DPoP Proof Generation & Verification
 
 ```rust
-use skyauth::dpop::{DPoPKey, DPoPVerifier, compute_access_token_hash};
+use skyauth::dpop::{compute_access_token_hash, DPoPKey, DPoPVerifier};
 use skyauth::pkce::PkcePair;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -47,9 +47,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Generate ephemeral DPoP keypair
     let dpop_key = DPoPKey::generate();
-    let jkt = dpop_key.jwk_thumbprint();
+    let _jkt = dpop_key.jwk_thumbprint();
 
-    // 3. Create a DPoP proof for a token request
+    // 3. Create a DPoP proof for an outgoing token request
     let proof = dpop_key.create_proof(
         "POST",
         "https://pds.example.com/oauth/token",
@@ -59,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 4. Verify inbound DPoP proof
     let verifier = DPoPVerifier::new();
-    let (claims, jwk) = verifier.verify_proof(
+    let (claims, _jwk) = verifier.verify_proof(
         &proof,
         "POST",
         "https://pds.example.com/oauth/token",
@@ -76,34 +76,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 2. Full OAuth Client Lifecycle
 
 ```rust
-use skyauth::client::{AtprotoOAuthClient, OAuthClientMetadata};
+use skyauth::client::{AtprotoOAuthClient, CallbackParams, OAuthClientMetadata};
 use skyauth::store::OAuthStateStore;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let metadata = OAuthClientMetadata {
-        client_id: "https://my-app.example.com/client-metadata.json".to_string(),
-        client_name: Some("My ATProto App".to_string()),
-        client_uri: Some("https://my-app.example.com".to_string()),
-        redirect_uris: vec!["https://my-app.example.com/oauth/callback".to_string()],
-        grant_types: vec!["authorization_code".to_string(), "refresh_token".to_string()],
-        response_types: vec!["code".to_string()],
-        scope: "atproto transition:generic".to_string(),
-        token_endpoint_auth_method: "none".to_string(),
-        dpop_bound_access_tokens: true,
-        jwks_uri: None,
-    };
+    // 1. Configure OAuth Client Metadata
+    let metadata = OAuthClientMetadata::new(
+        "https://my-app.example.com/client-metadata.json",
+        "https://my-app.example.com/oauth/callback",
+    )
+    .with_client_name("My ATProto App")
+    .with_scope("atproto transition:generic");
 
-    let state_store = Arc::new(OAuthStateStore::new());
+    // 2. Instantiate high-level client with 64-shard concurrent state store
+    let state_store = Arc::new(OAuthStateStore::new(Duration::from_secs(300)));
     let client = AtprotoOAuthClient::builder()
         .metadata(metadata)
         .state_store(state_store)
         .build()?;
 
-    // Initiate login with handle or DID
+    // 3. Initiate login with handle or DID (pushes PAR, generates PKCE, registers state)
     let auth_req = client.authorize("alice.bsky.social").await?;
     println!("Redirect user to: {}", auth_req.authorization_url);
+
+    // 4. Handle incoming callback after user authorization (single-use consumed)
+    let callback_params = CallbackParams::new("auth_code_from_query", &auth_req.state)
+        .with_iss("https://bsky.social");
+    let session = client.handle_callback(&callback_params).await?;
+    println!("Authenticated user DID: {}", session.sub);
+
+    // 5. Execute authenticated XRPC request
+    let response = client
+        .send_xrpc_request(&session, "com.atproto.repo.describeRepo", &[])
+        .await?;
+    println!("XRPC response status: {}", response.status());
 
     Ok(())
 }

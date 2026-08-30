@@ -269,6 +269,12 @@ impl AtprotoOAuthClientBuilder {
         self
     }
 
+    /// Alias for [`Self::client_metadata`].
+    #[must_use]
+    pub fn metadata(self, metadata: OAuthClientMetadata) -> Self {
+        self.client_metadata(metadata)
+    }
+
     /// Sets the identity resolver.
     #[must_use]
     pub fn identity_resolver(mut self, resolver: IdentityResolver) -> Self {
@@ -419,6 +425,22 @@ impl AtprotoOAuthClient {
         self.state_ttl
     }
 
+    /// Initiates an OAuth authorization flow for a user handle or DID and returns the [`AuthorizationRequest`].
+    ///
+    /// The authorization state entry is automatically registered into the client's internal
+    /// state store for atomic, single-use callback verification via [`Self::handle_callback`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AtprotoOAuthError`] if identity resolution, PAR, or cryptographic operations fail.
+    pub async fn authorize(
+        &self,
+        handle_or_did: &str,
+    ) -> Result<AuthorizationRequest, AtprotoOAuthError> {
+        let (req, _) = self.initiate_login(handle_or_did).await?;
+        Ok(req)
+    }
+
     /// Initiates an OAuth login flow for a user handle or DID.
     ///
     /// # Pipeline
@@ -428,7 +450,8 @@ impl AtprotoOAuthClient {
     /// 4. Generates an ephemeral session [`DPoPKey`].
     /// 5. Pushes parameters to the authorization server's PAR endpoint with DPoP proof.
     /// 6. Constructs the browser authorization redirect URL with `client_id` and `request_uri`.
-    /// 7. Returns `(AuthorizationRequest, StoredStateEntry)`.
+    /// 7. Automatically inserts the state entry into [`Self::state_store`].
+    /// 8. Returns `(AuthorizationRequest, StoredStateEntry)`.
     ///
     /// # Errors
     ///

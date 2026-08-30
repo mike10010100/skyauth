@@ -1,4 +1,4 @@
-//! Strongly-typed error definitions for `atproto-oauth`.
+//! Strongly-typed error definitions for `skyauth`.
 //!
 //! This module provides the central [`AtprotoOAuthError`] hierarchy along with
 //! specialized error types for cryptography, DPoP (RFC 9449), PKCE (RFC 7636),
@@ -6,7 +6,7 @@
 
 use thiserror::Error;
 
-/// Root error type encompassing all failure modes across the `atproto-oauth` library.
+/// Root error type encompassing all failure modes across the `skyauth` library.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum AtprotoOAuthError {
     /// Low-level cryptographic primitive failure.

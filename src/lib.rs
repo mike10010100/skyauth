@@ -1,11 +1,11 @@
-//! # `atproto-oauth`
+//! # `skyauth`
 //!
 //! A pure safe Rust (`#![forbid(unsafe_code)]`), zero-panic OAuth 2.1 client library
 //! for the AT Protocol (Bluesky).
 //!
 //! ## Overview
 //!
-//! `atproto-oauth` provides production-grade implementations of the foundational
+//! `skyauth` provides production-grade implementations of the foundational
 //! security standards mandated by the AT Protocol OAuth 2.1 specification:
 //!
 //! - **RFC 9449 DPoP (Demonstrating Proof-of-Possession)**: Ephemeral ECDSA P-256 keypair
@@ -54,7 +54,7 @@
 //!
 //! // 4. Verify inbound DPoP proof
 //! let verifier = DPoPVerifier::new();
-//! let (claims, jwk) = verifier.verify_proof(
+//! let (claims, _jwk) = verifier.verify_proof(
 //!     &proof,
 //!     "POST",
 //!     "https://pds.example.com/oauth/token",
@@ -63,6 +63,39 @@
 //!     None,
 //! )?;
 //! assert_eq!(claims.htm, "POST");
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ### OAuth Client Lifecycle
+//!
+//! ```rust,no_run
+//! use skyauth::client::{AtprotoOAuthClient, CallbackParams, OAuthClientMetadata};
+//! use skyauth::store::OAuthStateStore;
+//! use std::sync::Arc;
+//! use std::time::Duration;
+//!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! let metadata = OAuthClientMetadata::new(
+//!     "https://my-app.example.com/client-metadata.json",
+//!     "https://my-app.example.com/oauth/callback",
+//! )
+//! .with_client_name("My ATProto App")
+//! .with_scope("atproto transition:generic");
+//!
+//! let state_store = Arc::new(OAuthStateStore::new(Duration::from_secs(300)));
+//! let client = AtprotoOAuthClient::builder()
+//!     .metadata(metadata)
+//!     .state_store(state_store)
+//!     .build()?;
+//!
+//! // Initiate login with user handle or DID
+//! let auth_req = client.authorize("alice.bsky.social").await?;
+//!
+//! // Handle callback with code and state (atomically consumed)
+//! let callback_params = CallbackParams::new("auth_code", &auth_req.state)
+//!     .with_iss("https://bsky.social");
+//! let session = client.handle_callback(&callback_params).await?;
 //! # Ok(())
 //! # }
 //! ```
