@@ -170,9 +170,10 @@ To provide mathematical certainty of security invariants without falling into LL
 ```mermaid
 graph TD
     A[Unit & Edge Tests - cargo test] --> B[Property Testing - proptest]
-    B --> D[Deductive Verification - Verus]
-    B --> E[Bounded Model Checking - Kani with Cover Anti-Vacuity]
-    B --> F[Mutation Testing - cargo-mutants, CI-only]
+    B --> C[Mutation Testing - cargo mutants]
+    C --> D[Deductive Verification - Verus]
+    C --> E[Bounded Model Checking - Kani with Cover Anti-Vacuity]
+    C --> F[Mutation Testing - cargo-mutants]
 ```
 
 #### Layer 1 (Primary): Verus Deductive Verification (`verus!`)
@@ -205,16 +206,9 @@ We leverage [**Verus**](https://github.com/verus-lang/verus) (Microsoft Research
 For bit-level transformations and low-level byte packing:
 - All Kani harnesses (`#[kani::proof]`) **must enforce strict anti-vacuity**:
   1. Mandatory `kani::cover!()` reachability statements ensuring execution paths are actually exercised.
-#### Layer 3 (Complementary): Mutation Testing (`cargo-mutants`, CI-only)
-Enforced as a **weekly CI-only gate** (`.github/workflows/mutation.yml`, 5-way sharded matrix,
-70% kill-rate floor per shard, formal-verification module sources excluded as they are the
-specification, not subject): synthetic bug injection must cause the suite to fail, or the gap
-is a test debt item.
-
-> **Note — do not run cargo-mutants locally.** Each mutant requires a full workspace copy
-> (~3 GB with the build cache) in system temp space; the parallel sweep peaked at ~60 GB
-> and filled one developer's disk. Run it only through the sharded GitHub Actions job,
-> where each runner gets an isolated copy that is destroyed at job end.
+  2. Proof validation via `cargo-mutants` (enforced in CI at a 70% kill-rate floor, with
+     formal-verification module sources excluded as they are the specification, not subject):
+     synthetic bug injection must cause the suite to fail, or the gap is a test debt item.
 
 ---
 
