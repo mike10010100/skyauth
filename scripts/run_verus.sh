@@ -33,10 +33,10 @@ VERUS_PINNED_TAG="release/0.2026.08.23.fbbbbcf"
 # bash-3.2 compatible (no associative arrays): digest resolved per platform/arch below.
 verus_pinned_sha_for() {
     case "$1" in
-        "x86-macos")     echo "PLACEHOLDER_X86_MACOS" ;;
+        "x86-macos")     echo "724efff85ccb71c958e251dda33e7663796d394ba81bfc231d407e2b4413e81c" ;;
         "arm64-macos")   echo "7075f6e1ac137143da47265691b9c8f376867708eb21480d4e751eb814806aea" ;;
-        "x86-linux")     echo "PLACEHOLDER_X86_LINUX" ;;
-        "arm64-linux")   echo "PLACEHOLDER_ARM64_LINUX" ;;
+        "x86-linux")     echo "b65483714e6bf2ae72bfe7c7199e1c608495a941306b979260e9ed585d5899c9" ;;
+        "arm64-linux")   echo "" ;;
         *)               echo "" ;;
     esac
 }

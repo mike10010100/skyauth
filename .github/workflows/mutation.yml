@@ -25,7 +25,6 @@ jobs:
       fail-fast: false
       matrix:
         shard:
-        shard:
           - name: primitives
             files: --file src/crypto.rs --file src/pkce.rs --file src/session.rs
           - name: dpop
