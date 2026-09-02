@@ -173,7 +173,6 @@ impl StoredStateEntry {
         let now = SystemTime::now();
         let max_age = Duration::from_secs(self.expires_in_secs);
         match now.duration_since(self.created_at) {
-            // Normal path: elapsed time exceeds the configured maximum age.
             Ok(elapsed) => elapsed > max_age,
             // Clock moved backward below `created_at`: fail closed.
             Err(_) => true,
@@ -485,22 +484,18 @@ impl AtprotoOAuthClient {
         handle_or_did: &str,
         scope: &str,
     ) -> Result<(AuthorizationRequest, StoredStateEntry), AtprotoOAuthError> {
-        // 1. Identity & OAuth Discovery
         let endpoints = self
             .resolver
             .discover_oauth_endpoints(handle_or_did)
             .await?;
 
-        // 2. PKCE and State Generation
         let pkce = PkcePair::generate();
         let mut state_bytes = [0u8; 32];
         rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut state_bytes);
         let state = base64url_encode(&state_bytes);
 
-        // 3. Ephemeral DPoP Keypair
         let dpop_key = DPoPKey::generate();
 
-        // 4. PAR Request Builder
         let mut params = ParParameters::new(
             &self.metadata.client_id,
             &self.metadata.redirect_uri,
@@ -515,7 +510,6 @@ impl AtprotoOAuthClient {
             params = params.with_login_hint(&endpoints.did);
         }
 
-        // 5. Execute PAR with DPoP signing & auto-nonce retry
         let par_res = if let Some(ref secret) = self.metadata.client_secret {
             execute_par_request_with_credentials(
                 &self.ssrf_filter,
@@ -537,14 +531,12 @@ impl AtprotoOAuthClient {
             .await?
         };
 
-        // 6. Build Authorization Redirect URL
         let auth_url = build_authorization_url(
             &endpoints.authorization_endpoint,
             &self.metadata.client_id,
             &par_res.request_uri,
         )?;
 
-        // 7. Assemble StoredStateEntry and AuthorizationRequest
         let stored_state = StoredStateEntry {
             state: state.clone(),
             client_id: self.metadata.client_id.clone(),
@@ -561,7 +553,6 @@ impl AtprotoOAuthClient {
             expires_in_secs: self.state_ttl.as_secs(),
         };
 
-        // 8. Atomically persist state into internal store with TTL
         self.state_store
             .insert_state(state.clone(), stored_state.clone(), self.state_ttl)
             .await?;
@@ -619,12 +610,10 @@ impl AtprotoOAuthClient {
             )
             .await?;
 
-        // 1. Validate token_type == "DPoP" (case-insensitive)
         if !resp_json.token_type.eq_ignore_ascii_case("DPoP") {
             return Err(TokenError::InvalidTokenType(resp_json.token_type).into());
         }
 
-        // 2. Validate sub DID
         if resp_json.sub.trim().is_empty() {
             return Err(TokenError::MissingDid.into());
         }
@@ -638,7 +627,6 @@ impl AtprotoOAuthClient {
             }
         }
 
-        // 3. Validate Scope is present and contains "atproto"
         let scope_str = resp_json.scope.as_deref().ok_or(TokenError::MissingScope)?;
 
         let has_atproto = scope_str.split_whitespace().any(|s| s == "atproto");
@@ -855,7 +843,6 @@ impl AtprotoOAuthClient {
 
         let ath = access_token.map(compute_access_token_hash);
 
-        // 1. Initial Attempt
         let initial_nonce = self.nonce_cache.get_nonce(&server_origin);
         let proof = dpop_key.create_proof(
             method.as_str(),
@@ -956,7 +943,6 @@ impl AtprotoOAuthClient {
                 if retry_status == reqwest::StatusCode::BAD_REQUEST
                     || retry_status == reqwest::StatusCode::UNAUTHORIZED
                 {
-                    // Check if still failing with use_dpop_nonce
                     let retry_is_nonce = retry_resp
                         .headers()
                         .get("dpop-nonce")
@@ -1072,7 +1058,6 @@ async fn send_dpop_token_request_inner(
 
     let server_origin = parsed_url.origin().ascii_serialization();
 
-    // Initial Attempt with cached nonce (if any)
     let initial_nonce = nonce_cache.get_nonce(&server_origin);
     let proof = dpop_key.create_proof("POST", token_endpoint, initial_nonce.as_deref(), None)?;
 
@@ -1087,7 +1072,6 @@ async fn send_dpop_token_request_inner(
         .await
         .map_err(|e| TokenError::Http(e.to_string()))?;
 
-    // Cache any returned DPoP-Nonce header
     if let Some(new_nonce) = extract_dpop_nonce(
         resp.headers()
             .get("dpop-nonce")
@@ -1098,7 +1082,6 @@ async fn send_dpop_token_request_inner(
 
     let status = resp.status();
 
-    // Disallow redirects on token endpoints (RFC 6749)
     if status.is_redirection() {
         return Err(TokenError::RequestFailed {
             status: status.as_u16(),
@@ -1108,7 +1091,6 @@ async fn send_dpop_token_request_inner(
         .into());
     }
 
-    // Check for use_dpop_nonce error challenge
     if status == reqwest::StatusCode::BAD_REQUEST || status == reqwest::StatusCode::UNAUTHORIZED {
         let json_err = read_bounded_json(resp).await?;
         if is_use_dpop_nonce_error(json_err.as_ref()) {
@@ -1123,7 +1105,6 @@ async fn send_dpop_token_request_inner(
                         ),
                     })?;
 
-            // Single Retry with fresh nonce
             let retry_proof =
                 dpop_key.create_proof("POST", token_endpoint, Some(&fresh_nonce), None)?;
 
@@ -1334,7 +1315,7 @@ mod tests {
             None,
             None,
             DPoPKey::generate(),
-            None, // Missing PDS endpoint
+            None,
             None,
             None,
         )

@@ -14,13 +14,12 @@
 
 set -euo pipefail
 
-# ANSI Color Codes
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -29,7 +28,6 @@ LEXICONS_DIR="${ROOT_DIR}/lexicons"
 SCHEMAS_DIR="${ROOT_DIR}/schemas"
 MANIFEST_FILE="${SCHEMAS_DIR}/.checksums.sha256"
 
-# Canonical Upstream Lexicon URLs
 RESOLVE_HANDLE_URL="https://raw.githubusercontent.com/bluesky-social/atproto/main/lexicons/com/atproto/identity/resolveHandle.json"
 CREATE_SESSION_URL="https://raw.githubusercontent.com/bluesky-social/atproto/main/lexicons/com/atproto/server/createSession.json"
 REFRESH_SESSION_URL="https://raw.githubusercontent.com/bluesky-social/atproto/main/lexicons/com/atproto/server/refreshSession.json"
@@ -50,7 +48,7 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1" >&2
 }
 
-# Cross-platform SHA256 checksum calculator
+# SHA256 calculator usable on any of sha256sum / shasum / openssl.
 calc_sha256() {
     local file="$1"
     if command -v sha256sum &>/dev/null; then
@@ -72,12 +70,12 @@ validate_json() {
     elif command -v node &>/dev/null; then
         node -e "JSON.parse(require('fs').readFileSync(process.argv[1]))" "${file}" >/dev/null 2>&1
     else
-        # Basic check if no JSON tool installed
+        # Last resort when no JSON tool exists: non-empty file.
         test -s "${file}"
     fi
 }
 
-# Format JSON in-place if tool available
+# Format JSON in-place when a formatting tool is available.
 format_json() {
     local file="$1"
     if command -v jq &>/dev/null; then
@@ -99,7 +97,7 @@ format_json() {
     fi
 }
 
-# List of all canonical managed files relative to ROOT_DIR
+# Canonical managed files relative to ROOT_DIR.
 get_managed_files() {
     cat <<EOF
 lexicons/com/atproto/identity/resolveHandle.json
@@ -112,7 +110,7 @@ schemas/atproto_client_metadata.json
 EOF
 }
 
-# Generate checksums manifest for all managed files
+# Generate the checksums manifest for all managed files.
 generate_manifest() {
     log_info "Updating checksum manifest at ${MANIFEST_FILE}..."
     mkdir -p "$(dirname "${MANIFEST_FILE}")"
@@ -135,13 +133,13 @@ generate_manifest() {
     log_success "Checksum manifest updated successfully."
 }
 
-# Verify mode: Check existence, validity, manifest checksums, and compare against upstream
+# Verify local files against the manifest and upstream canonical sources.
 verify_specs() {
     log_info "Running specification drift verification..."
     local drift_detected=0
+    local fetch_failed=0
     local curl_cmd="curl -fsSL --connect-timeout 4 --max-time 10"
 
-    # 1. Verify existence and JSON validity
     while IFS= read -r rel_path; do
         local full_path="${ROOT_DIR}/${rel_path}"
         if [[ ! -f "${full_path}" ]]; then
@@ -157,9 +155,14 @@ verify_specs() {
         fi
     done < <(get_managed_files)
 
-    # 2. Check against manifest
     if [[ ! -f "${MANIFEST_FILE}" ]]; then
+        # Fail closed: a missing manifest with missing spec files must not report
+        # success just because a fresh (empty/incomplete) manifest was generated.
         log_warn "Checksum manifest ${MANIFEST_FILE} does not exist. Generating initial manifest..."
+        if [[ ${drift_detected} -ne 0 ]]; then
+            log_error "Specification verification FAILED: required files are missing or malformed (see above)."
+            return 1
+        fi
         generate_manifest
         log_success "Verification passed (manifest created)."
         return 0
@@ -193,7 +196,6 @@ verify_specs() {
         fi
     done < "${MANIFEST_FILE}"
 
-    # 3. Check against upstream canonical endpoints (detect upstream drift)
     log_info "Checking upstream canonical repositories for specification drift..."
     check_upstream_drift() {
         local url="$1"
@@ -206,7 +208,6 @@ verify_specs() {
             if validate_json "${tmp_upstream}"; then
                 format_json "${tmp_upstream}"
                 
-                # Format local copy canonical representation for comparison
                 local tmp_local
                 tmp_local=$(mktemp 2>/dev/null || mktemp -t 'local_spec')
                 cp "${full_path}" "${tmp_local}"
@@ -234,7 +235,10 @@ verify_specs() {
             fi
             rm -f "${tmp_upstream}"
         else
-            log_info "  [OFFLINE / TIMEOUT] Upstream endpoint unreachable for ${rel_path}. Pinned manifest verified."
+            # A failed fetch means upstream state is UNKNOWN — never report it as
+            # verified. Count the failure so strict verification mode can fail.
+            log_error "  [FETCH FAILED] Upstream endpoint unreachable for ${rel_path}; upstream drift status UNVERIFIED."
+            fetch_failed=$((fetch_failed + 1))
             rm -f "${tmp_upstream}"
         fi
     }
@@ -248,23 +252,28 @@ verify_specs() {
         return 1
     fi
 
+    if [[ ${fetch_failed} -ne 0 ]]; then
+        log_error "Specification verification INCOMPLETE: ${fetch_failed} upstream fetch(es) failed; upstream drift could NOT be verified."
+        log_error "Set SYNC_SPECS_ALLOW_OFFLINE=1 to accept manifest-only verification for offline development."
+        return 1
+    fi
+
     log_success "All canonical Lexicons and RFC schemas match manifest and upstream. Zero drift detected."
     return 0
 }
 
-# Sync mode: Download latest specs if online, format, and regenerate manifest
+# Sync mode: fetch latest specs when online, format, and regenerate the manifest.
 sync_specs() {
     log_info "Synchronizing canonical Lexicons and RFC schemas from upstream..."
 
     local curl_cmd="curl -fsSL --connect-timeout 5 --max-time 15"
     local sync_errors=0
 
-    # Ensure target directories exist
     mkdir -p "${LEXICONS_DIR}/com/atproto/identity"
     mkdir -p "${LEXICONS_DIR}/com/atproto/server"
     mkdir -p "${SCHEMAS_DIR}"
 
-    # Helper function to fetch file with fallback
+    # Fetch to a temp file; fall back to the existing local copy on any failure.
     fetch_file() {
         local url="$1"
         local dest="$2"
@@ -296,7 +305,6 @@ sync_specs() {
     fetch_file "${CREATE_SESSION_URL}" "${LEXICONS_DIR}/com/atproto/server/createSession.json" "com.atproto.server.createSession"
     fetch_file "${REFRESH_SESSION_URL}" "${LEXICONS_DIR}/com/atproto/server/refreshSession.json" "com.atproto.server.refreshSession"
 
-    # Format existing schemas
     while IFS= read -r rel_path; do
         local full_path="${ROOT_DIR}/${rel_path}"
         if [[ -f "${full_path}" ]]; then
@@ -304,7 +312,6 @@ sync_specs() {
         fi
     done < <(get_managed_files)
 
-    # Regenerate checksum manifest
     generate_manifest
 
     if [[ ${sync_errors} -gt 0 ]]; then
@@ -328,18 +335,30 @@ Commands:
   --help, -h           Show this help message
 
 Exit Codes:
-  0   All specifications valid and matching manifest (no drift)
-  1   Drift detected, missing files, or invalid JSON syntax
+  0   All specifications valid and matching manifest AND upstream (no drift)
+  1   Drift detected, missing files, invalid JSON syntax, or an upstream fetch
+      failed (upstream drift UNVERIFIED). Set SYNC_SPECS_ALLOW_OFFLINE=1 to
+      accept manifest-only verification when upstream is unreachable.
 EOF
 }
 
-# Main Dispatcher
 main() {
     local cmd="${1:---check}"
 
     case "${cmd}" in
         --check|--verify)
-            verify_specs
+            if verify_specs; then
+                exit 0
+            else
+                # Offline escape hatch: SYNC_SPECS_ALLOW_OFFLINE=1 downgrades failed
+                # upstream fetches to a warning and accepts manifest-only verification.
+                # Drift itself still fails regardless of this flag.
+                if [[ "${SYNC_SPECS_ALLOW_OFFLINE:-0}" == "1" ]] && [[ ${fetch_failed:-0} -gt 0 ]] && [[ ${drift_detected:-0} -eq 0 ]]; then
+                    log_warn "SYNC_SPECS_ALLOW_OFFLINE=1: accepting manifest-only verification (upstream unverified)."
+                    exit 0
+                fi
+                exit 1
+            fi
             ;;
         --sync)
             sync_specs

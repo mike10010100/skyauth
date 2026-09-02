@@ -49,10 +49,6 @@ fn mock_client_metadata() -> OAuthClientMetadata {
     .with_scope("atproto transition:generic")
 }
 
-// =========================================================================
-// AXUM INTEGRATION TESTS
-// =========================================================================
-
 #[cfg(feature = "axum")]
 mod axum_tests {
     use super::*;
@@ -172,10 +168,6 @@ mod axum_tests {
     }
 }
 
-// =========================================================================
-// ACTIX-WEB INTEGRATION TESTS
-// =========================================================================
-
 #[cfg(feature = "actix")]
 mod actix_tests {
     use super::*;
@@ -273,10 +265,6 @@ mod actix_tests {
     }
 }
 
-// =========================================================================
-// TOWER MIDDLEWARE INTEGRATION TESTS
-// =========================================================================
-
 #[cfg(feature = "tower")]
 mod tower_tests {
     use super::*;
@@ -291,7 +279,6 @@ mod tower_tests {
         let ath = compute_access_token_hash(access_token);
         let uri = "https://pds.example.com/xrpc/app.bsky.feed.getTimeline";
 
-        // Generate valid DPoP proof for GET uri with ath
         let proof = key.create_proof("GET", uri, None, Some(&ath)).unwrap();
 
         let store = skyauth::integrations::InMemoryTokenValidator::new();
@@ -324,7 +311,6 @@ mod tower_tests {
 
         let mut service = layer.layer(inner);
 
-        // 1. Authorized Request with valid DPoP proof
         let req = Request::builder()
             .method("GET")
             .uri(uri)
@@ -337,7 +323,6 @@ mod tower_tests {
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(resp.body(), "XRPC Response Data");
 
-        // 2. Unauthorized Request: Missing DPoP header
         let req_missing_dpop = Request::builder()
             .method("GET")
             .uri(uri)
@@ -351,7 +336,6 @@ mod tower_tests {
             .headers()
             .contains_key(header::WWW_AUTHENTICATE));
 
-        // 3. Unauthorized Request: Wrong HTTP method in proof (POST vs GET)
         let post_proof = key.create_proof("POST", uri, None, Some(&ath)).unwrap();
         let req_wrong_method = Request::builder()
             .method("GET")
@@ -364,7 +348,6 @@ mod tower_tests {
         let resp_wrong_method = service.call(req_wrong_method).await.unwrap();
         assert_eq!(resp_wrong_method.status(), StatusCode::UNAUTHORIZED);
 
-        // 4. Unauthorized Request: Missing Authorization header
         let req_missing_auth = Request::builder()
             .method("GET")
             .uri(uri)

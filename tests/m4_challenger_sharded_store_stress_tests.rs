@@ -57,15 +57,10 @@ fn mock_stored_state(state: &str, ttl_secs: u64) -> StoredStateEntry {
     }
 }
 
-// =========================================================================
-// 1. 64-SHARD CONCURRENT RACE CONDITION (100 RACING THREADS)
-// =========================================================================
-
 #[test]
 fn test_challenge_100_threads_racing_take_state_single_key() {
     let store = Arc::new(OAuthStateStore::default());
 
-    // Execute 20 consecutive race rounds to verify zero timing windows or transient state leaks
     for round in 0..20 {
         let state_key = format!(
             "race_target_token_round_{round}_{}",
@@ -108,14 +103,12 @@ fn test_challenge_100_threads_racing_take_state_single_key() {
             h.join().unwrap();
         }
 
-        // CRITICAL INVARIANT: Exactly 1 thread must consume the state token
         let winners = winner_count.load(Ordering::SeqCst);
         assert_eq!(
             winners, 1,
             "Round {round}: Exactly 1 thread out of 100 must win the race! Got {winners}"
         );
 
-        // Store must now be empty for this key
         assert_eq!(store.total_entries(), 0);
         assert!(store.take_state_sync(&state_key).is_none());
         assert!(!store.contains_state_sync(&state_key));
@@ -201,7 +194,6 @@ fn test_challenge_multi_key_high_contention_100_threads_x_10_keys() {
 
         handles.push(std::thread::spawn(move || {
             b.wait();
-            // Try to consume all 10 keys in rotated order to create maximum shard cross-contention
             for (offset, _) in all_keys.iter().enumerate() {
                 let key_idx = (t_idx + offset) % all_keys.len();
                 let target_key = &all_keys[key_idx];
@@ -216,7 +208,6 @@ fn test_challenge_multi_key_high_contention_100_threads_x_10_keys() {
         h.join().unwrap();
     }
 
-    // Verify each of the 10 keys was consumed EXACTLY once across the 100 threads
     for (i, count) in consumed_counts.iter().enumerate() {
         let val = count.load(Ordering::SeqCst);
         assert_eq!(val, 1, "Key {i} must be consumed exactly once! Got {val}");
@@ -245,19 +236,15 @@ fn test_challenge_interleaved_insert_contains_take_concurrent_chaos() {
                 let key = format!("chaos_key_{worker_id}_{i}");
                 let entry = mock_stored_state(&key, 60);
 
-                // Insert
                 s.insert_state_sync(key.clone(), entry, Duration::from_secs(60))
                     .unwrap();
 
-                // Contains check
                 assert!(s.contains_state_sync(&key));
 
-                // Take
                 if s.take_state_sync(&key).is_some() {
                     takes.fetch_add(1, Ordering::SeqCst);
                 }
 
-                // Repeated take must return None
                 assert!(s.take_state_sync(&key).is_none());
             }
         }));
@@ -274,10 +261,6 @@ fn test_challenge_interleaved_insert_contains_take_concurrent_chaos() {
     assert_eq!(store.total_entries(), 0);
 }
 
-// =========================================================================
-// 2. TTL PRUNING BOUNDARY STRESS (t - epsilon, t + epsilon, MASS CONCURRENT SWEEPS)
-// =========================================================================
-
 #[test]
 fn test_challenge_ttl_boundary_exact_epsilon_resolution() {
     let store = OAuthStateStore::default();
@@ -285,7 +268,6 @@ fn test_challenge_ttl_boundary_exact_epsilon_resolution() {
     let key_short = "key_short_ttl_200ms";
     let key_long = "key_long_ttl_500ms";
 
-    // Insert key_short with 200ms TTL, key_long with 500ms TTL
     store
         .insert_state_sync(
             key_short.to_string(),
@@ -304,7 +286,6 @@ fn test_challenge_ttl_boundary_exact_epsilon_resolution() {
 
     assert_eq!(store.total_entries(), 2);
 
-    // 1. Check at t - epsilon (at ~50ms, well before 200ms)
     std::thread::sleep(Duration::from_millis(50));
     assert!(
         store.contains_state_sync(key_short),
@@ -315,7 +296,6 @@ fn test_challenge_ttl_boundary_exact_epsilon_resolution() {
         "key_long must be active at t - eps"
     );
 
-    // 2. Check at t + epsilon for key_short (total ~260ms: > 200ms, < 500ms)
     std::thread::sleep(Duration::from_millis(210));
     assert!(
         !store.contains_state_sync(key_short),
@@ -330,7 +310,6 @@ fn test_challenge_ttl_boundary_exact_epsilon_resolution() {
         "key_long must still be active at 260ms < 500ms"
     );
 
-    // 3. Check at t + epsilon for key_long (total ~560ms: > 500ms)
     std::thread::sleep(Duration::from_millis(300));
     assert!(
         !store.contains_state_sync(key_long),
@@ -341,7 +320,6 @@ fn test_challenge_ttl_boundary_exact_epsilon_resolution() {
         "take_state_sync on expired key_long must return None"
     );
 
-    // Both entries have been removed/pruned
     assert_eq!(store.total_entries(), 0);
 }
 
@@ -349,7 +327,6 @@ fn test_challenge_ttl_boundary_exact_epsilon_resolution() {
 fn test_challenge_ttl_edge_cases_zero_and_extreme_durations() {
     let store = OAuthStateStore::default();
 
-    // 1. Duration::ZERO - must be immediately expired
     let zero_key = "zero_ttl_key";
     store
         .insert_state_sync(
@@ -362,7 +339,6 @@ fn test_challenge_ttl_edge_cases_zero_and_extreme_durations() {
     assert!(!store.contains_state_sync(zero_key));
     assert!(store.take_state_sync(zero_key).is_none());
 
-    // 2. Duration::from_nanos(1) - must be immediately expired
     let nano_key = "nano_ttl_key";
     store
         .insert_state_sync(
@@ -376,7 +352,6 @@ fn test_challenge_ttl_edge_cases_zero_and_extreme_durations() {
     assert!(!store.contains_state_sync(nano_key));
     assert!(store.take_state_sync(nano_key).is_none());
 
-    // 3. Huge duration (365 days) - no overflow in Instant math
     let huge_key = "huge_ttl_key";
     store
         .insert_state_sync(
@@ -397,7 +372,6 @@ async fn test_challenge_massive_concurrent_insertions_during_background_pruner()
     let store = Arc::new(OAuthStateStore::default());
     let cancel_token = CancellationToken::new();
 
-    // Spawn aggressive background pruner running every 2 milliseconds
     let pruner_handle = store.spawn_pruning_task(Duration::from_millis(2), cancel_token.clone());
 
     let num_writers = 40;
@@ -415,11 +389,6 @@ async fn test_challenge_massive_concurrent_insertions_during_background_pruner()
                 let key = format!("stream_{w_id}_{i}");
                 let entry = mock_stored_state(&key, 300);
 
-                // Insert with a mix of TTLs:
-                // i % 4 == 0 -> ZERO TTL (immediately expired)
-                // i % 4 == 1 -> 15ms TTL (short expired)
-                // i % 4 == 2 -> 35ms TTL (medium expired)
-                // i % 4 == 3 -> 60s TTL (long active)
                 let ttl = match i % 4 {
                     0 => Duration::ZERO,
                     1 => Duration::from_millis(15),
@@ -436,13 +405,10 @@ async fn test_challenge_massive_concurrent_insertions_during_background_pruner()
         task.await.unwrap();
     }
 
-    // Wait 70ms for all short & medium TTL items to expire and be pruned by background worker
     tokio::time::sleep(Duration::from_millis(70)).await;
 
-    // Trigger one manual prune to guarantee complete eviction
     let _ = store.prune_expired().await.unwrap();
 
-    // The long-lived active entries (1/4 of total 4000 = 1000) must still exist
     let remaining = store.total_entries();
     let expected_active = (num_writers * items_per_writer) / 4;
     assert_eq!(
@@ -450,12 +416,10 @@ async fn test_challenge_massive_concurrent_insertions_during_background_pruner()
         "Expected exactly {expected_active} active items remaining, got {remaining}"
     );
 
-    // Cancel background pruner
     cancel_token.cancel();
     let res = pruner_handle.await;
     assert!(res.is_ok());
 
-    // Verify all active items can be taken
     for w_id in 0..num_writers {
         for i in (3..items_per_writer).step_by(4) {
             let key = format!("stream_{w_id}_{i}");
@@ -467,37 +431,25 @@ async fn test_challenge_massive_concurrent_insertions_during_background_pruner()
     assert_eq!(store.total_entries(), 0);
 }
 
-// =========================================================================
-// 3. SHARD DISTRIBUTION UNIFORMITY TEST ACROSS 10,000 RANDOM KEYS
-// =========================================================================
-
 #[test]
 fn test_challenge_shard_distribution_uniformity_10000_random_keys() {
     let store = OAuthStateStore::default();
     let total_keys = 10_000usize;
     let mut shard_counts = vec![0usize; NUM_SHARDS];
 
-    // Generate diverse realistic keys:
-    // 1. Base64URL random state strings (2,500)
-    // 2. Hex strings (2,500)
-    // 3. UUID-v4 style strings (2,500)
-    // 4. Alphanumeric random strings (2,500)
     let mut rng = thread_rng();
 
     for i in 0..total_keys {
         let key = match i % 4 {
             0 => {
-                // Base64URL 32 bytes
                 let bytes: Vec<u8> = (0..32).map(|_| rng.gen::<u8>()).collect();
                 base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &bytes)
             }
             1 => {
-                // Hex string 64 chars
                 let bytes: Vec<u8> = (0..32).map(|_| rng.gen::<u8>()).collect();
                 hex::encode(bytes)
             }
             2 => {
-                // UUID v4 format
                 format!(
                     "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
                     rng.gen::<u32>(),
@@ -508,7 +460,6 @@ fn test_challenge_shard_distribution_uniformity_10000_random_keys() {
                 )
             }
             _ => {
-                // Alphanumeric 43-128 chars
                 let len = rng.gen_range(43..=128);
                 (0..len)
                     .map(|_| rng.sample(Alphanumeric) as char)
@@ -524,7 +475,6 @@ fn test_challenge_shard_distribution_uniformity_10000_random_keys() {
         shard_counts[shard_idx] += 1;
     }
 
-    // 1. INVARIANT: Every single shard out of 64 must be populated (0 empty shards)
     for (idx, &count) in shard_counts.iter().enumerate() {
         assert!(
             count > 0,
@@ -532,8 +482,6 @@ fn test_challenge_shard_distribution_uniformity_10000_random_keys() {
         );
     }
 
-    // 2. Statistical Test: Chi-Squared Goodness of Fit
-    // Expected frequency per shard: E = 10000 / 64 = 156.25
     let expected = (total_keys as f64) / (NUM_SHARDS as f64);
     let mut chi_squared = 0.0;
 
@@ -542,16 +490,11 @@ fn test_challenge_shard_distribution_uniformity_10000_random_keys() {
         chi_squared += (diff * diff) / expected;
     }
 
-    // Degrees of freedom df = 64 - 1 = 63.
-    // Critical value for alpha = 0.001 (99.9% confidence) is 103.44.
-    // Critical value for alpha = 0.05 is 82.53.
-    // A uniform distribution will almost always have chi_squared < 103.44.
     assert!(
         chi_squared < 103.44,
         "Chi-squared test failed! chi_squared = {chi_squared:.2} exceeds critical threshold 103.44 (df=63)"
     );
 
-    // 3. Min/Max boundary checks: no severe skew
     let min_count = *shard_counts.iter().min().unwrap();
     let max_count = *shard_counts.iter().max().unwrap();
 
@@ -580,10 +523,6 @@ fn test_challenge_shard_index_deterministic_invariance() {
         assert_eq!(idx2, idx3);
     }
 }
-
-// =========================================================================
-// 4. FRAMEWORK INTEGRATION ADVERSARIAL STRESS (TOWER, AXUM, ACTIX)
-// =========================================================================
 
 #[cfg(feature = "tower")]
 mod tower_stress_tests {
@@ -637,9 +576,6 @@ mod tower_stress_tests {
 
         let service = Arc::new(tokio::sync::Mutex::new(layer.layer(inner)));
 
-        // Run 50 concurrent requests:
-        // Even indices: Valid DPoP proof -> 200 OK
-        // Odd indices: Tampered DPoP proof -> 401 Unauthorized
         let mut tasks = Vec::new();
 
         for i in 0..50 {
@@ -655,7 +591,6 @@ mod tower_stress_tests {
                     k.create_proof("GET", &uri_str, None, Some(&ath_str))
                         .unwrap()
                 } else {
-                    // Proof for wrong method POST
                     k.create_proof("POST", &uri_str, None, Some(&ath_str))
                         .unwrap()
                 };
@@ -685,10 +620,6 @@ mod tower_stress_tests {
     }
 }
 
-// =========================================================================
-// 5. AXUM AND ACTIX EXTRACTOR ADVERSARIAL TESTS
-// =========================================================================
-
 #[cfg(feature = "axum")]
 mod axum_adversarial_tests {
     use super::*;
@@ -697,7 +628,6 @@ mod axum_adversarial_tests {
 
     #[tokio::test]
     async fn test_challenge_axum_extractor_missing_fields_and_error_params() {
-        // 1. Missing both code and state -> to_callback_params errors with MissingCode
         let uri = "/oauth/callback?some_other_param=123";
         let req = Request::builder()
             .uri(uri)
@@ -710,7 +640,6 @@ mod axum_adversarial_tests {
         let err = query.to_callback_params().unwrap_err();
         assert!(matches!(err, IntegrationError::MissingCode));
 
-        // 2. Has code but missing state -> errors with MissingState
         let uri = "/oauth/callback?code=abc12345";
         let req = Request::builder()
             .uri(uri)
@@ -723,7 +652,6 @@ mod axum_adversarial_tests {
         let err = query.to_callback_params().unwrap_err();
         assert!(matches!(err, IntegrationError::MissingState));
 
-        // 3. Error response from Authorization Server (e.g. server_error)
         let uri =
             "/oauth/callback?error=server_error&error_description=Internal+Authentication+Failure";
         let req = Request::builder()
@@ -740,10 +668,6 @@ mod axum_adversarial_tests {
         );
     }
 }
-
-// =========================================================================
-// 6. PROPTEST PROPERTY-BASED TESTS FOR SHARDED STORE
-// =========================================================================
 
 proptest! {
     #[test]
@@ -765,22 +689,16 @@ proptest! {
         store.insert_state_sync(state_key.clone(), entry.clone(), Duration::from_secs(ttl_secs)).unwrap();
         prop_assert!(store.contains_state_sync(&state_key));
 
-        // First take succeeds
         let first_take = store.take_state_sync(&state_key);
         prop_assert!(first_take.is_some());
         let record = first_take.unwrap();
         prop_assert_eq!(&record.state, &state_key);
 
-        // Second take is None
         let second_take = store.take_state_sync(&state_key);
         prop_assert!(second_take.is_none());
         prop_assert!(!store.contains_state_sync(&state_key));
     }
 }
-
-// =========================================================================
-// 7. ACTIX EXTRACTOR ADVERSARIAL AND MISSING EXTENSION TESTS
-// =========================================================================
 
 #[cfg(feature = "actix")]
 mod actix_adversarial_tests {
@@ -791,7 +709,6 @@ mod actix_adversarial_tests {
 
     #[tokio::test]
     async fn test_challenge_actix_extractor_missing_fields_and_error_params() {
-        // 1. Missing both code and state -> to_callback_params errors with MissingCode
         let uri = "/oauth/callback?other=test";
         let req = TestRequest::get().uri(uri).to_http_request();
         let mut payload = Payload::None;
@@ -801,7 +718,6 @@ mod actix_adversarial_tests {
         let err = query.to_callback_params().unwrap_err();
         assert!(matches!(err, IntegrationError::MissingCode));
 
-        // 2. Has code but missing state -> errors with MissingState
         let uri = "/oauth/callback?code=actix_code_123";
         let req = TestRequest::get().uri(uri).to_http_request();
         let mut payload = Payload::None;
@@ -811,7 +727,6 @@ mod actix_adversarial_tests {
         let err = query.to_callback_params().unwrap_err();
         assert!(matches!(err, IntegrationError::MissingState));
 
-        // 3. Error response from Authorization Server
         let uri =
             "/oauth/callback?error=invalid_scope&error_description=The+requested+scope+is+invalid";
         let req = TestRequest::get().uri(uri).to_http_request();
@@ -829,7 +744,6 @@ mod actix_adversarial_tests {
 
     #[tokio::test]
     async fn test_challenge_actix_user_extractor_missing_extension_rejects_unauthorized() {
-        // Request without OAuthSessionExtension
         let req = TestRequest::get()
             .uri("/xrpc/app.bsky.actor.getProfile")
             .to_http_request();
@@ -845,15 +759,10 @@ mod actix_adversarial_tests {
     }
 }
 
-// =========================================================================
-// 8. MULTI-PRUNER CONCURRENCY AND RESILIENCE TESTS
-// =========================================================================
-
 #[tokio::test]
 async fn test_challenge_multiple_concurrent_pruners_and_rapid_cancel_cycles() {
     let store = Arc::new(OAuthStateStore::default());
 
-    // Run 10 rapid spawn/cancel cycles with 5 concurrent pruners running per cycle
     for cycle in 0..10 {
         let cancel_token = CancellationToken::new();
         let mut pruner_handles = Vec::new();
@@ -863,7 +772,6 @@ async fn test_challenge_multiple_concurrent_pruners_and_rapid_cancel_cycles() {
                 .push(store.spawn_pruning_task(Duration::from_millis(1), cancel_token.clone()));
         }
 
-        // Concurrently insert expired and active items
         for i in 0..50 {
             let key = format!("cycle_{cycle}_item_{i}");
             let ttl = if i % 2 == 0 {
@@ -877,10 +785,8 @@ async fn test_challenge_multiple_concurrent_pruners_and_rapid_cancel_cycles() {
                 .unwrap();
         }
 
-        // Brief yield
         tokio::time::sleep(Duration::from_millis(10)).await;
 
-        // Cancel all pruners and join
         cancel_token.cancel();
         for h in pruner_handles {
             let res = h.await;
@@ -888,21 +794,15 @@ async fn test_challenge_multiple_concurrent_pruners_and_rapid_cancel_cycles() {
         }
     }
 
-    // Clean up
     let _ = store.prune_expired().await.unwrap();
     store.clear();
     assert_eq!(store.total_entries(), 0);
 }
 
-// =========================================================================
-// 9. EXTREME KEY SIZES AND SPECIAL CHARACTERS
-// =========================================================================
-
 #[test]
 fn test_challenge_extreme_key_sizes_and_special_character_encodings() {
     let store = OAuthStateStore::default();
 
-    // 1. Empty string key
     let empty_key = "";
     assert!(!store.contains_state_sync(empty_key));
     store
@@ -917,7 +817,6 @@ fn test_challenge_extreme_key_sizes_and_special_character_encodings() {
     assert!(taken.is_some());
     assert!(!store.contains_state_sync(empty_key));
 
-    // 2. Extremely large key (64 KB string)
     let large_key = "a".repeat(65536);
     store
         .insert_state_sync(
@@ -931,7 +830,6 @@ fn test_challenge_extreme_key_sizes_and_special_character_encodings() {
     assert!(taken.is_some());
     assert!(!store.contains_state_sync(&large_key));
 
-    // 3. Multi-byte Unicode and Emoji keys
     let unicode_key = "🔐_state_token_with_emoji_🚀_and_arabic_مرحبا_and_cjk_你好_123";
     store
         .insert_state_sync(

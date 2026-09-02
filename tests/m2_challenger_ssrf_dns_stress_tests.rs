@@ -28,22 +28,16 @@ use skyauth::ssrf::{
     is_blocked_hostname, is_restricted_ip, is_restricted_ipv4, is_restricted_ipv6, SsrfFilter,
 };
 
-// =========================================================================
-// 1. SSRF BOUNDARY EVASION & IP ENCODING ATTACKS
-// =========================================================================
-
 #[test]
 fn test_ssrf_zero_network_and_broadcast_boundaries() {
     let filter = SsrfFilter::new(false);
 
-    // 0.0.0.0/8 (Current network / "This host")
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 1))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(0, 128, 0, 1))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(0, 255, 255, 255))));
     assert!(is_restricted_ipv4(&Ipv4Addr::new(0, 0, 0, 0)));
 
-    // 255.255.255.255 (Limited broadcast) & 240.0.0.0/4 (Class E)
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(240, 0, 0, 0))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(240, 0, 0, 1))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(250, 1, 2, 3))));
@@ -55,14 +49,12 @@ fn test_ssrf_zero_network_and_broadcast_boundaries() {
 fn test_ssrf_loopback_boundaries_exhaustive() {
     let filter = SsrfFilter::new(false);
 
-    // Entire 127.0.0.0/8 block must be rejected
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 0))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 254))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(127, 1, 1, 1))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(127, 255, 255, 255))));
 
-    // IPv6 Loopback
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::LOCALHOST)));
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))));
     assert!(is_restricted_ipv6(&Ipv6Addr::LOCALHOST));
@@ -72,20 +64,17 @@ fn test_ssrf_loopback_boundaries_exhaustive() {
 fn test_ssrf_rfc1918_private_blocks_boundaries() {
     let filter = SsrfFilter::new(false);
 
-    // 10.0.0.0/8
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(10, 255, 255, 255))));
     assert!(!filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(9, 255, 255, 255))));
     assert!(!filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(11, 0, 0, 0))));
 
-    // 172.16.0.0/12 (172.16.0.0 - 172.31.255.255)
     assert!(!filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(172, 15, 255, 255))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 0))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(172, 20, 100, 50))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(172, 31, 255, 255))));
     assert!(!filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(172, 32, 0, 0))));
 
-    // 192.168.0.0/16 (192.168.0.0 - 192.168.255.255)
     assert!(!filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 167, 255, 255))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 0))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 168, 255, 255))));
@@ -96,19 +85,17 @@ fn test_ssrf_rfc1918_private_blocks_boundaries() {
 fn test_ssrf_cloud_metadata_link_local_and_cgnat() {
     let filter = SsrfFilter::new(false);
 
-    // Link-Local (169.254.0.0/16)
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(169, 254, 0, 0))));
-    assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)))); // AWS/GCP/Azure
-    assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(169, 254, 170, 2)))); // AWS ECS
+    assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))));
+    assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(169, 254, 170, 2))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(169, 254, 255, 255))));
     assert!(!filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(169, 253, 255, 255))));
     assert!(!filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(169, 255, 0, 0))));
 
-    // CGNAT Shared Space (100.64.0.0/10: 100.64.0.0 - 100.127.255.255, including Alibaba Cloud metadata 100.100.100.200)
     assert!(!filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(100, 63, 255, 255))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(100, 64, 0, 0))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(100, 96, 1, 1))));
-    assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(100, 100, 100, 200)))); // Alibaba
+    assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(100, 100, 100, 200))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(100, 127, 255, 255))));
     assert!(!filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(100, 128, 0, 0))));
 }
@@ -117,112 +104,90 @@ fn test_ssrf_cloud_metadata_link_local_and_cgnat() {
 fn test_ssrf_url_parsers_short_octal_hex_decimal_ip_notations() {
     let filter = SsrfFilter::new(false);
 
-    // Standard URL parsers following WHATWG URL standard normalize octal, hex, decimal,
-    // and short-form IPs into canonical IPv4 strings. Verify that validate_url catches them all!
-
-    // 1. Short forms
-    // 127.1 -> 127.0.0.1
     let url_127_1 = Url::parse("https://127.1").unwrap();
     assert!(matches!(
         filter.validate_url(&url_127_1),
         Err(SsrfError::BlockedIp(_)) | Err(SsrfError::BlockedHost(_))
     ));
 
-    // 10.1 -> 10.0.0.1
     let url_10_1 = Url::parse("https://10.1").unwrap();
     assert!(matches!(
         filter.validate_url(&url_10_1),
         Err(SsrfError::BlockedIp(_)) | Err(SsrfError::BlockedHost(_))
     ));
 
-    // 172.16.1 -> 172.16.0.1
     let url_172_1 = Url::parse("https://172.16.1").unwrap();
     assert!(matches!(
         filter.validate_url(&url_172_1),
         Err(SsrfError::BlockedIp(_)) | Err(SsrfError::BlockedHost(_))
     ));
 
-    // 192.168.1 -> 192.168.0.1
     let url_192_1 = Url::parse("https://192.168.1").unwrap();
     assert!(matches!(
         filter.validate_url(&url_192_1),
         Err(SsrfError::BlockedIp(_)) | Err(SsrfError::BlockedHost(_))
     ));
 
-    // 2. Octal forms
-    // 0177.0.0.1 -> 127.0.0.1
     let url_octal_127 = Url::parse("https://0177.0.0.1").unwrap();
     assert!(matches!(
         filter.validate_url(&url_octal_127),
         Err(SsrfError::BlockedIp(_)) | Err(SsrfError::BlockedHost(_))
     ));
 
-    // 012.0.0.1 -> 10.0.0.1
     let url_octal_10 = Url::parse("https://012.0.0.1").unwrap();
     assert!(matches!(
         filter.validate_url(&url_octal_10),
         Err(SsrfError::BlockedIp(_)) | Err(SsrfError::BlockedHost(_))
     ));
 
-    // 0251.0376.0251.0376 -> 169.254.169.254
     let url_octal_meta = Url::parse("https://0251.0376.0251.0376").unwrap();
     assert!(matches!(
         filter.validate_url(&url_octal_meta),
         Err(SsrfError::BlockedIp(_)) | Err(SsrfError::BlockedHost(_))
     ));
 
-    // 3. Hexadecimal forms
-    // 0x7f.0.0.1 -> 127.0.0.1
     let url_hex_dotted = Url::parse("https://0x7f.0.0.1").unwrap();
     assert!(matches!(
         filter.validate_url(&url_hex_dotted),
         Err(SsrfError::BlockedIp(_)) | Err(SsrfError::BlockedHost(_))
     ));
 
-    // 0x7f000001 -> 127.0.0.1
     let url_hex_dword = Url::parse("https://0x7f000001").unwrap();
     assert!(matches!(
         filter.validate_url(&url_hex_dword),
         Err(SsrfError::BlockedIp(_)) | Err(SsrfError::BlockedHost(_))
     ));
 
-    // 0xa9fea9fe -> 169.254.169.254
     let url_hex_meta = Url::parse("https://0xa9fea9fe").unwrap();
     assert!(matches!(
         filter.validate_url(&url_hex_meta),
         Err(SsrfError::BlockedIp(_)) | Err(SsrfError::BlockedHost(_))
     ));
 
-    // 4. Decimal integer forms
-    // 2130706433 -> 127.0.0.1
     let url_dec_127 = Url::parse("https://2130706433").unwrap();
     assert!(matches!(
         filter.validate_url(&url_dec_127),
         Err(SsrfError::BlockedIp(_)) | Err(SsrfError::BlockedHost(_))
     ));
 
-    // 167772161 -> 10.0.0.1
     let url_dec_10 = Url::parse("https://167772161").unwrap();
     assert!(matches!(
         filter.validate_url(&url_dec_10),
         Err(SsrfError::BlockedIp(_)) | Err(SsrfError::BlockedHost(_))
     ));
 
-    // 2886729729 -> 172.16.0.1
     let url_dec_172 = Url::parse("https://2886729729").unwrap();
     assert!(matches!(
         filter.validate_url(&url_dec_172),
         Err(SsrfError::BlockedIp(_)) | Err(SsrfError::BlockedHost(_))
     ));
 
-    // 3232235521 -> 192.168.0.1
     let url_dec_192 = Url::parse("https://3232235521").unwrap();
     assert!(matches!(
         filter.validate_url(&url_dec_192),
         Err(SsrfError::BlockedIp(_)) | Err(SsrfError::BlockedHost(_))
     ));
 
-    // 2852039166 -> 169.254.169.254
     let url_dec_meta = Url::parse("https://2852039166").unwrap();
     assert!(matches!(
         filter.validate_url(&url_dec_meta),
@@ -234,33 +199,27 @@ fn test_ssrf_url_parsers_short_octal_hex_decimal_ip_notations() {
 fn test_ssrf_ipv4_mapped_ipv6_exhaustive() {
     let filter = SsrfFilter::new(false);
 
-    // Standard dotted decimal mapped: ::ffff:127.0.0.1
     let ip1: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
     assert!(filter.is_ip_restricted(ip1));
 
-    // Hex segment mapped: ::ffff:7f00:1
     let ip2: IpAddr = "::ffff:7f00:1".parse().unwrap();
     assert!(filter.is_ip_restricted(ip2));
 
-    // Metadata mapped: ::ffff:169.254.169.254 and ::ffff:a9fe:a9fe
     let ip_meta1: IpAddr = "::ffff:169.254.169.254".parse().unwrap();
     let ip_meta2: IpAddr = "::ffff:a9fe:a9fe".parse().unwrap();
     assert!(filter.is_ip_restricted(ip_meta1));
     assert!(filter.is_ip_restricted(ip_meta2));
 
-    // Private RFC1918 mapped: ::ffff:10.0.0.1 and ::ffff:192.168.1.1
     let ip_priv1: IpAddr = "::ffff:10.0.0.1".parse().unwrap();
     let ip_priv2: IpAddr = "::ffff:192.168.1.1".parse().unwrap();
     assert!(filter.is_ip_restricted(ip_priv1));
     assert!(filter.is_ip_restricted(ip_priv2));
 
-    // Zero network and broadcast mapped: ::ffff:0.0.0.0 and ::ffff:255.255.255.255
     let ip_zero: IpAddr = "::ffff:0.0.0.0".parse().unwrap();
     let ip_bcast: IpAddr = "::ffff:255.255.255.255".parse().unwrap();
     assert!(filter.is_ip_restricted(ip_zero));
     assert!(filter.is_ip_restricted(ip_bcast));
 
-    // Public mapped address: ::ffff:8.8.8.8 -> Must be ALLOWED
     let ip_public: IpAddr = "::ffff:8.8.8.8".parse().unwrap();
     assert!(!filter.is_ip_restricted(ip_public));
 }
@@ -269,7 +228,6 @@ fn test_ssrf_ipv4_mapped_ipv6_exhaustive() {
 async fn test_ssrf_ipv4_mapped_ipv6_resolve_and_pin_blocked() {
     let filter = SsrfFilter::new(false);
 
-    // Test that resolve_and_pin blocks IPv4-mapped IPv6 addresses
     let url_mapped_127 = Url::parse("https://[::ffff:127.0.0.1]").unwrap();
     let res = filter.resolve_and_pin(&url_mapped_127).await;
     assert!(res.is_err(), "resolve_and_pin must reject ::ffff:127.0.0.1");
@@ -286,13 +244,10 @@ async fn test_ssrf_ipv4_mapped_ipv6_resolve_and_pin_blocked() {
 fn test_ssrf_ipv6_special_ranges_exhaustive() {
     let filter = SsrfFilter::new(false);
 
-    // :: (Unspecified)
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
 
-    // ::1 (Loopback)
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::LOCALHOST)));
 
-    // Link-Local (fe80::/10 -> fe80:: - febf:ffff:...)
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1))));
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(
         0xfe80, 0, 0, 0, 0xa9fe, 0xa9fe, 0, 1
@@ -301,24 +256,19 @@ fn test_ssrf_ipv6_special_ranges_exhaustive() {
         0xfebf, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff
     ))));
 
-    // Site-Local (fec0::/10)
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xfec0, 0, 0, 0, 0, 0, 0, 1))));
 
-    // Unique Local Address (fc00::/7 -> fc00:: - fdff:ffff:...)
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 1))));
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1))));
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(
         0xfd12, 0x3456, 0x789a, 0, 0, 0, 0, 1
     ))));
 
-    // Documentation (2001:db8::/32)
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1))));
 
-    // Multicast (ff00::/8)
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1))));
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xff05, 0, 0, 0, 0, 0, 0, 2))));
 
-    // Public IPv6 must be allowed
     assert!(!filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(
         0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111
     ))));
@@ -370,7 +320,6 @@ fn test_ssrf_cloud_metadata_hostnames_and_internal_domains() {
     }
 }
 
-// Property-based fuzzing of private subnets
 proptest! {
     #[test]
     fn prop_ssrf_all_10_x_x_x_blocked(b: u8, c: u8, d: u8) {
@@ -410,15 +359,10 @@ proptest! {
     }
 }
 
-// =========================================================================
-// 2. DNS REBINDING & MULTI-IP STRESS TESTS
-// =========================================================================
-
 #[test]
 fn test_dns_rebinding_mixed_ip_rejection_logic() {
     let filter = SsrfFilter::new(false);
 
-    // Scenario A: First IP public, second IP private (127.0.0.1)
     let mixed_a = vec![
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443),
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443),
@@ -428,7 +372,6 @@ fn test_dns_rebinding_mixed_ip_rejection_logic() {
         .try_for_each(|addr| filter.validate_ip(addr.ip()));
     assert!(matches!(res_a, Err(SsrfError::BlockedIp(_))));
 
-    // Scenario B: First IP private (10.0.0.1), second IP public
     let mixed_b = vec![
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 443),
@@ -438,7 +381,6 @@ fn test_dns_rebinding_mixed_ip_rejection_logic() {
         .try_for_each(|addr| filter.validate_ip(addr.ip()));
     assert!(matches!(res_b, Err(SsrfError::BlockedIp(_))));
 
-    // Scenario C: Public IPv4 + Link-Local Cloud Metadata (169.254.169.254)
     let mixed_c = vec![
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443),
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)), 443),
@@ -448,7 +390,6 @@ fn test_dns_rebinding_mixed_ip_rejection_logic() {
         .try_for_each(|addr| filter.validate_ip(addr.ip()));
     assert!(matches!(res_c, Err(SsrfError::BlockedIp(_))));
 
-    // Scenario D: Public IPv6 + IPv6 Loopback (::1)
     let mixed_d = vec![
         SocketAddr::new(
             IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111)),
@@ -461,7 +402,6 @@ fn test_dns_rebinding_mixed_ip_rejection_logic() {
         .try_for_each(|addr| filter.validate_ip(addr.ip()));
     assert!(matches!(res_d, Err(SsrfError::BlockedIp(_))));
 
-    // Scenario E: Public IPv6 + IPv6 Link-Local (fe80::1)
     let mixed_e = vec![
         SocketAddr::new(
             IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111)),
@@ -474,7 +414,6 @@ fn test_dns_rebinding_mixed_ip_rejection_logic() {
         .try_for_each(|addr| filter.validate_ip(addr.ip()));
     assert!(matches!(res_e, Err(SsrfError::BlockedIp(_))));
 
-    // Scenario F: Public IPv6 + IPv6 ULA (fd00::1)
     let mixed_f = vec![
         SocketAddr::new(
             IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111)),
@@ -487,7 +426,6 @@ fn test_dns_rebinding_mixed_ip_rejection_logic() {
         .try_for_each(|addr| filter.validate_ip(addr.ip()));
     assert!(matches!(res_f, Err(SsrfError::BlockedIp(_))));
 
-    // Scenario G: Only Public IPs (1.1.1.1, 8.8.8.8) -> All Valid
     let pure_public = vec![
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443),
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 443),
@@ -498,15 +436,10 @@ fn test_dns_rebinding_mixed_ip_rejection_logic() {
     assert!(res_g.is_ok());
 }
 
-// =========================================================================
-// 3. HTTP REDIRECT SSRF & REDIRECT LOOP STRESS TESTS
-// =========================================================================
-
 #[tokio::test]
 async fn test_redirect_to_private_ip_blocked() {
     let mock_server = MockServer::start().await;
 
-    // Server redirects to 10.0.0.1/admin
     Mock::given(method("GET"))
         .and(path("/start"))
         .respond_with(
@@ -515,7 +448,7 @@ async fn test_redirect_to_private_ip_blocked() {
         .mount(&mock_server)
         .await;
 
-    let filter = SsrfFilter::new(true); // allow localhost to contact mock_server
+    let filter = SsrfFilter::new(true);
     let start_url = format!("{}/start", mock_server.uri());
 
     let res = filter.safe_get(&start_url, 1024 * 1024).await;
@@ -532,7 +465,6 @@ async fn test_redirect_to_private_ip_blocked() {
 async fn test_redirect_to_cloud_metadata_blocked() {
     let mock_server = MockServer::start().await;
 
-    // Server redirects to cloud metadata endpoint
     Mock::given(method("GET"))
         .and(path("/start"))
         .respond_with(
@@ -559,7 +491,6 @@ async fn test_redirect_to_cloud_metadata_blocked() {
 async fn test_redirect_to_blocked_internal_hostname() {
     let mock_server = MockServer::start().await;
 
-    // Server redirects to metadata.google.internal
     Mock::given(method("GET"))
         .and(path("/start"))
         .respond_with(ResponseTemplate::new(302).insert_header(
@@ -588,7 +519,6 @@ async fn test_redirect_to_blocked_internal_hostname() {
 async fn test_redirect_self_referential_loop() {
     let mock_server = MockServer::start().await;
 
-    // A -> A -> A (infinite redirect loop)
     Mock::given(method("GET"))
         .and(path("/loop"))
         .respond_with(ResponseTemplate::new(302).insert_header("Location", "/loop"))
@@ -609,7 +539,6 @@ async fn test_redirect_self_referential_loop() {
 async fn test_redirect_chain_exceeding_max_depth() {
     let mock_server = MockServer::start().await;
 
-    // 4 redirects (exceeds max depth of 3)
     Mock::given(method("GET"))
         .and(path("/hop1"))
         .respond_with(ResponseTemplate::new(302).insert_header("Location", "/hop2"))
@@ -650,7 +579,6 @@ async fn test_redirect_chain_exceeding_max_depth() {
 async fn test_valid_redirect_chain_within_depth_limit() {
     let mock_server = MockServer::start().await;
 
-    // 2 redirects (within max depth of 3) -> 200 OK
     Mock::given(method("GET"))
         .and(path("/step1"))
         .respond_with(ResponseTemplate::new(302).insert_header("Location", "/step2"))
@@ -691,7 +619,6 @@ async fn test_response_size_bounding_exceeded() {
     let filter = SsrfFilter::new(true);
     let url = format!("{}/huge", mock_server.uri());
 
-    // Allow max 10,000 bytes, response is 100,000 bytes
     let res = filter.safe_get(&url, 10_000).await;
     assert!(
         matches!(
@@ -704,10 +631,6 @@ async fn test_response_size_bounding_exceeded() {
         "Response exceeding max_bytes must fail with ResponseTooLarge"
     );
 }
-
-// =========================================================================
-// 4. PROTOCOL SCHEME, CREDENTIAL & ADVANCED SSRF EVASION TESTS
-// =========================================================================
 
 #[test]
 fn test_ssrf_disallowed_schemes_exhaustive() {
@@ -755,33 +678,26 @@ fn test_ssrf_urls_with_embedded_credentials() {
     ));
 }
 
-// =========================================================================
-// 5. IDENTITY & DISCOVERY INTEGRATION WITH SSRF BOUNDARIES
-// =========================================================================
-
 #[tokio::test]
 async fn test_did_web_with_private_ip_rejected_in_strict_mode() {
     use skyauth::identity::IdentityResolver;
 
     let resolver = IdentityResolver::builder()
-        .allow_insecure_localhost(false) // strict mode
+        .allow_insecure_localhost(false)
         .build();
 
-    // did:web targeting private loopback 127.0.0.1
     let res = resolver.resolve_did_web("did:web:127.0.0.1").await;
     assert!(
         res.is_err(),
         "did:web:127.0.0.1 must be rejected in strict mode"
     );
 
-    // did:web targeting cloud metadata
     let res_meta = resolver.resolve_did_web("did:web:169.254.169.254").await;
     assert!(
         res_meta.is_err(),
         "did:web:169.254.169.254 must be rejected in strict mode"
     );
 
-    // did:web targeting internal GCP metadata
     let res_gcp = resolver
         .resolve_did_web("did:web:metadata.google.internal")
         .await;
@@ -795,16 +711,14 @@ async fn test_did_web_with_private_ip_rejected_in_strict_mode() {
 async fn test_pds_discovery_malicious_private_endpoint_blocked() {
     use skyauth::discovery::fetch_protected_resource_metadata;
 
-    let filter = SsrfFilter::new(false); // strict mode
+    let filter = SsrfFilter::new(false);
 
-    // Attacker PDS endpoint pointing to AWS metadata
     let res = fetch_protected_resource_metadata(&filter, "https://169.254.169.254").await;
     assert!(
         res.is_err(),
         "Protected resource fetch to 169.254.169.254 must fail SSRF check"
     );
 
-    // Attacker PDS endpoint pointing to RFC1918 private IP
     let res_priv = fetch_protected_resource_metadata(&filter, "https://10.0.0.1").await;
     assert!(
         res_priv.is_err(),
@@ -816,16 +730,14 @@ async fn test_pds_discovery_malicious_private_endpoint_blocked() {
 async fn test_auth_server_discovery_malicious_as_endpoint_blocked() {
     use skyauth::discovery::fetch_auth_server_metadata;
 
-    let filter = SsrfFilter::new(false); // strict mode
+    let filter = SsrfFilter::new(false);
 
-    // Attacker AS endpoint pointing to GCP metadata
     let res = fetch_auth_server_metadata(&filter, "https://metadata.google.internal").await;
     assert!(
         res.is_err(),
         "Auth server fetch to metadata.google.internal must fail SSRF check"
     );
 
-    // Attacker AS endpoint pointing to loopback
     let res_loop = fetch_auth_server_metadata(&filter, "https://127.0.0.1:9090").await;
     assert!(
         res_loop.is_err(),
@@ -838,7 +750,7 @@ async fn test_par_endpoint_ssrf_and_redirect_blocked() {
     use skyauth::dpop::{DPoPKey, DPoPNonceCache};
     use skyauth::par::{execute_par_request, ParParameters};
 
-    let filter = SsrfFilter::new(false); // strict mode
+    let filter = SsrfFilter::new(false);
     let key = DPoPKey::generate();
     let cache = DPoPNonceCache::new();
     let params = ParParameters::new(
@@ -849,7 +761,6 @@ async fn test_par_endpoint_ssrf_and_redirect_blocked() {
         "challenge_xyz",
     );
 
-    // 1. Private IP PAR endpoint is blocked
     let res_ssrf = execute_par_request(
         &filter,
         "https://169.254.169.254/par",
@@ -871,7 +782,6 @@ async fn test_par_endpoint_ssrf_and_redirect_blocked() {
         "PAR endpoint on a link-local address must be rejected as a blocked IP or host, got {res_ssrf:?}"
     );
 
-    // 2. PAR endpoint returning 307 redirect is rejected
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/par_redirect"))

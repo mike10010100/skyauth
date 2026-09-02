@@ -38,16 +38,11 @@ use skyauth::ssrf::SsrfFilter;
 use e2e_harness::fixtures::*;
 use e2e_harness::MockOAuthEnvironment;
 
-// =========================================================================
-// 1. AUTO-NONCE NEGOTIATION TESTS (PAR, TOKEN EXCHANGE, REFRESH, XRPC)
-// =========================================================================
-
 #[tokio::test]
 async fn test_par_1hop_auto_nonce_challenge_success() {
     let mock_server = MockServer::start().await;
     let par_url = format!("{}/oauth/par", mock_server.uri());
 
-    // 1. First request returns 400 use_dpop_nonce
     Mock::given(method("POST"))
         .and(path("/oauth/par"))
         .respond_with(
@@ -63,7 +58,6 @@ async fn test_par_1hop_auto_nonce_challenge_success() {
         .mount(&mock_server)
         .await;
 
-    // 2. Second request succeeds with 201 Created
     Mock::given(method("POST"))
         .and(path("/oauth/par"))
         .respond_with(
@@ -98,7 +92,6 @@ async fn test_par_1hop_auto_nonce_challenge_success() {
     );
     assert_eq!(res.expires_in, 60);
 
-    // Verify cache holds the fresh nonce
     let origin = url::Url::parse(&par_url)
         .unwrap()
         .origin()
@@ -766,10 +759,6 @@ async fn test_xrpc_2hop_nonce_challenge_fails_without_infinite_loop() {
     assert_eq!(xrpc_count.load(Ordering::SeqCst), 2);
 }
 
-// =========================================================================
-// 2. PAR ERROR RESPONSE TESTS (HTTP 400, 401, 403, 500, 502, INVALID PARAMS)
-// =========================================================================
-
 #[tokio::test]
 async fn test_par_error_http_400_invalid_client() {
     let mock_server = MockServer::start().await;
@@ -1117,7 +1106,7 @@ async fn test_par_error_http_status_codes_401_403_503() {
 
 #[tokio::test]
 async fn test_par_ssrf_blocked_private_ip_endpoint() {
-    let ssrf_filter = SsrfFilter::default(); // allow_insecure_localhost = false
+    let ssrf_filter = SsrfFilter::default();
     let dpop_key = DPoPKey::generate();
     let nonce_cache = DPoPNonceCache::new();
     let params = ParParameters::new(
@@ -1128,7 +1117,6 @@ async fn test_par_ssrf_blocked_private_ip_endpoint() {
         "challenge_ssrf",
     );
 
-    // Private IPv4
     let res = execute_par_request(
         &ssrf_filter,
         "https://192.168.1.100/oauth/par",
@@ -1142,7 +1130,6 @@ async fn test_par_ssrf_blocked_private_ip_endpoint() {
         Err(AtprotoOAuthError::Par(ParError::Ssrf(_)))
     ));
 
-    // Cloud metadata IPv4
     let res2 = execute_par_request(
         &ssrf_filter,
         "http://169.254.169.254/oauth/par",
@@ -1189,10 +1176,6 @@ async fn test_par_invalid_endpoint_url_syntax() {
         Err(AtprotoOAuthError::Par(ParError::InvalidEndpoint(_)))
     ));
 }
-
-// =========================================================================
-// 3. PROPERTY-BASED TESTS & FUZZING
-// =========================================================================
 
 proptest! {
     #[test]

@@ -35,7 +35,6 @@ const MANAGED_FILES: &[&str] = &[
     "schemas/atproto_client_metadata.json",
 ];
 
-/// Helper struct that sets up an isolated sandbox copy of the repo specs and scripts.
 struct Sandbox {
     root: PathBuf,
 }
@@ -55,22 +54,18 @@ impl Sandbox {
         }
         fs::create_dir_all(&target_tmp).expect("Failed to create sandbox dir");
 
-        // Copy lexicons/
         let src_lex = manifest_dir.join("lexicons");
         let dst_lex = target_tmp.join("lexicons");
         copy_dir_recursive(&src_lex, &dst_lex);
 
-        // Copy schemas/
         let src_schemas = manifest_dir.join("schemas");
         let dst_schemas = target_tmp.join("schemas");
         copy_dir_recursive(&src_schemas, &dst_schemas);
 
-        // Copy scripts/
         let src_scripts = manifest_dir.join("scripts");
         let dst_scripts = target_tmp.join("scripts");
         copy_dir_recursive(&src_scripts, &dst_scripts);
 
-        // Ensure sync_specs.sh is executable
         let script_file = dst_scripts.join("sync_specs.sh");
         if script_file.exists() {
             let mut perms = fs::metadata(&script_file).unwrap().permissions();
@@ -113,15 +108,10 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
     }
 }
 
-// =========================================================================
-// CHALLENGE 1: Spec Drift Script Tamper Tests
-// =========================================================================
-
 #[test]
 fn test_tamper_every_single_managed_schema_file_caught_by_verify() {
     let sandbox = Sandbox::new("tamper_each_file");
 
-    // Baseline: verify clean sandbox passes
     let out = sandbox.run_script(&["--verify"], &[]);
     assert!(
         out.status.success(),
@@ -130,14 +120,12 @@ fn test_tamper_every_single_managed_schema_file_caught_by_verify() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // Test mutating each managed file individually
     for &rel_path in MANAGED_FILES {
         let full_path = sandbox.root.join(rel_path);
         assert!(full_path.exists(), "Managed file must exist: {}", rel_path);
 
         let original_content = fs::read_to_string(&full_path).unwrap();
 
-        // Mutate by adding a non-disruptive but hash-changing JSON field
         let mut parsed: Value = serde_json::from_str(&original_content).unwrap();
         if let Value::Object(ref mut map) = parsed {
             map.insert("__tampered_field__".to_string(), json!("malicious_drift"));
@@ -145,7 +133,6 @@ fn test_tamper_every_single_managed_schema_file_caught_by_verify() {
         let tampered_content = serde_json::to_string_pretty(&parsed).unwrap();
         fs::write(&full_path, tampered_content).unwrap();
 
-        // Run --verify: MUST fail with code 1
         let out = sandbox.run_script(&["--verify"], &[]);
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -166,7 +153,6 @@ fn test_tamper_every_single_managed_schema_file_caught_by_verify() {
             combined
         );
 
-        // Also test --check alias: MUST also fail with code 1
         let out_check = sandbox.run_script(&["--check"], &[]);
         assert_eq!(
             out_check.status.code(),
@@ -175,10 +161,8 @@ fn test_tamper_every_single_managed_schema_file_caught_by_verify() {
             rel_path
         );
 
-        // Restore original content
         fs::write(&full_path, original_content).unwrap();
 
-        // Verify clean again
         let out_clean = sandbox.run_script(&["--verify"], &[]);
         assert!(
             out_clean.status.success(),
@@ -196,7 +180,6 @@ fn test_tamper_single_byte_drift_detection() {
         let full_path = sandbox.root.join(rel_path);
         let original_bytes = fs::read(&full_path).unwrap();
 
-        // Append a single space byte at the end of the file
         let mut tampered_bytes = original_bytes.clone();
         tampered_bytes.push(b' ');
         fs::write(&full_path, &tampered_bytes).unwrap();
@@ -220,7 +203,6 @@ fn test_tamper_single_byte_drift_detection() {
             rel_path
         );
 
-        // Restore
         fs::write(&full_path, &original_bytes).unwrap();
     }
 }
@@ -233,7 +215,6 @@ fn test_tamper_json_syntax_corruption_rejection() {
         let full_path = sandbox.root.join(rel_path);
         let original_content = fs::read_to_string(&full_path).unwrap();
 
-        // Write corrupt JSON syntax
         fs::write(&full_path, "{ \"invalid_json\": [ unclosed array ").unwrap();
 
         let out = sandbox.run_script(&["--verify"], &[]);
@@ -255,14 +236,9 @@ fn test_tamper_json_syntax_corruption_rejection() {
             combined
         );
 
-        // Restore
         fs::write(&full_path, &original_content).unwrap();
     }
 }
-
-// =========================================================================
-// CHALLENGE 2: Missing Schema File & Manifest Corruption Tests
-// =========================================================================
 
 #[test]
 fn test_missing_each_schema_file_detection() {
@@ -272,7 +248,6 @@ fn test_missing_each_schema_file_detection() {
         let full_path = sandbox.root.join(rel_path);
         let original_content = fs::read_to_string(&full_path).unwrap();
 
-        // Delete the file
         fs::remove_file(&full_path).unwrap();
 
         let out = sandbox.run_script(&["--verify"], &[]);
@@ -296,7 +271,6 @@ fn test_missing_each_schema_file_detection() {
             combined
         );
 
-        // Restore
         fs::write(&full_path, &original_content).unwrap();
     }
 }
@@ -308,11 +282,9 @@ fn test_manifest_checksum_tamper_detection() {
 
     let original_manifest = fs::read_to_string(&manifest_path).unwrap();
 
-    // 1. Corrupt a SHA256 digest in the manifest
     let lines: Vec<&str> = original_manifest.lines().collect();
     assert!(!lines.is_empty());
     let mut modified_lines = lines.clone();
-    // Replace first hash with all zeros
     let first_line = lines[0];
     let parts: Vec<&str> = first_line.split_whitespace().collect();
     let corrupted_first = format!(
@@ -338,7 +310,6 @@ fn test_manifest_checksum_tamper_detection() {
         "Must flag DRIFT DETECTED when checksum in manifest is invalid"
     );
 
-    // 2. Add an extra nonexistent file entry in manifest
     let with_ghost_file = format!(
         "{}\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  schemas/ghost_schema.json\n",
         original_manifest.trim()
@@ -352,7 +323,6 @@ fn test_manifest_checksum_tamper_detection() {
         "Manifest referencing nonexistent file MUST exit with code 1"
     );
 
-    // 3. Restore original manifest
     fs::write(&manifest_path, original_manifest).unwrap();
     let out_clean = sandbox.run_script(&["--verify"], &[]);
     assert!(
@@ -366,11 +336,9 @@ fn test_missing_manifest_triggers_initial_creation_safely() {
     let sandbox = Sandbox::new("missing_manifest");
     let manifest_path = sandbox.root.join("schemas/.checksums.sha256");
 
-    // Delete manifest
     fs::remove_file(&manifest_path).unwrap();
     assert!(!manifest_path.exists());
 
-    // Run --verify: should generate manifest and succeed
     let out = sandbox.run_script(&["--verify"], &[]);
     assert!(
         out.status.success(),
@@ -381,7 +349,6 @@ fn test_missing_manifest_triggers_initial_creation_safely() {
         "Manifest must be regenerated on disk"
     );
 
-    // Verify all 7 files are in the newly generated manifest
     let new_manifest = fs::read_to_string(&manifest_path).unwrap();
     for &file in MANAGED_FILES {
         assert!(
@@ -392,15 +359,10 @@ fn test_missing_manifest_triggers_initial_creation_safely() {
     }
 }
 
-// =========================================================================
-// CHALLENGE 3: Offline Sync Safety Tests
-// =========================================================================
-
 #[test]
 fn test_offline_sync_network_failure_fallback_preserves_files() {
     let sandbox = Sandbox::new("offline_sync_netfail");
 
-    // Create a mock curl script in a bin directory that always fails (simulating network disconnection)
     let mock_bin_dir = sandbox.root.join("mock_bin");
     fs::create_dir_all(&mock_bin_dir).unwrap();
     let mock_curl = mock_bin_dir.join("curl");
@@ -413,7 +375,6 @@ fn test_offline_sync_network_failure_fallback_preserves_files() {
     perms.set_mode(0o755);
     fs::set_permissions(&mock_curl, perms).unwrap();
 
-    // Snapshot original file contents and checksums
     let mut original_contents = std::collections::HashMap::new();
     for &rel_path in MANAGED_FILES {
         let full_path = sandbox.root.join(rel_path);
@@ -422,11 +383,9 @@ fn test_offline_sync_network_failure_fallback_preserves_files() {
         original_contents.insert(rel_path, content);
     }
 
-    // Set PATH to use mock curl first
     let current_path = std::env::var("PATH").unwrap_or_default();
     let new_path = format!("{}:{}", mock_bin_dir.display(), current_path);
 
-    // Run --sync with mock failing curl
     let out = sandbox.run_script(&["--sync"], &[("PATH", &new_path)]);
     let combined = format!(
         "{}\n{}",
@@ -441,7 +400,6 @@ fn test_offline_sync_network_failure_fallback_preserves_files() {
         "Must inform user that network request failed and fallback was used"
     );
 
-    // Verify that NO files were destroyed, emptied, or corrupted
     for &rel_path in MANAGED_FILES {
         let full_path = sandbox.root.join(rel_path);
         let current_content = fs::read_to_string(&full_path).unwrap();
@@ -453,7 +411,6 @@ fn test_offline_sync_network_failure_fallback_preserves_files() {
         );
     }
 
-    // Verify --verify passes after offline sync
     let out_verify = sandbox.run_script(&["--verify"], &[]);
     assert!(
         out_verify.status.success(),
@@ -465,7 +422,6 @@ fn test_offline_sync_network_failure_fallback_preserves_files() {
 fn test_offline_sync_malformed_upstream_response_rejection() {
     let sandbox = Sandbox::new("offline_sync_malformed");
 
-    // Create a mock curl script that returns HTTP 500 HTML body instead of JSON
     let mock_bin_dir = sandbox.root.join("mock_bin");
     fs::create_dir_all(&mock_bin_dir).unwrap();
     let mock_curl = mock_bin_dir.join("curl");
@@ -488,7 +444,6 @@ exit 0
     perms.set_mode(0o755);
     fs::set_permissions(&mock_curl, perms).unwrap();
 
-    // Snapshot original valid file contents
     let mut original_contents = std::collections::HashMap::new();
     for &rel_path in MANAGED_FILES {
         let full_path = sandbox.root.join(rel_path);
@@ -499,7 +454,6 @@ exit 0
     let current_path = std::env::var("PATH").unwrap_or_default();
     let new_path = format!("{}:{}", mock_bin_dir.display(), current_path);
 
-    // Run --sync with mock malicious/malformed upstream responses
     let out = sandbox.run_script(&["--sync"], &[("PATH", &new_path)]);
     let combined = format!(
         "{}\n{}",
@@ -514,7 +468,6 @@ exit 0
         "Must detect malformed upstream response and preserve local version"
     );
 
-    // Verify all local files remained valid JSON and untouched
     for &rel_path in MANAGED_FILES {
         let full_path = sandbox.root.join(rel_path);
         let current_content = fs::read_to_string(&full_path).unwrap();
@@ -526,17 +479,12 @@ exit 0
         );
     }
 
-    // Verify --verify passes after rejection of malformed download
     let out_verify = sandbox.run_script(&["--verify"], &[]);
     assert!(
         out_verify.status.success(),
         "--verify must succeed with preserved valid schemas"
     );
 }
-
-// =========================================================================
-// CHALLENGE 4: CLI Flags & Manifest Generation Idempotence & Formatting
-// =========================================================================
 
 #[test]
 fn test_manifest_with_comments_and_blank_lines() {
@@ -545,7 +493,6 @@ fn test_manifest_with_comments_and_blank_lines() {
 
     let original_manifest = fs::read_to_string(&manifest_path).unwrap();
 
-    // Inject comments and empty lines into manifest
     let mut modified = String::new();
     modified.push_str("# Canonical Checksum Manifest for ATProto OAuth\n");
     modified.push_str("# Automatically generated - DO NOT EDIT MANUALLY\n\n");
@@ -571,7 +518,6 @@ fn test_manifest_tab_and_whitespace_formatting_handling() {
 
     let original_manifest = fs::read_to_string(&manifest_path).unwrap();
 
-    // Replace double spaces with tabs and multiple spaces
     let mut whitespace_manifest = String::new();
     for line in original_manifest.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
@@ -592,7 +538,6 @@ fn test_manifest_tab_and_whitespace_formatting_handling() {
 fn test_multiple_simultaneous_file_corruptions_reported() {
     let sandbox = Sandbox::new("multiple_corruptions");
 
-    // Corrupt two files simultaneously
     let file1 = sandbox.root.join(MANAGED_FILES[0]);
     let file2 = sandbox.root.join(MANAGED_FILES[3]);
 
@@ -624,13 +569,11 @@ fn test_multiple_simultaneous_file_corruptions_reported() {
 fn test_cli_argument_handling_and_exit_codes() {
     let sandbox = Sandbox::new("cli_args");
 
-    // --help and -h should exit 0
     let out_help = sandbox.run_script(&["--help"], &[]);
     assert!(out_help.status.success());
     let out_h = sandbox.run_script(&["-h"], &[]);
     assert!(out_h.status.success());
 
-    // Invalid flag should exit 1
     let out_invalid = sandbox.run_script(&["--nonexistent-flag"], &[]);
     assert_eq!(out_invalid.status.code(), Some(1));
 
@@ -657,13 +600,8 @@ fn test_generate_manifest_idempotence_and_hash_stability() {
     );
 }
 
-// =========================================================================
-// CHALLENGE 5: Runtime Schema AST Validator Edge Cases & Fuzzing
-// =========================================================================
-
 #[test]
 fn test_runtime_ast_validator_deep_nesting_and_unusual_types() {
-    // Test conversion of various Lexicon types to JSON Schema
     let sample_lexicon = json!({
         "lexicon": 1,
         "id": "com.example.testProcedure",
@@ -718,7 +656,6 @@ fn test_runtime_ast_validator_deep_nesting_and_unusual_types() {
     let normalized = normalize_lex(input_schema);
     let validator = jsonschema::validator_for(&normalized).unwrap();
 
-    // Valid: custom_open_field can be anything (string, number, object, array, bool, null)
     let valid_instances = vec![
         json!({
             "nested_record": { "inner_data": "ok" },
@@ -744,14 +681,11 @@ fn test_runtime_ast_validator_deep_nesting_and_unusual_types() {
         );
     }
 
-    // Invalid: missing required fields
     let invalid_missing = json!({
         "nested_record": { "inner_data": "ok" }
-        // missing custom_open_field
     });
     assert!(!validator.is_valid(&invalid_missing));
 
-    // Invalid: nested_record is wrong type (e.g. integer)
     let invalid_type = json!({
         "nested_record": 999,
         "custom_open_field": true

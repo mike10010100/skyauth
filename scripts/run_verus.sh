@@ -13,7 +13,6 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 VERUS_FILE="${ROOT_DIR}/src/verification/verus_contracts.rs"
 
-# Colors
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'

@@ -43,36 +43,21 @@ use crate::error::SsrfError;
 #[must_use]
 pub fn is_restricted_ipv4(ip: &Ipv4Addr) -> bool {
     let octets = ip.octets();
-    // 0.0.0.0/8
     octets[0] == 0
-    // 10.0.0.0/8
-    || octets[0] == 10
-    // 100.64.0.0/10 (100.64.0.0 - 100.127.255.255)
-    || (octets[0] == 100 && (octets[1] & 0xC0) == 64)
-    // 127.0.0.0/8
-    || octets[0] == 127
-    // 169.254.0.0/16 (includes 169.254.169.254 and 169.254.170.2)
-    || (octets[0] == 169 && octets[1] == 254)
-    // 172.16.0.0/12 (172.16.0.0 - 172.31.255.255)
-    || (octets[0] == 172 && (16..=31).contains(&octets[1]))
-    // 192.0.0.0/24
-    || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
-    // 192.0.2.0/24
-    || (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
-    // 192.88.99.0/24
-    || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)
-    // 192.168.0.0/16
-    || (octets[0] == 192 && octets[1] == 168)
-    // 198.18.0.0/15 (198.18.0.0 - 198.19.255.255)
-    || (octets[0] == 198 && (octets[1] == 18 || octets[1] == 19))
-    // 198.51.100.0/24
-    || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
-    // 203.0.113.0/24
-    || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113)
-    // 224.0.0.0/4 (multicast)
-    || (octets[0] >= 224 && octets[0] <= 239)
-    // 240.0.0.0/4 (reserved / Class E, includes 255.255.255.255)
-    || (octets[0] >= 240)
+        || octets[0] == 10
+        || (octets[0] == 100 && (octets[1] & 0xC0) == 64)
+        || octets[0] == 127
+        || (octets[0] == 169 && octets[1] == 254)
+        || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
+        || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)
+        || (octets[0] == 192 && octets[1] == 168)
+        || (octets[0] == 198 && (octets[1] == 18 || octets[1] == 19))
+        || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
+        || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113)
+        || (octets[0] >= 224 && octets[0] <= 239)
+        || (octets[0] >= 240)
 }
 
 /// Determines if an IPv6 address belongs to a restricted, private, or special-purpose range.
@@ -94,40 +79,27 @@ pub fn is_restricted_ipv4(ip: &Ipv4Addr) -> bool {
 pub fn is_restricted_ipv6(ip: &Ipv6Addr) -> bool {
     let seg = ip.segments();
 
-    // ::/128
     ip.is_unspecified()
-    // ::1/128
     || ip.is_loopback()
-    // ::ffff:0:0/96 (IPv4-mapped IPv6)
     || if let Some(mapped) = ip.to_ipv4_mapped() {
         is_restricted_ipv4(&mapped)
     } else {
         false
     }
-    // ::ffff:0:0:0/96 (IPv4-translated)
     || (seg[0] == 0 && seg[1] == 0 && seg[2] == 0 && seg[3] == 0 && seg[4] == 0xffff && seg[5] == 0)
-    // 64:ff9b::/96
     || (seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2] == 0 && seg[3] == 0 && seg[4] == 0 && seg[5] == 0)
-    // 2001:db8::/32
     || (seg[0] == 0x2001 && seg[1] == 0x0db8)
-    // 2001::/32 (Teredo, RFC 4380, deprecated per RFC 8194): unconditionally blocked.
-    // The embedded IPv4 is XOR-0xffff obfuscated, making reliable re-evaluation
-    // impossible; the entire deprecated prefix is therefore treated as restricted.
+    // Teredo's embedded IPv4 is XOR-0xffff obfuscated, so the whole prefix is blocked rather than re-evaluated.
     || (seg[0] == 0x2001 && seg[1] == 0)
-    // 2002::/16 (6to4, RFC 7526 deprecated): embedded IPv4 in segment bytes
     || (seg[0] == 0x2002 && is_restricted_ipv4(&Ipv4Addr::new(
         ((seg[1] >> 8) & 0xff) as u8,
         (seg[1] & 0xff) as u8,
         ((seg[2] >> 8) & 0xff) as u8,
         (seg[2] & 0xff) as u8,
     )))
-    // fc00::/7
     || ((seg[0] & 0xfe00) == 0xfc00)
-    // fe80::/10
     || ((seg[0] & 0xffc0) == 0xfe80)
-    // fec0::/10
     || ((seg[0] & 0xffc0) == 0xfec0)
-    // ff00::/8
     || ((seg[0] & 0xff00) == 0xff00)
 }
 
@@ -228,8 +200,7 @@ impl SsrfFilter {
             return Err(SsrfError::BlockedHost(host.to_string()));
         }
 
-        // Even in insecure-localhost (test/dev) mode, cloud metadata and arbitrary
-        // `.internal` hostnames stay blocked; only explicit loopback targets are exempted.
+        // Test mode exempts only explicit loopback; metadata and `.internal` hosts stay blocked.
         if self.allow_insecure_localhost {
             let lower_host = host.to_ascii_lowercase();
             let trimmed_host = lower_host.trim_end_matches('.');
@@ -243,7 +214,6 @@ impl SsrfFilter {
             }
         }
 
-        // If host is an IP literal, validate immediately
         if let Ok(ip) = host.parse::<IpAddr>() {
             self.validate_ip(ip)?;
         }
@@ -271,13 +241,11 @@ impl SsrfFilter {
             host.to_string()
         };
 
-        // If host is an IP literal
         if let Ok(ip) = host.parse::<IpAddr>() {
             self.validate_ip(ip)?;
             return Ok((SocketAddr::new(ip, port), host_header));
         }
 
-        // Asynchronous DNS resolution via tokio
         let lookup_target = format!("{host}:{port}");
         let mut addrs: Vec<SocketAddr> = tokio::net::lookup_host(&lookup_target)
             .await
@@ -290,13 +258,12 @@ impl SsrfFilter {
             )));
         }
 
-        // Validate EVERY returned address to prevent multi-IP rebinding
+        // Validate EVERY returned address: one clean IP must not mask a restricted one (multi-IP rebinding).
         for addr in &addrs {
             self.validate_ip(addr.ip())?;
         }
 
-        // When insecure localhost is permitted (for tests/dev), prefer IPv4 (127.0.0.1)
-        // since wiremock and local test servers typically bind to IPv4.
+        // Prefer IPv4 in test mode: wiremock and local servers typically bind 127.0.0.1, not ::1.
         if self.allow_insecure_localhost {
             addrs.sort_by_key(|a| if a.is_ipv4() { 0 } else { 1 });
         }
@@ -487,17 +454,13 @@ mod tests {
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(172, 31, 255, 255))));
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 168, 255, 255))));
-
-        // 172.32.0.1 is public
         assert!(!filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(172, 32, 0, 1))));
     }
 
     #[test]
     fn test_link_local_and_cloud_metadata() {
         let filter = SsrfFilter::new(false);
-        // 169.254.169.254
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))));
-        // 169.254.170.2
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(169, 254, 170, 2))));
     }
 
@@ -506,74 +469,54 @@ mod tests {
         let filter = SsrfFilter::new(false);
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))));
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(100, 127, 255, 254))));
-        // 100.63.255.255 is not CGNAT
         assert!(!filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(100, 63, 255, 255))));
     }
 
     #[test]
     fn test_documentation_and_benchmarking_ranges() {
         let filter = SsrfFilter::new(false);
-        // TEST-NET-1 192.0.2.1
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))));
-        // TEST-NET-2 198.51.100.1
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))));
-        // TEST-NET-3 203.0.113.1
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1))));
-        // Benchmarking 198.18.0.1
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(198, 18, 0, 1))));
-        // 6to4 Relay 192.88.99.1
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 88, 99, 1))));
     }
 
     #[test]
     fn test_multicast_and_reserved_class_e() {
         let filter = SsrfFilter::new(false);
-        // 0.0.0.0
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))));
-        // 224.0.0.1 multicast
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(224, 0, 0, 1))));
-        // 240.0.0.1 Class E
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(240, 0, 0, 1))));
-        // 255.255.255.255
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255))));
     }
 
     #[test]
     fn test_ipv6_ranges() {
         let filter = SsrfFilter::new(false);
-        // Loopback
         assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::LOCALHOST)));
-        // Unspecified
         assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
-        // ULA fc00::/7
         assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 1))));
         assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xfd12, 0, 0, 0, 0, 0, 0, 1))));
-        // Link-Local fe80::/10
         assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1))));
-        // Documentation 2001:db8::/32
         assert!(
             filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1)))
         );
-        // Multicast ff02::1
         assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1))));
     }
 
     #[test]
     fn test_ipv4_mapped_ipv6() {
         let filter = SsrfFilter::new(false);
-        // ::ffff:127.0.0.1
         let mapped_loopback = IpAddr::V6(Ipv4Addr::new(127, 0, 0, 1).to_ipv6_mapped());
         assert!(filter.is_ip_restricted(mapped_loopback));
 
-        // ::ffff:169.254.169.254
         let mapped_metadata = IpAddr::V6(Ipv4Addr::new(169, 254, 169, 254).to_ipv6_mapped());
         assert!(filter.is_ip_restricted(mapped_metadata));
 
-        // ::ffff:10.0.0.1
         let mapped_private = IpAddr::V6(Ipv4Addr::new(10, 0, 0, 1).to_ipv6_mapped());
         assert!(filter.is_ip_restricted(mapped_private));
 
-        // ::ffff:8.8.8.8 (public)
         let mapped_public = IpAddr::V6(Ipv4Addr::new(8, 8, 8, 8).to_ipv6_mapped());
         assert!(!filter.is_ip_restricted(mapped_public));
     }
@@ -649,19 +592,15 @@ mod tests {
 
     #[test]
     fn test_6to4_embedded_ipv4_restriction() {
-        // 2002:0a00:0001:: → embedded 10.0.0.1 (RFC 1918) must be restricted
         let v6 = Ipv6Addr::new(0x2002, 0x0a00, 0x0001, 0, 0, 0, 0, 1);
         assert!(is_restricted_ipv6(&v6));
 
-        // 2002:c68c:2174:: → embedded 198.140.33.116 — public, must NOT be restricted
         let public_6to4 = Ipv6Addr::new(0x2002, 0xc68c, 0x2174, 0, 0, 0, 0, 1);
         assert!(!is_restricted_ipv6(&public_6to4));
     }
 
     #[test]
     fn test_teredo_prefix_blocked() {
-        // The entire 2001:0000::/32 (Teredo, deprecated) prefix is unconditionally blocked,
-        // because the embedded IPv4 is XOR-0xffff obfuscated and cannot be reliably evaluated.
         let teredo = Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0xf7f7, 0xf7f7);
         assert!(is_restricted_ipv6(&teredo));
 

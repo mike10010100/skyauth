@@ -28,27 +28,20 @@ use skyauth::ssrf::{is_blocked_hostname, SsrfFilter};
 mod e2e_harness;
 use e2e_harness::{fixtures::*, MockDnsResolver, MockOAuthEnvironment};
 
-// =========================================================================
-// SECTION 1: SSRF IP & HOSTNAME FILTERING TESTS
-// =========================================================================
-
 #[test]
 fn test_ssrf_all_ipv4_private_rfc1918() {
     let filter = SsrfFilter::new(false);
 
-    // Class A (10.0.0.0/8)
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(10, 255, 255, 255))));
 
-    // Class B (172.16.0.0/12)
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 0))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(172, 20, 10, 5))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(172, 31, 255, 255))));
     assert!(!filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(172, 15, 255, 255))));
     assert!(!filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(172, 32, 0, 0))));
 
-    // Class C (192.168.0.0/16)
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 0))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 168, 255, 255))));
@@ -65,7 +58,6 @@ fn test_ssrf_loopback_and_insecure_localhost() {
     let local_allowed = SsrfFilter::new(true);
     assert!(!local_allowed.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
     assert!(!local_allowed.is_ip_restricted(IpAddr::V6(Ipv6Addr::LOCALHOST)));
-    // But 10.0.0.1 is still restricted even in test mode
     assert!(local_allowed.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
 }
 
@@ -80,30 +72,20 @@ fn test_ssrf_cloud_metadata_link_local() {
 #[test]
 fn test_ssrf_special_purpose_ipv4() {
     let filter = SsrfFilter::new(false);
-    // 0.0.0.0/8
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(0, 255, 255, 255))));
-    // CGNAT 100.64.0.0/10
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(100, 127, 255, 255))));
     assert!(!filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(100, 128, 0, 1))));
-    // IETF Protocol 192.0.0.0/24
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 0, 0, 1))));
-    // TEST-NET-1 192.0.2.0/24
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))));
-    // 6to4 192.88.99.0/24
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 88, 99, 1))));
-    // Benchmarking 198.18.0.0/15
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(198, 18, 0, 1))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(198, 19, 255, 255))));
-    // TEST-NET-2 198.51.100.0/24
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))));
-    // TEST-NET-3 203.0.113.0/24
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1))));
-    // Multicast 224.0.0.0/4
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(224, 0, 0, 1))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(239, 255, 255, 255))));
-    // Class E 240.0.0.0/4 and broadcast 255.255.255.255
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(240, 0, 0, 1))));
     assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255))));
 }
@@ -111,21 +93,14 @@ fn test_ssrf_special_purpose_ipv4() {
 #[test]
 fn test_ssrf_ipv6_special_ranges() {
     let filter = SsrfFilter::new(false);
-    // Unspecified
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
-    // Loopback
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::LOCALHOST)));
-    // ULA fc00::/7
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 1))));
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xfdff, 0, 0, 0, 0, 0, 0, 1))));
-    // Link-local fe80::/10
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1))));
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xfebf, 0, 0, 0, 0, 0, 0, 1))));
-    // Site-local fec0::/10
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xfec0, 0, 0, 0, 0, 0, 0, 1))));
-    // Documentation 2001:db8::/32
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1))));
-    // Multicast ff00::/8
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xff00, 0, 0, 0, 0, 0, 0, 1))));
     assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1))));
 }
@@ -133,19 +108,15 @@ fn test_ssrf_ipv6_special_ranges() {
 #[test]
 fn test_ssrf_ipv4_mapped_ipv6_unpacking() {
     let filter = SsrfFilter::new(false);
-    // ::ffff:127.0.0.1
     let mapped_loopback = IpAddr::V6(Ipv4Addr::new(127, 0, 0, 1).to_ipv6_mapped());
     assert!(filter.is_ip_restricted(mapped_loopback));
 
-    // ::ffff:169.254.169.254
     let mapped_meta = IpAddr::V6(Ipv4Addr::new(169, 254, 169, 254).to_ipv6_mapped());
     assert!(filter.is_ip_restricted(mapped_meta));
 
-    // ::ffff:192.168.1.1
     let mapped_priv = IpAddr::V6(Ipv4Addr::new(192, 168, 1, 1).to_ipv6_mapped());
     assert!(filter.is_ip_restricted(mapped_priv));
 
-    // ::ffff:8.8.8.8
     let mapped_public = IpAddr::V6(Ipv4Addr::new(8, 8, 8, 8).to_ipv6_mapped());
     assert!(!filter.is_ip_restricted(mapped_public));
 }
@@ -163,13 +134,8 @@ fn test_ssrf_blocked_hostnames() {
     assert!(!is_blocked_hostname("plc.directory"));
 }
 
-// =========================================================================
-// SECTION 2: HANDLE RESOLUTION & SYNTAX TESTS
-// =========================================================================
-
 #[test]
 fn test_handle_normalization_and_syntax() {
-    // Normalization
     assert_eq!(
         normalize_handle("alice.bsky.social").unwrap(),
         "alice.bsky.social"
@@ -183,7 +149,6 @@ fn test_handle_normalization_and_syntax() {
         "alice.bsky.social"
     );
 
-    // Exact max length bounds (244 chars)
     let label = "a".repeat(60);
     let valid_long = format!("{label}.{label}.{label}.com");
     assert!(valid_long.len() <= 244);
@@ -195,7 +160,6 @@ fn test_handle_normalization_and_syntax() {
         Err(IdentityError::InvalidHandleSyntax(_))
     ));
 
-    // Disallowed TLDs
     for tld in &[
         "alt",
         "arpa",
@@ -217,7 +181,6 @@ fn test_handle_normalization_and_syntax() {
         Err(IdentityError::DisallowedHandleTld(_))
     ));
 
-    // Hyphen bounds
     assert!(matches!(
         normalize_handle("-user.bsky.social"),
         Err(IdentityError::InvalidHandleSyntax(_))
@@ -227,7 +190,6 @@ fn test_handle_normalization_and_syntax() {
         Err(IdentityError::InvalidHandleSyntax(_))
     ));
 
-    // Raw IP addresses
     assert!(matches!(
         normalize_handle("192.168.1.1"),
         Err(IdentityError::InvalidHandleSyntax(_))
@@ -238,7 +200,6 @@ fn test_handle_normalization_and_syntax() {
     ));
 }
 
-// Mock resolver bridge for testing IdentityResolver with MockDnsResolver
 #[derive(Debug)]
 struct MockDnsBridge(MockDnsResolver);
 
@@ -269,7 +230,6 @@ impl DnsTxtResolver for MockDnsBridge {
 async fn test_identity_resolver_dns_txt_and_https_fallback() {
     let env = MockOAuthEnvironment::start_default().await;
 
-    // 1. DNS TXT Resolution
     let resolver = IdentityResolver::builder()
         .allow_insecure_localhost(true)
         .plc_directory_url(env.plc.uri())
@@ -279,16 +239,12 @@ async fn test_identity_resolver_dns_txt_and_https_fallback() {
     let did = resolver.resolve_handle(TEST_ALICE_HANDLE).await.unwrap();
     assert_eq!(did, TEST_ALICE_DID);
 
-    // 2. HTTPS Fallback (when DNS has no record)
     let fallback_resolver = IdentityResolver::builder()
         .allow_insecure_localhost(true)
         .plc_directory_url(env.plc.uri())
-        .dns_resolver(Arc::new(MockDnsBridge(MockDnsResolver::new()))) // Empty DNS
+        .dns_resolver(Arc::new(MockDnsBridge(MockDnsResolver::new())))
         .build();
 
-    // Verify resolve_handle falls back to HTTPS
-    // With empty DNS, resolving alice falls back to HTTPS /.well-known/atproto-did
-    // Point Alice to pds uri
     let pds_url = Url::parse(&env.pds.uri()).unwrap();
     let port = pds_url.port().unwrap();
 
@@ -303,7 +259,6 @@ async fn test_identity_resolver_dns_txt_and_https_fallback() {
         }],
     };
 
-    // Mount /.well-known/did.json on PDS
     let did_json_body = serde_json::to_string(&did_doc).unwrap();
     Mock::given(method("GET"))
         .and(path("/.well-known/did.json"))
@@ -347,10 +302,6 @@ async fn test_identity_resolver_ambiguous_dns_records_rejected() {
     ));
 }
 
-// =========================================================================
-// SECTION 3: DID RESOLUTION & BIDIRECTIONAL VERIFICATION TESTS
-// =========================================================================
-
 #[tokio::test]
 async fn test_did_plc_resolution_and_pds_extraction() {
     let env = MockOAuthEnvironment::start_default().await;
@@ -384,7 +335,6 @@ async fn test_did_web_resolution() {
         }],
     };
 
-    // Mount /.well-known/did.json on PDS
     let did_json_body = serde_json::to_string(&did_doc).unwrap();
     Mock::given(method("GET"))
         .and(path("/.well-known/did.json"))
@@ -413,7 +363,6 @@ async fn test_did_web_resolution() {
 async fn test_bidirectional_handle_mismatch_fails() {
     let env = MockOAuthEnvironment::start_default().await;
 
-    // Start a dedicated mock PLC directory for mismatch testing
     let mock_plc = e2e_harness::MockPlcDirectory::start().await;
     mock_plc
         .mount_did_document(TEST_ALICE_DID, "attacker.com", &env.pds.uri())
@@ -428,10 +377,6 @@ async fn test_bidirectional_handle_mismatch_fails() {
     let res = resolver.resolve_ident(TEST_ALICE_HANDLE).await;
     assert!(matches!(res, Err(IdentityError::HandleDidMismatch(_))));
 }
-
-// =========================================================================
-// SECTION 4: OAUTH DISCOVERY & ENDPOINT VALIDATION TESTS
-// =========================================================================
 
 #[tokio::test]
 async fn test_full_oauth_discovery_pipeline_success() {
@@ -467,7 +412,6 @@ async fn test_full_oauth_discovery_pipeline_success() {
 async fn test_discovery_oidc_fallback() {
     let env = MockOAuthEnvironment::start_default().await;
 
-    // Mount 404 on /.well-known/oauth-authorization-server, but 200 on /.well-known/openid-configuration
     Mock::given(method("GET"))
         .and(path("/.well-known/oauth-authorization-server"))
         .respond_with(ResponseTemplate::new(404))
@@ -515,7 +459,6 @@ async fn test_discovery_oidc_fallback() {
 
 #[test]
 fn test_auth_server_capability_violations() {
-    // Valid baseline
     let valid_base = AuthorizationServerMetadata {
         issuer: "https://auth.example.com".to_string(),
         authorization_endpoint: "https://auth.example.com/oauth/authorize".to_string(),
@@ -540,7 +483,6 @@ fn test_auth_server_capability_violations() {
     };
     assert!(validate_auth_server_capabilities(&valid_base, "https://auth.example.com").is_ok());
 
-    // Missing ES256 DPoP
     let no_es256 = AuthorizationServerMetadata {
         dpop_signing_alg_values_supported: vec!["RS256".to_string()],
         ..valid_base.clone()
@@ -550,7 +492,6 @@ fn test_auth_server_capability_violations() {
         Err(DiscoveryError::MissingDpopAlgorithm(_))
     ));
 
-    // Missing S256 PKCE
     let no_s256 = AuthorizationServerMetadata {
         code_challenge_methods_supported: vec!["plain".to_string()],
         ..valid_base.clone()
@@ -560,7 +501,6 @@ fn test_auth_server_capability_violations() {
         Err(DiscoveryError::MissingPkceMethod(_))
     ));
 
-    // Missing PAR Endpoint
     let no_par = AuthorizationServerMetadata {
         pushed_authorization_request_endpoint: String::new(),
         ..valid_base.clone()
@@ -570,7 +510,6 @@ fn test_auth_server_capability_violations() {
         Err(DiscoveryError::MissingParEndpoint(_))
     ));
 
-    // PAR not required
     let par_false = AuthorizationServerMetadata {
         require_pushed_authorization_requests: false,
         ..valid_base.clone()
@@ -580,7 +519,6 @@ fn test_auth_server_capability_violations() {
         Err(DiscoveryError::ParNotRequired(_))
     ));
 
-    // Missing response type "code"
     let no_code = AuthorizationServerMetadata {
         response_types_supported: vec!["token".to_string()],
         ..valid_base.clone()
@@ -590,7 +528,6 @@ fn test_auth_server_capability_violations() {
         Err(DiscoveryError::MissingResponseType(_))
     ));
 
-    // Missing grant type "authorization_code"
     let no_auth_code = AuthorizationServerMetadata {
         grant_types_supported: vec!["refresh_token".to_string()],
         ..valid_base.clone()
@@ -600,7 +537,6 @@ fn test_auth_server_capability_violations() {
         Err(DiscoveryError::MissingGrantType { .. })
     ));
 
-    // Missing token auth method
     let no_auth_method = AuthorizationServerMetadata {
         token_endpoint_auth_methods_supported: vec!["client_secret_basic".to_string()],
         ..valid_base.clone()
@@ -610,7 +546,6 @@ fn test_auth_server_capability_violations() {
         Err(DiscoveryError::MissingTokenAuthMethod(_))
     ));
 
-    // Missing ES256 in token_endpoint_auth_signing_alg_values_supported
     let no_signing_alg = AuthorizationServerMetadata {
         token_endpoint_auth_signing_alg_values_supported: vec!["RS256".to_string()],
         ..valid_base.clone()
@@ -620,7 +555,6 @@ fn test_auth_server_capability_violations() {
         Err(DiscoveryError::MissingTokenAuthSigningAlg(_))
     ));
 
-    // Advertised "none" in token_endpoint_auth_signing_alg_values_supported
     let none_signing_alg = AuthorizationServerMetadata {
         token_endpoint_auth_signing_alg_values_supported: vec![
             "ES256".to_string(),
@@ -633,7 +567,6 @@ fn test_auth_server_capability_violations() {
         Err(DiscoveryError::InvalidTokenAuthSigningAlg(_))
     ));
 
-    // Missing "atproto" scope
     let no_atproto_scope = AuthorizationServerMetadata {
         scopes_supported: vec!["email".to_string(), "profile".to_string()],
         ..valid_base.clone()
@@ -643,7 +576,6 @@ fn test_auth_server_capability_violations() {
         Err(DiscoveryError::MissingAtprotoScope(_))
     ));
 
-    // Missing iss support
     let no_iss = AuthorizationServerMetadata {
         authorization_response_iss_parameter_supported: false,
         ..valid_base.clone()
@@ -653,7 +585,6 @@ fn test_auth_server_capability_violations() {
         Err(DiscoveryError::MissingIssParameterSupport(_))
     ));
 
-    // Missing client metadata support
     let no_client_meta = AuthorizationServerMetadata {
         client_id_metadata_document_supported: false,
         ..valid_base.clone()
@@ -663,7 +594,6 @@ fn test_auth_server_capability_violations() {
         Err(DiscoveryError::MissingClientMetadataSupport(_))
     ));
 
-    // Issuer Mismatch
     let issuer_mismatch = AuthorizationServerMetadata {
         issuer: "https://imposter.example.com".to_string(),
         ..valid_base.clone()
@@ -673,7 +603,6 @@ fn test_auth_server_capability_violations() {
         Err(DiscoveryError::IssuerMismatch { .. })
     ));
 
-    // Issuer with subpath (not origin-only)
     let issuer_subpath = AuthorizationServerMetadata {
         issuer: "https://auth.example.com/oauth".to_string(),
         ..valid_base.clone()
@@ -683,7 +612,6 @@ fn test_auth_server_capability_violations() {
         Err(DiscoveryError::InvalidAuthorizationServerUrl(_))
     ));
 
-    // Issuer with explicit default port 443
     let issuer_port = AuthorizationServerMetadata {
         issuer: "https://auth.example.com:443".to_string(),
         ..valid_base
@@ -699,7 +627,6 @@ async fn test_protected_resource_capability_violations() {
     let mock_pds = MockServer::start().await;
     let filter = SsrfFilter::new(true);
 
-    // 1. Multiple authorization servers (must be rejected, exactly 1 required)
     Mock::given(method("GET"))
         .and(path("/.well-known/oauth-protected-resource"))
         .respond_with(
@@ -725,7 +652,6 @@ async fn test_protected_resource_capability_violations() {
         "Multiple authorization servers must fail with MultipleAuthorizationServers"
     );
 
-    // 2. Authorization server URL with subpath (not origin-only)
     mock_pds.reset().await;
     Mock::given(method("GET"))
         .and(path("/.well-known/oauth-protected-resource"))
@@ -751,7 +677,6 @@ async fn test_protected_resource_capability_violations() {
         "AS URL with subpath must fail with InvalidAuthorizationServerUrl"
     );
 
-    // 3. Resource mismatch (resource does not match PDS origin)
     mock_pds.reset().await;
     Mock::given(method("GET"))
         .and(path("/.well-known/oauth-protected-resource"))
@@ -774,7 +699,6 @@ async fn test_protected_resource_capability_violations() {
         "Mismatched resource must fail with ResourceMismatch"
     );
 
-    // 4. Authorization server URL with explicit default port 443
     mock_pds.reset().await;
     Mock::given(method("GET"))
         .and(path("/.well-known/oauth-protected-resource"))

@@ -206,6 +206,16 @@ impl<T: AccessTokenValidator + ?Sized> AccessTokenValidator for Arc<T> {
 }
 
 /// Production-grade JWT access token validator enforcing RFC 9068, RFC 9449, and AT Protocol token binding.
+///
+/// # Fail-Closed Configuration Contract
+///
+/// [`JwtAccessTokenValidator::verify_token_sync`] **refuses every token** until both
+/// [`JwtAccessTokenValidator::with_expected_issuer`] and
+/// [`JwtAccessTokenValidator::with_expected_audience`] have been configured. This is
+/// deliberate: an issuer/audience check that is present-but-optional silently degrades
+/// to "accept tokens minted by any trusted key for any audience", which is exactly the
+/// cross-authorization-server and cross-resource-server confusion RFC 9068 § 4 exists
+/// to prevent.
 #[derive(Debug, Clone)]
 pub struct JwtAccessTokenValidator {
     trusted_keys: HashMap<String, VerifyingKey>,
@@ -253,6 +263,10 @@ impl JwtAccessTokenValidator {
     }
 
     /// Sets the expected authorization server issuer URL (`iss`).
+    ///
+    /// **Mandatory**: token validation fails closed with [`IntegrationError::AuthFailed`]
+    /// until an expected issuer is configured, and the token's `iss` must match it
+    /// (compared after trimming and trailing-slash normalization) per RFC 9449 § 7.2.
     #[must_use]
     pub fn with_expected_issuer(mut self, issuer: impl Into<String>) -> Self {
         self.expected_issuer = Some(issuer.into());
@@ -260,6 +274,12 @@ impl JwtAccessTokenValidator {
     }
 
     /// Sets the expected target resource server audience (`aud`).
+    ///
+    /// **Mandatory**: token validation fails closed with [`IntegrationError::AuthFailed`]
+    /// until an expected audience is configured, and the token's `aud` must contain it
+    /// per RFC 9068 § 4 (one AS signing key commonly mints tokens for several resource
+    /// servers; without audience matching, resource server A would accept tokens minted
+    /// for resource server B).
     #[must_use]
     pub fn with_expected_audience(mut self, audience: impl Into<String>) -> Self {
         self.expected_audience = Some(audience.into());
@@ -311,7 +331,6 @@ impl JwtAccessTokenValidator {
         let signature_bytes = base64url_decode(parts[2])
             .map_err(|e| IntegrationError::Token(TokenError::MalformedToken(e.to_string())))?;
 
-        // 1. Parse header
         let header_val: serde_json::Value = serde_json::from_slice(&header_bytes)
             .map_err(|e| IntegrationError::Token(TokenError::MalformedToken(e.to_string())))?;
 
@@ -347,7 +366,6 @@ impl JwtAccessTokenValidator {
 
         let kid = header_val.get("kid").and_then(|v| v.as_str());
 
-        // 2. Resolve verifying key
         let verifying_key = if let Some(k) = kid {
             match self.trusted_keys.get(k) {
                 Some(key) => Some(key),
@@ -367,16 +385,13 @@ impl JwtAccessTokenValidator {
             )
         })?;
 
-        // 3. Cryptographic signature check
         let signing_input = format!("{}.{}", parts[0], parts[1]);
         verify_p256_raw(verifying_key, signing_input.as_bytes(), &signature_bytes)
             .map_err(|_| IntegrationError::Token(TokenError::InvalidSignature))?;
 
-        // 4. Parse payload
         let claims: JwtAccessTokenClaims = serde_json::from_slice(&payload_bytes)
             .map_err(|e| IntegrationError::Token(TokenError::MalformedToken(e.to_string())))?;
 
-        // 5. Check timestamps
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| IntegrationError::Internal(e.to_string()))?
@@ -399,11 +414,18 @@ impl JwtAccessTokenValidator {
             }
         }
 
-        // 6. Check Issuer
+        // RFC 9449 § 7.2: issuer is attacker-controlled; a presence check alone would let an unrelated trusted AS's token through, hence the fail-closed gate below.
         if claims.iss.trim().is_empty() {
             return Err(IntegrationError::Token(TokenError::MissingIssuer));
         }
-        if let Some(ref exp_iss) = self.expected_issuer {
+        let Some(ref exp_iss) = self.expected_issuer else {
+            return Err(IntegrationError::AuthFailed(
+                "Validator misconfigured: an expected issuer is required before any \
+                 access token can be accepted (RFC 9068 § 4 / RFC 9449 § 7.2)"
+                    .to_string(),
+            ));
+        };
+        {
             let norm_expected = exp_iss.trim().trim_end_matches('/');
             let norm_actual = claims.iss.trim().trim_end_matches('/');
             if norm_expected != norm_actual {
@@ -414,11 +436,18 @@ impl JwtAccessTokenValidator {
             }
         }
 
-        // 7. Check Audience
+        // RFC 9068 § 4: audience must identify this resource server — one AS key mints tokens for several resource servers, so accepting any audience opens cross-RS token-confusion attacks.
         if claims.aud.is_none() {
             return Err(IntegrationError::Token(TokenError::MissingAudience));
         }
-        if let Some(ref exp_aud) = self.expected_audience {
+        let Some(ref exp_aud) = self.expected_audience else {
+            return Err(IntegrationError::AuthFailed(
+                "Validator misconfigured: an expected audience is required before any \
+                 access token can be accepted (RFC 9068 § 4)"
+                    .to_string(),
+            ));
+        };
+        {
             let matches_aud = match &claims.aud {
                 Some(serde_json::Value::String(s)) => s == exp_aud,
                 Some(serde_json::Value::Array(arr)) => arr
@@ -438,7 +467,6 @@ impl JwtAccessTokenValidator {
             }
         }
 
-        // 8. Check Subject (DID)
         if claims.sub.trim().is_empty() {
             return Err(IntegrationError::Token(TokenError::MissingDid));
         }
@@ -452,7 +480,6 @@ impl JwtAccessTokenValidator {
             }
         }
 
-        // 9. Check Scopes
         if !self.required_scopes.is_empty() {
             let granted_scopes: Vec<&str> = claims
                 .scope
@@ -469,7 +496,6 @@ impl JwtAccessTokenValidator {
             }
         }
 
-        // 10. Check cnf.jkt DPoP Key Binding (RFC 9449 § 6.1 item 4)
         if !constant_time_eq(claims.cnf.jkt.as_bytes(), dpop_thumbprint.as_bytes()) {
             return Err(IntegrationError::Token(TokenError::CnfThumbprintMismatch {
                 expected_jkt: claims.cnf.jkt,
@@ -629,7 +655,6 @@ impl InMemoryTokenValidator {
             }
         }
 
-        // Validate DPoP key binding
         if !constant_time_eq(entry.dpop_thumbprint.as_bytes(), dpop_thumbprint.as_bytes()) {
             return Err(IntegrationError::Token(TokenError::CnfThumbprintMismatch {
                 expected_jkt: entry.dpop_thumbprint.clone(),
@@ -715,7 +740,6 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        // Token issued to Alice's DPoP key
         let claims = JwtAccessTokenClaims::new(
             "https://auth.example.com",
             "did:plc:alice123",
@@ -726,9 +750,11 @@ mod tests {
 
         let jwt = claims.sign_jwt(&auth_key, None).unwrap();
 
-        let validator = JwtAccessTokenValidator::new().with_verifying_key(auth_verifying_key);
+        let validator = JwtAccessTokenValidator::new()
+            .with_verifying_key(auth_verifying_key)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
 
-        // Attacker presents Alice's token with Attacker's DPoP proof key
         let err = validator
             .verify_token_sync(&jwt, &attacker_dpop_key.jwk_thumbprint())
             .unwrap_err();
@@ -746,7 +772,6 @@ mod tests {
         let client_dpop_key = DPoPKey::generate();
         let jkt = client_dpop_key.jwk_thumbprint();
 
-        // Expired 1000s ago
         let claims =
             JwtAccessTokenClaims::new("https://auth.example.com", "did:plc:alice123", 1000, &jkt)
                 .with_audience("https://pds.example.com");
@@ -754,6 +779,8 @@ mod tests {
         let jwt = claims.sign_jwt(&auth_key, None).unwrap();
         let validator = JwtAccessTokenValidator::new()
             .with_verifying_key(auth_verifying_key)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com")
             .with_clock_skew(Duration::ZERO);
 
         let err = validator.verify_token_sync(&jwt, &jkt).unwrap_err();
@@ -786,7 +813,8 @@ mod tests {
         let jwt = claims.sign_jwt(&auth_key, None).unwrap();
         let validator = JwtAccessTokenValidator::new()
             .with_verifying_key(auth_verifying_key)
-            .with_expected_issuer("https://auth.example.com");
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
 
         let err = validator.verify_token_sync(&jwt, &jkt).unwrap_err();
         assert!(matches!(
@@ -818,6 +846,7 @@ mod tests {
         let jwt = claims.sign_jwt(&auth_key, None).unwrap();
         let validator = JwtAccessTokenValidator::new()
             .with_verifying_key(auth_verifying_key)
+            .with_expected_issuer("https://auth.example.com")
             .with_expected_audience("https://pds.example.com");
 
         let err = validator.verify_token_sync(&jwt, &jkt).unwrap_err();
@@ -837,12 +866,10 @@ mod tests {
 
         validator.register_token(token, did, &jkt, Some("atproto".to_string()), None);
 
-        // Valid presentation
         let user = validator.validate_sync(token, &jkt).unwrap();
         assert_eq!(user.did, did);
         assert_eq!(user.dpop_thumbprint, jkt);
 
-        // Presented with wrong DPoP key
         let wrong_key = DPoPKey::generate();
         let err = validator
             .validate_sync(token, &wrong_key.jwk_thumbprint())
@@ -852,7 +879,6 @@ mod tests {
             IntegrationError::Token(TokenError::CnfThumbprintMismatch { .. })
         ));
 
-        // Revoke token
         validator.revoke_token(token);
         let err_revoked = validator.validate_sync(token, &jkt).unwrap_err();
         assert!(matches!(
@@ -863,9 +889,7 @@ mod tests {
 
     #[test]
     fn test_jwt_access_token_wrong_typ_rejected() {
-        // RFC 9068 § 4: access tokens must carry typ 'at+jwt'. A well-signed generic
-        // JWT ('JWT' typ, or no typ at all) minted by the same key must be rejected,
-        // preventing confusion attacks across token types sharing a signing key.
+        // RFC 9068 § 4: a well-signed generic JWT (typ 'JWT' or none) from the same key must be rejected to prevent confusion attacks across token types.
         let auth_key = SigningKey::random(&mut thread_rng());
         let client_jkt = DPoPKey::generate().jwk_thumbprint();
         let now = SystemTime::now()
@@ -881,7 +905,6 @@ mod tests {
         )
         .with_audience("https://pds.example.com");
 
-        // Sign with typ JWT via low-level construction (bypass sign_jwt's typ)
         let payload_str = serde_json::to_string(&claims).unwrap();
         let header_typ_jwt = r#"{"alg":"ES256","typ":"JWT"}"#;
         let header_b64 = base64url_encode(header_typ_jwt.as_bytes());
@@ -890,8 +913,10 @@ mod tests {
         let sig = sign_p256_raw(&auth_key, signing_input.as_bytes()).unwrap();
         let jwt_wrong_typ = format!("{signing_input}.{}", base64url_encode(&sig));
 
-        let validator =
-            JwtAccessTokenValidator::new().with_verifying_key(*auth_key.verifying_key());
+        let validator = JwtAccessTokenValidator::new()
+            .with_verifying_key(*auth_key.verifying_key())
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
 
         let err = validator
             .verify_token_sync(&jwt_wrong_typ, &client_jkt)
@@ -905,9 +930,7 @@ mod tests {
 
     #[test]
     fn test_jwt_access_token_unknown_kid_fail_closed() {
-        // Fail-closed kid resolution: the validator registers trusted key "key-2024".
-        // A well-signed token naming a DIFFERENT kid ("key-1999") must be rejected —
-        // not silently verified against the trusted key (kid is attacker-controlled).
+        // Fail-closed kid resolution: kid is attacker-controlled, so a well-signed token naming an unknown kid must be rejected, not verified against the registered trusted key.
         let auth_key = SigningKey::random(&mut thread_rng());
         let client_jkt = DPoPKey::generate().jwk_thumbprint();
         let now = SystemTime::now()
@@ -923,7 +946,6 @@ mod tests {
         )
         .with_audience("https://pds.example.com");
 
-        // Header claims kid "key-1999", which the registry does not know.
         let payload_str = serde_json::to_string(&claims).unwrap();
         let header_unknown_kid = r#"{"alg":"ES256","typ":"at+jwt","kid":"key-1999"}"#;
         let header_b64 = base64url_encode(header_unknown_kid.as_bytes());
@@ -932,8 +954,10 @@ mod tests {
         let sig = sign_p256_raw(&auth_key, signing_input.as_bytes()).unwrap();
         let jwt = format!("{signing_input}.{}", base64url_encode(&sig));
 
-        let validator =
-            JwtAccessTokenValidator::new().with_trusted_key("key-2024", *auth_key.verifying_key());
+        let validator = JwtAccessTokenValidator::new()
+            .with_trusted_key("key-2024", *auth_key.verifying_key())
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
 
         let err = validator.verify_token_sync(&jwt, &client_jkt).unwrap_err();
         assert!(matches!(err, IntegrationError::AuthFailed(_)));
@@ -941,8 +965,7 @@ mod tests {
 
     #[test]
     fn test_jwt_access_token_missing_audience_rejected() {
-        // Presence gate: a token lacking aud is rejected even when the validator
-        // has no expected audience configured (fail-closed presence check).
+        // Fail-closed presence check: aud absence is rejected before expected-audience matching runs.
         let auth_key = SigningKey::random(&mut thread_rng());
         let client_jkt = DPoPKey::generate().jwk_thumbprint();
         let now = SystemTime::now()
@@ -958,8 +981,10 @@ mod tests {
         );
         let jwt_no_aud = claims_no_aud.sign_jwt(&auth_key, None).unwrap();
 
-        let validator =
-            JwtAccessTokenValidator::new().with_verifying_key(*auth_key.verifying_key());
+        let validator = JwtAccessTokenValidator::new()
+            .with_verifying_key(*auth_key.verifying_key())
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
 
         let err = validator
             .verify_token_sync(&jwt_no_aud, &client_jkt)
@@ -968,5 +993,65 @@ mod tests {
             err,
             IntegrationError::Token(TokenError::MissingAudience)
         ));
+    }
+
+    #[test]
+    fn test_jwt_access_token_unconfigured_audience_fails_closed() {
+        // RFC 9068 § 4 fail-closed gate: without a configured expected audience, every token must be refused rather than any audience accepted (cross-RS confusion).
+        let auth_key = SigningKey::random(&mut thread_rng());
+        let client_jkt = DPoPKey::generate().jwk_thumbprint();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let claims = JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:aud-closed-test",
+            now + 3600,
+            &client_jkt,
+        )
+        .with_audience("https://some-other-resource.example.com");
+        let jwt = claims.sign_jwt(&auth_key, None).unwrap();
+
+        let validator = JwtAccessTokenValidator::new()
+            .with_verifying_key(*auth_key.verifying_key())
+            .with_expected_issuer("https://auth.example.com");
+
+        let err = validator.verify_token_sync(&jwt, &client_jkt).unwrap_err();
+        assert!(
+            matches!(err, IntegrationError::AuthFailed(ref msg) if msg.contains("audience")),
+            "expected misconfiguration (missing expected audience) rejection, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_jwt_access_token_unconfigured_issuer_fails_closed() {
+        // RFC 9449 § 7.2 fail-closed gate: without a configured expected issuer, every token must be refused rather than any issuer accepted.
+        let auth_key = SigningKey::random(&mut thread_rng());
+        let client_jkt = DPoPKey::generate().jwk_thumbprint();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let claims = JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:iss-closed-test",
+            now + 3600,
+            &client_jkt,
+        )
+        .with_audience("https://pds.example.com");
+        let jwt = claims.sign_jwt(&auth_key, None).unwrap();
+
+        let validator = JwtAccessTokenValidator::new()
+            .with_verifying_key(*auth_key.verifying_key())
+            .with_expected_audience("https://pds.example.com");
+
+        let err = validator.verify_token_sync(&jwt, &client_jkt).unwrap_err();
+        assert!(
+            matches!(err, IntegrationError::AuthFailed(ref msg) if msg.contains("issuer")),
+            "expected misconfiguration (missing expected issuer) rejection, got {err:?}"
+        );
     }
 }

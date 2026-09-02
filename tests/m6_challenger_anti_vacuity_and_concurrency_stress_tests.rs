@@ -56,13 +56,8 @@ fn mock_stored_state(state: &str) -> StoredStateEntry {
     }
 }
 
-// =========================================================================
-// SECTION 1: Anti-Vacuity Reachability Stress & Non-Trivial Proof Invariants
-// =========================================================================
-
 #[test]
 fn test_anti_vacuity_exhaustive_cover_tags_and_reachability() {
-    // 1. Execute proof 1: single use state consumption
     proof_single_use_state_consumption();
     let proof1_tags = [
         "uninitialized_state_rejected",
@@ -74,7 +69,6 @@ fn test_anti_vacuity_exhaustive_cover_tags_and_reachability() {
     ];
     global_coverage().assert_all_covered(&proof1_tags);
 
-    // 2. Execute proof 2: ssrf rejection
     proof_ssrf_restricted_ip_rejection();
     let proof2_tags = [
         "rfc1918_10_blocked",
@@ -90,7 +84,6 @@ fn test_anti_vacuity_exhaustive_cover_tags_and_reachability() {
     ];
     global_coverage().assert_all_covered(&proof2_tags);
 
-    // 3. Execute proof 3: pkce bounds
     proof_pkce_s256_verifier_bounds();
     let proof3_tags = [
         "valid_min_length_43_verifier",
@@ -103,7 +96,6 @@ fn test_anti_vacuity_exhaustive_cover_tags_and_reachability() {
     ];
     global_coverage().assert_all_covered(&proof3_tags);
 
-    // 4. Execute proof 4: constant time eq soundness
     proof_constant_time_eq_soundness();
     let proof4_tags = [
         "equal_non_empty_slices_true",
@@ -115,7 +107,6 @@ fn test_anti_vacuity_exhaustive_cover_tags_and_reachability() {
     ];
     global_coverage().assert_all_covered(&proof4_tags);
 
-    // 5. Execute proof 5: dpop htu normalization
     proof_dpop_htu_normalization_invariants();
     let proof5_tags = [
         "query_stripped_success",
@@ -128,7 +119,6 @@ fn test_anti_vacuity_exhaustive_cover_tags_and_reachability() {
     ];
     global_coverage().assert_all_covered(&proof5_tags);
 
-    // Verify all combined tags (total = 6 + 10 + 7 + 6 + 7 = 36 unique tags)
     let mut all_tags = Vec::new();
     all_tags.extend_from_slice(&proof1_tags);
     all_tags.extend_from_slice(&proof2_tags);
@@ -148,22 +138,18 @@ fn test_anti_vacuity_exhaustive_cover_tags_and_reachability() {
 fn test_anti_vacuity_gate_rejects_missing_or_false_cover_conditions() {
     let tracker = AntiVacuityCoverage::new();
 
-    // Condition is true -> covered
     tracker.cover("valid_reachability_tag", true);
     assert_eq!(tracker.covered_count(), 1);
     tracker.assert_all_covered(&["valid_reachability_tag"]);
 
-    // Condition is false -> NOT covered
     tracker.cover("false_condition_tag", false);
     assert_eq!(tracker.covered_count(), 1);
 
-    // Asserting on false condition must panic
     let result_false = std::panic::catch_unwind(|| {
         tracker.assert_all_covered(&["false_condition_tag"]);
     });
     assert!(result_false.is_err(), "Expected panic for false cover tag");
 
-    // Asserting on unhit tag must panic
     let result_unhit = std::panic::catch_unwind(|| {
         tracker.assert_all_covered(&["completely_unhit_tag"]);
     });
@@ -172,26 +158,19 @@ fn test_anti_vacuity_gate_rejects_missing_or_false_cover_conditions() {
 
 #[test]
 fn test_anti_vacuity_proof_models_preconditions_and_edge_invariants() {
-    // 1. State machine model: invalid inputs
     let mut model = OAuthStateTransitionModel::new();
 
-    // Empty state_id must fail precondition
     assert!(!model.insert("", "client", 100, 0));
     assert!(model.take_state("", 0).is_none());
 
-    // Zero TTL must fail precondition
     assert!(!model.insert("state_zero_ttl", "client", 0, 0));
     assert!(model.take_state("state_zero_ttl", 0).is_none());
 
-    // Monotonic time clock warp / backward ticks
     assert!(model.insert("state_warp", "client", 50, 100));
-    // Querying with earlier tick (e.g. tick 50) when created at 100:
-    // saturating_sub(50, 100) = 0 < 50 TTL -> still pending, takes successfully
     let taken_warp = model.take_state("state_warp", 50);
     assert!(taken_warp.is_some());
     assert!(model.verify_single_use_invariant("state_warp"));
 
-    // 2. PKCE Formal Spec character domain exhaustive byte testing
     for b in 0..=255u8 {
         let is_unreserved = PkceFormalSpec::is_unreserved_char(b);
         let expected =
@@ -203,7 +182,6 @@ fn test_anti_vacuity_proof_models_preconditions_and_edge_invariants() {
         );
     }
 
-    // 3. Constant-time bitwise model bit-flip exhaustive testing
     let original = [0xAAu8; 32];
     for byte_idx in 0..32 {
         for bit_idx in 0..8 {
@@ -221,8 +199,6 @@ fn test_anti_vacuity_proof_models_preconditions_and_edge_invariants() {
         }
     }
 
-    // 4. SSRF Subspace exact boundary testing
-    // RFC 1918 10.0.0.0/8 boundaries
     assert!(!SsrfFormalSpec::spec_is_restricted_ipv4(&Ipv4Addr::new(
         9, 255, 255, 255
     )));
@@ -236,7 +212,6 @@ fn test_anti_vacuity_proof_models_preconditions_and_edge_invariants() {
         11, 0, 0, 0
     )));
 
-    // RFC 1918 172.16.0.0/12 boundaries
     assert!(!SsrfFormalSpec::spec_is_restricted_ipv4(&Ipv4Addr::new(
         172, 15, 255, 255
     )));
@@ -250,7 +225,6 @@ fn test_anti_vacuity_proof_models_preconditions_and_edge_invariants() {
         172, 32, 0, 0
     )));
 
-    // RFC 1918 192.168.0.0/16 boundaries
     assert!(!SsrfFormalSpec::spec_is_restricted_ipv4(&Ipv4Addr::new(
         192, 167, 255, 255
     )));
@@ -264,7 +238,6 @@ fn test_anti_vacuity_proof_models_preconditions_and_edge_invariants() {
         192, 169, 0, 0
     )));
 
-    // Link-Local / Cloud Metadata 169.254.0.0/16 boundaries
     assert!(!SsrfFormalSpec::spec_is_restricted_ipv4(&Ipv4Addr::new(
         169, 253, 255, 255
     )));
@@ -281,7 +254,6 @@ fn test_anti_vacuity_proof_models_preconditions_and_edge_invariants() {
         169, 255, 0, 0
     )));
 
-    // CGNAT 100.64.0.0/10 boundaries
     assert!(!SsrfFormalSpec::spec_is_restricted_ipv4(&Ipv4Addr::new(
         100, 63, 255, 255
     )));
@@ -295,7 +267,6 @@ fn test_anti_vacuity_proof_models_preconditions_and_edge_invariants() {
         100, 128, 0, 0
     )));
 
-    // Loopback 127.0.0.0/8 boundaries
     assert!(!SsrfFormalSpec::spec_is_restricted_ipv4(&Ipv4Addr::new(
         126, 255, 255, 255
     )));
@@ -309,7 +280,6 @@ fn test_anti_vacuity_proof_models_preconditions_and_edge_invariants() {
         128, 0, 0, 0
     )));
 
-    // 5. DPoP HTU normalization spec checks
     let test_uri = "https://AUTH.Example.Com:443/OAuth/Token?foo=bar#section";
     let normalized = normalize_htu(test_uri).expect("Normalization failed");
     assert_eq!(normalized, "https://auth.example.com/OAuth/Token");
@@ -318,14 +288,12 @@ fn test_anti_vacuity_proof_models_preconditions_and_edge_invariants() {
     assert!(DPoPHtuFormalSpec::spec_valid_scheme(&normalized));
     assert!(DPoPHtuFormalSpec::spec_no_default_ports(&normalized));
 
-    // 6. PKCE S256 Challenge length spec check
     assert_eq!(PkceFormalSpec::spec_s256_challenge_len(), 43);
     let sample_verifier = "a".repeat(43);
     let challenge = derive_s256_challenge(&sample_verifier);
     assert_eq!(challenge.len(), PkceFormalSpec::spec_s256_challenge_len());
     assert!(validate_verifier(&sample_verifier).is_ok());
 
-    // 7. SSRF Filter and functions agreement
     let filter = SsrfFilter::new(false);
     let ip_priv = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
     let ip_pub = IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34));
@@ -334,10 +302,6 @@ fn test_anti_vacuity_proof_models_preconditions_and_edge_invariants() {
     assert!(filter.validate_ip(ip_priv).is_err());
     assert!(filter.validate_ip(ip_pub).is_ok());
 }
-
-// =========================================================================
-// SECTION 2: Concurrent State Transition Exhaustion (200 Concurrent Threads)
-// =========================================================================
 
 #[test]
 fn test_200_concurrent_threads_single_state_token_race() {
@@ -363,10 +327,8 @@ fn test_200_concurrent_threads_single_state_token_race() {
         let token = state_token.to_string();
 
         handles.push(std::thread::spawn(move || {
-            // Wait for all 200 threads to synchronize at the starting line
             barrier_clone.wait();
 
-            // Race to consume state
             if let Some(consumed) = store_clone.take_state_sync(&token) {
                 assert_eq!(consumed.state, token);
                 winner_clone.fetch_add(1, Ordering::SeqCst);
@@ -406,7 +368,6 @@ fn test_200_concurrent_threads_single_state_token_race() {
 fn test_200_concurrent_threads_same_shard_hash_collision_race() {
     let store = Arc::new(OAuthStateStore::default());
 
-    // Find 4 distinct keys that hash to the EXACT same shard index
     let target_shard = 7;
     let mut collision_keys = Vec::new();
     let mut candidate_idx = 0;
@@ -418,7 +379,6 @@ fn test_200_concurrent_threads_same_shard_hash_collision_race() {
         candidate_idx += 1;
     }
 
-    // Verify all keys collide to shard 7
     for k in &collision_keys {
         assert_eq!(store.shard_index(k), target_shard);
         store
@@ -428,7 +388,6 @@ fn test_200_concurrent_threads_same_shard_hash_collision_race() {
 
     assert_eq!(store.shard_len(target_shard), 4);
 
-    // Race 50 threads per collision key (total 200 threads hitting the SAME SHARD)
     let num_threads = 200;
     let barrier = Arc::new(Barrier::new(num_threads));
     let per_key_winners: Arc<Vec<AtomicUsize>> =
@@ -471,7 +430,7 @@ fn test_200_concurrent_threads_partitioned_across_multiple_keys_and_shards() {
     let store = Arc::new(OAuthStateStore::default());
     let num_keys = 20;
     let racers_per_key = 10;
-    let total_threads = num_keys * racers_per_key; // 200 threads
+    let total_threads = num_keys * racers_per_key;
 
     let mut state_keys = Vec::with_capacity(num_keys);
     for k in 0..num_keys {
@@ -513,7 +472,6 @@ fn test_200_concurrent_threads_partitioned_across_multiple_keys_and_shards() {
         handle.join().expect("Thread failed");
     }
 
-    // Assert every single key was consumed exactly once
     for (k_idx, key) in state_keys.iter().enumerate() {
         let count = per_key_winners[k_idx].load(Ordering::SeqCst);
         assert_eq!(
@@ -532,7 +490,6 @@ fn test_200_concurrent_threads_high_churn_chaos_state_transitions() {
     let ops_per_thread = 200;
     let barrier = Arc::new(Barrier::new(num_threads));
 
-    // Shared thread-safe audit log: maps state_token -> number of times consumed
     let consumed_audit: Arc<parking_lot::RwLock<std::collections::HashMap<String, usize>>> =
         Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new()));
 
@@ -551,7 +508,6 @@ fn test_200_concurrent_threads_high_churn_chaos_state_transitions() {
 
                 match (thread_idx + op) % 4 {
                     0 => {
-                        // Insert
                         let _ = store_clone.insert_state_sync(
                             key.clone(),
                             mock_stored_state(&key),
@@ -559,7 +515,6 @@ fn test_200_concurrent_threads_high_churn_chaos_state_transitions() {
                         );
                     }
                     1 => {
-                        // Take state (Single use)
                         if let Some(entry) = store_clone.take_state_sync(&key) {
                             assert_eq!(entry.state, key);
                             let mut guard = audit_clone.write();
@@ -568,11 +523,9 @@ fn test_200_concurrent_threads_high_churn_chaos_state_transitions() {
                         }
                     }
                     2 => {
-                        // Contains state
                         let _ = store_clone.contains_state_sync(&key);
                     }
                     _ => {
-                        // Prune
                         let _ = store_clone.prune_expired_sync();
                     }
                 }
@@ -655,14 +608,12 @@ fn test_verus_deductive_model_concurrent_race_200_and_500_threads() {
     let state_200 = "verus_model_race_200";
     let state_500 = "verus_model_race_500";
 
-    // 200 racers
     assert!(model.insert(state_200, "client_app", 500, 0));
     let (w200, l200) = model.simulate_concurrent_consumption_race(state_200, 200, 10);
     assert_eq!(w200, 1);
     assert_eq!(l200, 199);
     assert!(model.verify_single_use_invariant(state_200));
 
-    // 500 racers
     assert!(model.insert(state_500, "client_app", 500, 0));
     let (w500, l500) = model.simulate_concurrent_consumption_race(state_500, 500, 10);
     assert_eq!(w500, 1);
@@ -671,10 +622,6 @@ fn test_verus_deductive_model_concurrent_race_200_and_500_threads() {
 
     assert!(model.verify_global_store_invariants());
 }
-
-// =========================================================================
-// SECTION 3: Proptest Arbitrary Thread Interleaving & Concurrency Invariance
-// =========================================================================
 
 proptest! {
     #[test]
@@ -704,30 +651,23 @@ proptest! {
     ) {
         let mut model = OAuthStateTransitionModel::new();
 
-        // 1. Initial take must return None
         prop_assert!(model.take_state(&state, 0).is_none());
 
-        // 2. Insert at tick 100
         let inserted = model.insert(&state, &client, ttl, 100);
         prop_assert!(inserted);
 
-        // 3. Take at query_tick
         let res = model.take_state(&state, query_tick);
         if query_tick < 100 {
-            // Clock warp (saturating_sub is 0 < ttl) -> succeeds
             prop_assert!(res.is_some());
             prop_assert_eq!(model.states.get(&state), Some(&StateTransitionStatus::Consumed { consumed_at_tick: query_tick }));
         } else if query_tick.saturating_sub(100) < ttl {
-            // Valid active window -> succeeds
             prop_assert!(res.is_some());
             prop_assert_eq!(model.states.get(&state), Some(&StateTransitionStatus::Consumed { consumed_at_tick: query_tick }));
         } else {
-            // Expired -> returns None
             prop_assert!(res.is_none());
             prop_assert_eq!(model.states.get(&state), Some(&StateTransitionStatus::Expired { expired_at_tick: query_tick }));
         }
 
-        // 4. Invariant check
         prop_assert!(model.verify_single_use_invariant(&state));
         prop_assert!(model.verify_global_store_invariants());
     }

@@ -138,7 +138,6 @@ fn test_zeroize_clears_session_and_state_tokens() -> Result<(), Box<dyn std::err
 
     session.zeroize();
 
-    // After zeroization, string contents are overwritten with zeros / empty
     assert!(session.access_token.is_empty() || session.access_token.chars().all(|c| c == '\0'));
     if let Some(ref rt) = session.refresh_token {
         assert!(rt.is_empty() || rt.chars().all(|c| c == '\0'));

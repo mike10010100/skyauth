@@ -237,15 +237,13 @@ mod tests {
 
     #[test]
     fn test_invalid_verifier_length() {
-        // Less than 43 chars
-        let short = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjX"; // 42 chars
+        let short = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjX";
         assert_eq!(short.len(), 42);
         assert!(matches!(
             validate_verifier(short),
             Err(PkceError::InvalidVerifierLength { len: 42, .. })
         ));
 
-        // Greater than 128 chars
         let long = "a".repeat(129);
         assert!(matches!(
             validate_verifier(&long),
@@ -255,7 +253,6 @@ mod tests {
 
     #[test]
     fn test_invalid_verifier_characters() {
-        // Space
         let with_space = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEj k";
         assert!(matches!(
             validate_verifier(with_space),
@@ -265,7 +262,6 @@ mod tests {
             })
         ));
 
-        // Plus sign
         let with_plus = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEj+k";
         assert!(matches!(
             validate_verifier(with_plus),
@@ -275,7 +271,6 @@ mod tests {
             })
         ));
 
-        // Equals sign
         let with_eq = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEj=k";
         assert!(matches!(
             validate_verifier(with_eq),

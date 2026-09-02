@@ -466,7 +466,6 @@ impl DPoPVerifier {
         let payload_bytes = base64url_decode(parts[1])?;
         let signature_bytes = base64url_decode(parts[2])?;
 
-        // 1. Validate Header
         let header_val: serde_json::Value = serde_json::from_slice(&header_bytes)
             .map_err(|e| DPoPError::MalformedJwt(format!("Failed to parse header JSON: {e}")))?;
 
@@ -511,14 +510,12 @@ impl DPoPVerifier {
             )));
         }
 
-        // 2. Verify Cryptographic Signature
         let verifying_key = jwk.to_verifying_key()?;
         let signing_input = format!("{}.{}", parts[0], parts[1]);
 
         verify_p256_raw(&verifying_key, signing_input.as_bytes(), &signature_bytes)
             .map_err(|_| DPoPError::SignatureVerificationFailed)?;
 
-        // 3. Validate Payload Claims
         let claims: DPoPProofClaims = serde_json::from_slice(&payload_bytes)
             .map_err(|e| DPoPError::MalformedJwt(format!("Failed to parse payload JSON: {e}")))?;
 
@@ -526,7 +523,6 @@ impl DPoPVerifier {
             return Err(DPoPError::MissingClaim("jti"));
         }
 
-        // Method verification (case-insensitive)
         if !claims.htm.eq_ignore_ascii_case(expected_htm) {
             return Err(DPoPError::MethodMismatch {
                 expected: expected_htm.to_uppercase(),
@@ -534,7 +530,6 @@ impl DPoPVerifier {
             });
         }
 
-        // URI verification (normalized comparison)
         let norm_expected_htu = normalize_htu(expected_htu)?;
         let norm_claims_htu = normalize_htu(&claims.htu)?;
         if norm_claims_htu != norm_expected_htu {
@@ -544,7 +539,6 @@ impl DPoPVerifier {
             });
         }
 
-        // Nonce verification
         if let Some(exp_nonce) = expected_nonce {
             match &claims.nonce {
                 Some(actual_nonce) => {
@@ -559,7 +553,6 @@ impl DPoPVerifier {
             }
         }
 
-        // Access token hash (ath) verification
         if let Some(exp_ath) = expected_ath {
             match &claims.ath {
                 Some(actual_ath) => {
@@ -574,7 +567,6 @@ impl DPoPVerifier {
             }
         }
 
-        // Timing validations
         let now = match now_override {
             Some(time) => time
                 .duration_since(UNIX_EPOCH)
@@ -589,7 +581,6 @@ impl DPoPVerifier {
         let skew_secs = self.max_clock_skew.as_secs();
         let max_age_secs = self.max_proof_age.as_secs();
 
-        // Check if iat is in future beyond clock skew leeway
         if claims.iat > now.saturating_add(skew_secs) {
             return Err(DPoPError::FutureProof {
                 iat: claims.iat,
@@ -598,7 +589,6 @@ impl DPoPVerifier {
             });
         }
 
-        // Check proof age
         if now.saturating_sub(claims.iat) > max_age_secs {
             return Err(DPoPError::ProofTooOld {
                 iat: claims.iat,
@@ -607,7 +597,6 @@ impl DPoPVerifier {
             });
         }
 
-        // Check optional exp claim
         if let Some(exp) = claims.exp {
             if exp.saturating_add(skew_secs) < now {
                 return Err(DPoPError::ExpiredProof { exp, now });
@@ -617,10 +606,7 @@ impl DPoPVerifier {
         // Anti-Replay Check (RFC 9449 § 4.3 item 4 & § 11.1)
         if let Some(ref cache) = self.replay_cache {
             let jkt = jwk.thumbprint();
-            // Cap the cache entry lifetime to the server's own acceptance window
-            // (max_proof_age + skew), NEVER to the attacker-controlled `exp` claim.
-            // An arbitrarily far-future `exp` would otherwise create immortal
-            // entries that permanently saturate every shard (DoS).
+            // Expire entries on the server's acceptance window, NEVER the attacker-controlled `exp` claim: a far-future `exp` would create immortal cache entries (DoS).
             let expires_at = now.saturating_add(max_age_secs).saturating_add(skew_secs);
 
             cache.check_and_record(&jkt, &claims.jti, expires_at, now)?;
@@ -832,7 +818,6 @@ impl DPoPReplayCache {
         let shard = &self.shards[shard_idx];
         let mut guard = shard.write();
 
-        // 1. Check if key already exists and is unexpired
         if let Some(&existing_exp) = guard.get(&composite_key) {
             if existing_exp > now_secs {
                 return Err(DPoPError::ReplayDetected {
@@ -841,15 +826,12 @@ impl DPoPReplayCache {
             }
         }
 
-        // 2. Amortized lazy pruning: run the O(n) retain pass at most once per
-        //    64 admissions per shard instead of on every call.
         let admissions = self.prune_hints[shard_idx].fetch_add(1, Ordering::Relaxed);
         if guard.len() > 512 && admissions % 64 == 0 {
             guard.retain(|_, &mut exp| exp > now_secs);
         }
 
-        // Strict shard capacity cap to prevent memory exhaustion without evicting live
-        // proofs. Expired entries are always prunable; only live admission is refused.
+        // Fail closed at capacity rather than evicting live proofs; expired entries always remain prunable.
         if guard.len() >= 2048 {
             guard.retain(|_, &mut exp| exp > now_secs);
             if guard.len() >= 2048 {
@@ -857,7 +839,6 @@ impl DPoPReplayCache {
             }
         }
 
-        // 3. Record the consumed JTI
         guard.insert(composite_key, expires_at_secs);
         Ok(())
     }
@@ -976,9 +957,7 @@ impl DPoPServerNonceSource for InMemoryServerNonceSource {
         if guard.len() > 1024 {
             guard.retain(|_, &mut e| e > now_secs);
         }
-        // Fail closed at capacity instead of evicting a live nonce (matching the
-        // replay cache policy). Admissions are pre-authentication, so an attacker
-        // must not be able to displace challenge nonces for legitimate clients.
+        // Fail closed at capacity rather than evicting a live nonce: admissions are pre-authentication, so an attacker must not displace nonces for legitimate clients.
         if guard.len() >= 4096 {
             return String::new();
         }
@@ -994,8 +973,7 @@ impl DPoPServerNonceSource for InMemoryServerNonceSource {
 
         let trimmed = nonce.trim();
         if self.single_use {
-            // Single-use mode: acquire the write lock up-front so a valid nonce is
-            // consumed atomically with its verification (no TOCTOU window).
+            // Consume atomically with verification (write lock avoids a TOCTOU window).
             let mut guard = self.nonces.write();
             if let Some(&exp) = guard.get(trimmed) {
                 if exp > now_secs {
@@ -1214,13 +1192,11 @@ mod tests {
 
         let verifier = DPoPVerifier::new();
 
-        // First verification succeeds
         let (claims, jwk) = verifier
             .verify_proof(&proof, "GET", uri, None, None, None)
             .unwrap();
         assert_eq!(jwk.thumbprint(), key.jwk_thumbprint());
 
-        // Replaying the exact same proof fails with ReplayDetected
         let err = verifier
             .verify_proof(&proof, "GET", uri, None, None, None)
             .unwrap_err();
@@ -1240,13 +1216,10 @@ mod tests {
         assert!(cache.check_and_record(jkt, jti, 1500, 1000).is_ok());
         assert!(cache.is_consumed(jkt, jti, 1000));
 
-        // Replay at t=1200 fails
         let err = cache.check_and_record(jkt, jti, 1500, 1200).unwrap_err();
         assert!(matches!(err, DPoPError::ReplayDetected { .. }));
 
-        // After expiry at t=1600, key is no longer active
         assert!(!cache.is_consumed(jkt, jti, 1600));
-        // And can be consumed again
         assert!(cache.check_and_record(jkt, jti, 2000, 1600).is_ok());
     }
 
@@ -1263,13 +1236,11 @@ mod tests {
 
     #[test]
     fn test_in_memory_server_nonce_source_single_use() {
-        // Default (multi-use): nonce remains valid until TTL expiry
         let reusable = InMemoryServerNonceSource::new(Duration::from_secs(60));
         let nonce = reusable.generate_nonce();
         assert!(reusable.verify_nonce(&nonce));
         assert!(reusable.verify_nonce(&nonce));
 
-        // Single-use mode: nonce consumed atomically on first verification
         let strict = InMemoryServerNonceSource::new(Duration::from_secs(60)).with_single_use();
         let nonce = strict.generate_nonce();
         assert!(strict.verify_nonce(&nonce));
@@ -1278,7 +1249,6 @@ mod tests {
             "consumed nonce must not verify again"
         );
 
-        // Freshly generated nonce still verifies
         let second = strict.generate_nonce();
         assert!(strict.verify_nonce(&second));
     }
@@ -1286,7 +1256,6 @@ mod tests {
     #[test]
     fn test_dpop_replay_cache_saturation_protection() {
         let cache = DPoPReplayCache::new();
-        // Insert 2048 entries with future expiration that hash into the same shard
         let target_shard = 0;
         let mut recorded_jtis = Vec::new();
         let mut count = 0;
@@ -1303,7 +1272,6 @@ mod tests {
             i += 1;
         }
 
-        // Inserting another unexpired entry in that full shard returns capacity error rather than evicting live proofs
         let overflow_jti = loop {
             let key = format!("jkt:{i}");
             if cache.shard_index(&key) == target_shard {
@@ -1314,7 +1282,6 @@ mod tests {
         let res = cache.check_and_record("jkt", &overflow_jti, 5000, 1000);
         assert!(matches!(res, Err(DPoPError::ReplayCacheSaturated)));
 
-        // No-eviction invariant: every recorded (jkt, jti) must still be consumed.
         for jti in &recorded_jtis {
             assert!(
                 cache.is_consumed("jkt", jti, 1000),

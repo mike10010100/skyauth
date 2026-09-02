@@ -122,12 +122,9 @@ fn is_origin_only(url_str: &str) -> bool {
         if !parsed.username().is_empty() || parsed.password().is_some() {
             return false;
         }
-        // Reject explicit default port spellings (`:443` for https, `:80` for http).
-        // The `url` crate normalizes default ports during parsing (`port()` returns
-        // `None` for an explicit `:443`), so the explicit form must be detected from
-        // the raw AUTHORITY segment of the original string — scanning only there
-        // avoids false positives from ports that merely contain ":443"/":80"
-        // (e.g. an ephemeral test-server port like 44371).
+        // The `url` crate normalizes default ports away (`port()` is `None` for explicit `:443`),
+        // so detect the explicit spelling from the raw AUTHORITY segment; scanning only there
+        // also avoids false positives from ports that merely contain ":443"/":80" (e.g. 44371).
         let after_scheme = url_str
             .split_once("://")
             .map(|(_, rest)| rest)
@@ -136,10 +133,7 @@ fn is_origin_only(url_str: &str) -> bool {
             .split(['/', '?', '#'])
             .next()
             .unwrap_or(after_scheme);
-        // userinfo was already rejected above; strip it defensively anyway.
         let host_port = authority.rsplit('@').next().unwrap_or(authority);
-        // Bracketed IPv6 hosts carry the port (if any) after `]`; unbracketed hosts
-        // use a simple `host:port` form where the last ':' separator is the port.
         let has_explicit_port = match host_port.rfind(']') {
             Some(bracket_end) => host_port[bracket_end..].contains(':'),
             None => host_port.contains(':'),
@@ -196,7 +190,7 @@ pub async fn fetch_protected_resource_metadata(
             other => DiscoveryError::Ssrf(other),
         })?;
 
-    // 1. ATProto requires exactly one Authorization Server
+    // ATProto requires exactly one authorization server.
     if meta.authorization_servers.is_empty() {
         return Err(DiscoveryError::MissingAuthorizationServers(
             pds_endpoint.to_string(),
@@ -208,7 +202,6 @@ pub async fn fetch_protected_resource_metadata(
         ));
     }
 
-    // 2. The Authorization Server URL must be an origin-only URL
     let as_url = &meta.authorization_servers[0];
     if !is_origin_only(as_url) {
         return Err(DiscoveryError::InvalidAuthorizationServerUrl(
@@ -216,7 +209,6 @@ pub async fn fetch_protected_resource_metadata(
         ));
     }
 
-    // 3. Resource Match Check (must match queried PDS origin)
     let expected_origin = normalize_origin(pds_endpoint);
     let actual_origin = normalize_origin(&meta.resource);
     if expected_origin != actual_origin {
@@ -294,7 +286,6 @@ pub fn validate_auth_server_capabilities(
     meta: &AuthorizationServerMetadata,
     auth_server_url: &str,
 ) -> Result<(), DiscoveryError> {
-    // 1. Issuer Origin Equality & Origin-only Check
     if !is_origin_only(auth_server_url) {
         return Err(DiscoveryError::InvalidAuthorizationServerUrl(
             auth_server_url.to_string(),
@@ -314,7 +305,6 @@ pub fn validate_auth_server_capabilities(
         });
     }
 
-    // 2. PAR Endpoint Validation
     if meta.pushed_authorization_request_endpoint.trim().is_empty() {
         return Err(DiscoveryError::MissingParEndpoint(
             auth_server_url.to_string(),
@@ -327,12 +317,11 @@ pub fn validate_auth_server_capabilities(
         )));
     }
 
-    // 3. Mandatory PAR Requirement (ATProto profile mandates PAR)
+    // ATProto profile mandates PAR.
     if !meta.require_pushed_authorization_requests {
         return Err(DiscoveryError::ParNotRequired(auth_server_url.to_string()));
     }
 
-    // 4. Token Endpoint Validation
     if meta.token_endpoint.trim().is_empty() {
         return Err(DiscoveryError::MissingTokenEndpoint(
             auth_server_url.to_string(),
@@ -345,7 +334,6 @@ pub fn validate_auth_server_capabilities(
         )));
     }
 
-    // 5. Authorization Endpoint Validation
     if meta.authorization_endpoint.trim().is_empty() {
         return Err(DiscoveryError::MissingAuthorizationEndpoint(
             auth_server_url.to_string(),
@@ -358,14 +346,12 @@ pub fn validate_auth_server_capabilities(
         )));
     }
 
-    // 6. Response Types Supported Enforcement (must include "code")
     if !meta.response_types_supported.iter().any(|r| r == "code") {
         return Err(DiscoveryError::MissingResponseType(
             auth_server_url.to_string(),
         ));
     }
 
-    // 7. Grant Types Supported Enforcement (must include "authorization_code" and "refresh_token")
     if !meta
         .grant_types_supported
         .iter()
@@ -387,7 +373,7 @@ pub fn validate_auth_server_capabilities(
         });
     }
 
-    // 8. Token Endpoint Auth Methods Supported Enforcement (ATProto profile mandates both "none" and "private_key_jwt")
+    // ATProto profile mandates both "none" and "private_key_jwt" auth methods.
     let has_none = meta
         .token_endpoint_auth_methods_supported
         .iter()
@@ -402,7 +388,6 @@ pub fn validate_auth_server_capabilities(
         ));
     }
 
-    // 8b. Token Endpoint Auth Signing Alg Values Supported (mandates "ES256", rejects "none")
     if !meta
         .token_endpoint_auth_signing_alg_values_supported
         .iter()
@@ -422,28 +407,25 @@ pub fn validate_auth_server_capabilities(
         ));
     }
 
-    // 9. Scopes Supported Enforcement (must include "atproto")
     if !meta.scopes_supported.iter().any(|s| s == "atproto") {
         return Err(DiscoveryError::MissingAtprotoScope(
             auth_server_url.to_string(),
         ));
     }
 
-    // 10. Authorization Response ISS Parameter Supported (RFC 9207 is mandatory in ATProto)
+    // RFC 9207 `iss` is mandatory in the ATProto profile.
     if !meta.authorization_response_iss_parameter_supported {
         return Err(DiscoveryError::MissingIssParameterSupport(
             auth_server_url.to_string(),
         ));
     }
 
-    // 11. Client ID Metadata Document Supported (Mandatory in ATProto)
     if !meta.client_id_metadata_document_supported {
         return Err(DiscoveryError::MissingClientMetadataSupport(
             auth_server_url.to_string(),
         ));
     }
 
-    // 12. DPoP ES256 Algorithm Enforcement
     if !meta
         .dpop_signing_alg_values_supported
         .iter()
@@ -454,7 +436,6 @@ pub fn validate_auth_server_capabilities(
         ));
     }
 
-    // 13. PKCE S256 Challenge Method Enforcement
     if !meta
         .code_challenge_methods_supported
         .iter()
@@ -482,16 +463,13 @@ pub async fn discover_oauth_endpoints(
     resolver: &IdentityResolver,
     did_or_handle: &str,
 ) -> Result<DiscoveredAuthEndpoints, DiscoveryError> {
-    // 1. Identity Resolution & Bidirectional Verification
     let identity = resolver.resolve_ident(did_or_handle).await?;
 
-    // 2. Protected Resource Discovery
     let pds_meta =
         fetch_protected_resource_metadata(resolver.ssrf_filter(), &identity.pds_endpoint).await?;
 
     let auth_server_url = &pds_meta.authorization_servers[0];
 
-    // 3. Authorization Server Metadata Discovery
     let as_meta = fetch_auth_server_metadata(resolver.ssrf_filter(), auth_server_url).await?;
 
     Ok(DiscoveredAuthEndpoints {
@@ -658,24 +636,18 @@ mod tests {
 
     #[test]
     fn test_is_origin_only_loopback_http_acceptance_boundaries() {
-        // Loopback HTTP is the only permitted non-HTTPS form — pin every clause of
-        // the loopback host check so mutations of the host comparison fail.
         assert!(is_origin_only("http://localhost"));
         assert!(is_origin_only("http://127.0.0.1"));
         assert!(is_origin_only("http://127.0.0.1:8080"));
         assert!(is_origin_only("http://[::1]:8080"));
-        // Non-loopback http must be rejected regardless of port.
         assert!(!is_origin_only("http://auth.example.com"));
         assert!(!is_origin_only("http://auth.example.com:80"));
         assert!(!is_origin_only("http://auth.example.com:8080"));
         assert!(!is_origin_only("http://127.0.0.2")); // near-loopback, not loopback
-                                                      // userinfo in the authority is rejected even on loopback.
         assert!(!is_origin_only("http://user@127.0.0.1"));
-        // Paths, query, and fragments disqualify origin-only form.
         assert!(!is_origin_only("http://127.0.0.1/xrpc"));
         assert!(!is_origin_only("https://auth.example.com/?a=b"));
         assert!(!is_origin_only("https://auth.example.com/#frag"));
-        // Port-8443-with-trailing-:80-substring must not be confused with default :80.
         assert!(is_origin_only("https://auth.example.com:8080"));
         assert!(is_origin_only("https://auth.example.com:44371"));
     }

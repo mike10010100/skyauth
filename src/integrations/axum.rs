@@ -47,7 +47,7 @@ where
     type Rejection = (StatusCode, Json<serde_json::Value>);
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        // First check for session extension injected by Tower middleware
+        // OAuthSessionExtension is injected by the Tower middleware; it takes precedence over a bare AuthenticatedUser.
         if let Some(ext) = parts.extensions.get::<OAuthSessionExtension>() {
             return Ok(ext.user.clone());
         }
@@ -56,7 +56,6 @@ where
             return Ok(user.clone());
         }
 
-        // Fallback: Check if Authorization header is present
         if let Some(auth_header) = parts.headers.get(header::AUTHORIZATION) {
             if let Ok(auth_str) = auth_header.to_str() {
                 if !auth_str.starts_with("DPoP ") && !auth_str.starts_with("dpop ") {

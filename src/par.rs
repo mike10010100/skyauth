@@ -251,7 +251,6 @@ pub async fn execute_par_request_with_credentials(
         params.to_form_urlencoded_with_credentials(extra_credentials)
     };
 
-    // 1. Initial Attempt with cached nonce (if any)
     let initial_nonce = nonce_cache.get_nonce(&server_origin);
     let proof = dpop_key.create_proof("POST", par_endpoint, initial_nonce.as_deref(), None)?;
 
@@ -266,7 +265,7 @@ pub async fn execute_par_request_with_credentials(
         .await
         .map_err(|e| ParError::Http(e.to_string()))?;
 
-    // Opportunistically cache returned DPoP nonce header
+    // Cache the returned DPoP nonce so later requests to this origin don't re-trigger the challenge.
     if let Some(new_nonce) = extract_dpop_nonce(
         resp.headers()
             .get("dpop-nonce")
@@ -277,7 +276,7 @@ pub async fn execute_par_request_with_credentials(
 
     let status = resp.status();
 
-    // Disallow redirects on PAR endpoints (RFC 9126)
+    // PAR endpoints must not be followed through redirects (RFC 9126).
     if status.is_redirection() {
         return Err(ParError::RequestFailed {
             status: status.as_u16(),
@@ -287,7 +286,7 @@ pub async fn execute_par_request_with_credentials(
         .into());
     }
 
-    // 2. Check for use_dpop_nonce error challenge
+    // The server answered 400/401 with `use_dpop_nonce`: replay with the fresh nonce.
     if status == reqwest::StatusCode::BAD_REQUEST || status == reqwest::StatusCode::UNAUTHORIZED {
         let resp_bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
             .await
@@ -312,7 +311,6 @@ pub async fn execute_par_request_with_credentials(
                         ),
                     })?;
 
-            // 3. Single Retry with fresh nonce and fresh jti
             let retry_proof =
                 dpop_key.create_proof("POST", par_endpoint, Some(&fresh_nonce), None)?;
 
@@ -359,7 +357,6 @@ pub async fn execute_par_request_with_credentials(
                 return parse_par_response(&body_bytes);
             }
 
-            // If retry also fails
             let err_bytes = read_bounded_body(retry_resp, MAX_OAUTH_RESPONSE_BYTES)
                 .await
                 .map_err(|e| ParError::Http(e.to_string()))?;
@@ -393,7 +390,6 @@ pub async fn execute_par_request_with_credentials(
             .into());
         }
 
-        // Other 400 error
         let error_code = json_err
             .as_ref()
             .and_then(|j| j.get("error"))

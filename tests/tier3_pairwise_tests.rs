@@ -19,10 +19,6 @@ use skyauth::dpop::{
 };
 use skyauth::pkce::{verify_pkce, PkcePair};
 
-// =========================================================================
-// PAIRWISE GROUP 1: Crypto x DPoP x PKCE Interactions (6 Tests)
-// =========================================================================
-
 #[test]
 fn test_p1_01_ephemeral_dpop_with_s256_pkce_32byte() {
     let dpop_key = DPoPKey::generate();
@@ -137,20 +133,14 @@ fn test_p1_06_hmac_session_token_with_dpop_thumbprint_binding() {
     let session_data = format!("did={TEST_ALICE_DID}&jkt={jkt}");
     let mac = hmac_sha256(session_secret, session_data.as_bytes()).unwrap();
 
-    // Verification
     let mac_check = hmac_sha256(session_secret, session_data.as_bytes()).unwrap();
     assert!(constant_time_eq(&mac, &mac_check));
 }
-
-// =========================================================================
-// PAIRWISE GROUP 2: Identity Resolution x SSRF x Discovery (6 Tests)
-// =========================================================================
 
 #[tokio::test]
 async fn test_p2_01_dns_to_plc_to_pds_to_as_discovery_pipeline() {
     let env = MockOAuthEnvironment::start_default().await;
 
-    // 1. DNS Resolution
     let did = env
         .dns
         .resolve_handle_txt(TEST_ALICE_HANDLE)
@@ -158,7 +148,6 @@ async fn test_p2_01_dns_to_plc_to_pds_to_as_discovery_pipeline() {
         .unwrap();
     assert_eq!(did, TEST_ALICE_DID);
 
-    // 2. PLC Directory Lookup
     let client = reqwest::Client::new();
     let did_doc: serde_json::Value = client
         .get(format!("{}/{}", env.plc.uri(), did))
@@ -172,7 +161,6 @@ async fn test_p2_01_dns_to_plc_to_pds_to_as_discovery_pipeline() {
     let pds_endpoint = did_doc["service"][0]["serviceEndpoint"].as_str().unwrap();
     assert_eq!(pds_endpoint, env.pds.uri());
 
-    // 3. PDS Protected Resource Discovery
     let pds_meta: serde_json::Value = client
         .get(format!(
             "{pds_endpoint}/.well-known/oauth-protected-resource"
@@ -187,7 +175,6 @@ async fn test_p2_01_dns_to_plc_to_pds_to_as_discovery_pipeline() {
     let as_endpoint = pds_meta["authorization_servers"][0].as_str().unwrap();
     assert_eq!(as_endpoint, env.auth_server.uri());
 
-    // 4. AS Metadata Discovery
     let as_meta: serde_json::Value = client
         .get(format!(
             "{as_endpoint}/.well-known/oauth-authorization-server"
@@ -206,7 +193,6 @@ async fn test_p2_01_dns_to_plc_to_pds_to_as_discovery_pipeline() {
 async fn test_p2_02_https_fallback_with_protected_resource_discovery() {
     let env = MockOAuthEnvironment::start_default().await;
 
-    // Direct HTTPS lookup
     let client = reqwest::Client::new();
     let did_resp = client
         .get(format!("{}/.well-known/atproto-did", env.pds.uri()))
@@ -215,7 +201,6 @@ async fn test_p2_02_https_fallback_with_protected_resource_discovery() {
         .unwrap();
     assert_eq!(did_resp.text().await.unwrap().trim(), TEST_ALICE_DID);
 
-    // Fetch Protected Resource
     let pds_meta: serde_json::Value = client
         .get(format!(
             "{}/.well-known/oauth-protected-resource",
@@ -308,16 +293,11 @@ fn test_p2_06_did_web_parsing_and_resolution_url() {
     );
 }
 
-// =========================================================================
-// PAIRWISE GROUP 3: PAR x Auto-Nonce x DPoP Binding (6 Tests)
-// =========================================================================
-
 #[tokio::test]
 async fn test_p3_01_par_nonce_challenge_retry_success() {
     let env = MockOAuthEnvironment::start_default().await;
     let par_url = format!("{}/oauth/par", env.auth_server.uri());
 
-    // 1. First attempt triggers 400 with DPoP-Nonce
     env.auth_server
         .mount_par_nonce_challenge_once("challenge-nonce-1")
         .await;
@@ -326,7 +306,6 @@ async fn test_p3_01_par_nonce_challenge_retry_success() {
     assert_eq!(resp1.status(), 400);
     let nonce = resp1.headers().get("dpop-nonce").unwrap().to_str().unwrap();
 
-    // 2. Cache updated with server nonce
     let cache = DPoPNonceCache::new();
     cache.set_nonce(&env.auth_server.uri(), nonce.to_string());
     assert_eq!(
@@ -334,7 +313,6 @@ async fn test_p3_01_par_nonce_challenge_retry_success() {
         Some("challenge-nonce-1")
     );
 
-    // 3. Second attempt with nonce succeeds
     let request_uri = "urn:ietf:params:oauth:request_uri:req-retry-success";
     env.auth_server.mount_par_success(request_uri, 90).await;
 
@@ -411,7 +389,6 @@ async fn test_p3_04_token_exchange_with_nonce_retry() {
     let env = MockOAuthEnvironment::start_default().await;
     let token_url = format!("{}/oauth/token", env.auth_server.uri());
 
-    // 1. Initial attempt returns nonce challenge
     env.auth_server
         .mount_token_nonce_challenge_once("token-nonce-1")
         .await;
@@ -420,7 +397,6 @@ async fn test_p3_04_token_exchange_with_nonce_retry() {
     assert_eq!(resp1.status(), 400);
     let nonce = resp1.headers().get("dpop-nonce").unwrap().to_str().unwrap();
 
-    // 2. Subsequent attempt with nonce succeeds
     env.auth_server
         .mount_token_exchange_success("at_123", "rt_456", TEST_ALICE_DID, 3600)
         .await;
@@ -476,10 +452,6 @@ fn test_p3_06_dpop_proof_with_mismatched_method_rejected() {
         Err(skyauth::error::DPoPError::MethodMismatch { .. })
     ));
 }
-
-// =========================================================================
-// PAIRWISE GROUP 4: Sharded Store x Single-Use x Token Rotation (6 Tests)
-// =========================================================================
 
 struct ShardedStore {
     shards: Vec<parking_lot::RwLock<HashMap<String, String>>>,
@@ -565,14 +537,12 @@ fn test_p4_03_refresh_token_rotation_flow() {
     let mut token_store = HashMap::new();
     token_store.insert(initial_refresh_token, "valid");
 
-    // Rotation: consume old, issue new
     let is_valid = token_store.remove(initial_refresh_token).is_some();
     assert!(is_valid);
 
     let new_refresh_token = "rt_gen_2";
     token_store.insert(new_refresh_token, "valid");
 
-    // Attempting to reuse old refresh token fails
     assert_eq!(token_store.remove(initial_refresh_token), None);
     assert_eq!(token_store.remove(new_refresh_token), Some("valid"));
 }
@@ -622,10 +592,6 @@ fn test_p4_06_state_store_cleared_on_expiry() {
     assert_eq!(map.len(), 1);
     assert!(map.contains_key("active"));
 }
-
-// =========================================================================
-// PAIRWISE GROUP 5: Schema AST Validation x Discovery & Proof Payloads (6 Tests)
-// =========================================================================
 
 #[test]
 fn test_p5_01_rfc8414_schema_ast_matches_mock_as_response() {

@@ -191,7 +191,7 @@ pub fn normalize_handle(raw_handle: &str) -> Result<String, IdentityError> {
         )));
     }
 
-    // Reject raw IPv4 and IPv6 addresses
+    // Handles must not be raw IP literals.
     if normalized.parse::<std::net::IpAddr>().is_ok()
         || normalized.starts_with('[')
         || normalized.chars().all(|c| c.is_ascii_digit() || c == '.')
@@ -366,7 +366,7 @@ impl DnsTxtResolver for StandardDnsResolver {
             let records = body
                 .answer
                 .into_iter()
-                .filter(|a| a.answer_type == 16) // TXT
+                .filter(|a| a.answer_type == 16)
                 .map(|a| a.data.trim_matches('"').to_string())
                 .collect();
 
@@ -703,12 +703,10 @@ mod tests {
 
     #[test]
     fn test_handle_syntax_violations() {
-        // Single label
         assert!(matches!(
             normalize_handle("localhost"),
             Err(IdentityError::InvalidHandleSyntax(_))
         ));
-        // Hyphen at start/end
         assert!(matches!(
             normalize_handle("-alice.bsky.social"),
             Err(IdentityError::InvalidHandleSyntax(_))
@@ -717,7 +715,6 @@ mod tests {
             normalize_handle("alice-.bsky.social"),
             Err(IdentityError::InvalidHandleSyntax(_))
         ));
-        // IP address
         assert!(matches!(
             normalize_handle("127.0.0.1"),
             Err(IdentityError::InvalidHandleSyntax(_))

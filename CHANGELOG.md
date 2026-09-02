@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Mandatory Issuer & Audience Matching (fail closed)**: `JwtAccessTokenValidator::verify_token_sync` now **rejects every token** unless both `with_expected_issuer` and `with_expected_audience` have been configured, returning `IntegrationError::AuthFailed` (a validator-misconfiguration error). Previously, issuer and audience matching were opt-in: a validator without `with_expected_audience` accepted tokens carrying any `aud`, leaving the RFC 9068 § 4 cross-resource-server audience-confusion path open. Tokens whose `iss`/`aud` do not match the configured values are still rejected with `IssuerMismatch`/`AudienceMismatch`.
+- **`ReplayCacheSaturated` maps to HTTP 503 in Tower middleware**: DPoP replay-cache capacity exhaustion is a server-side resource-exhaustion condition, not a defective client proof. The Tower layer now responds `503 Service Unavailable` (with `Retry-After: 1`) instead of `401 invalid_dpop_proof`, matching the documented semantics of `DPoPError::ReplayCacheSaturated`.
+- **Default absolute DPoP `htu` derivation in Tower middleware**: the default `htu` is now reconstructed as an absolute URI from the trusted connection scheme, the request authority, and the path/query, instead of using the raw request-URI string. HTTP/1.1 origin-form targets (`/xrpc/foo`) behind proxies are reconstructed (default ports stripped per RFC 9449 § 4.2), and requests with no usable authority fail closed with `401 invalid_dpop_proof` rather than verifying against a path-only `htu`. `with_htu_override` continues to take precedence for servers whose public origin differs from the inbound authority.
+- **`sync_specs.sh --verify` fails when upstream is unreachable**: a failed upstream fetch is now reported as `[FETCH FAILED] … UNVERIFIED` and causes a non-zero exit, instead of being logged as offline-but-verified. Set `SYNC_SPECS_ALLOW_OFFLINE=1` to accept manifest-only verification for offline development; actual drift still fails regardless.
+
+### Breaking Changes
+
+- **`JwtAccessTokenValidator` requires expected issuer and audience**: validators built without `with_expected_issuer` and `with_expected_audience` reject all tokens with `IntegrationError::AuthFailed` instead of accepting them. Production validators were expected to configure both already (and the earlier presence checks rejected tokens with absent `iss`/`aud` claims); only call sites that relied on the permissive unset-configuration path are affected.
+
 ## [0.2.0] - 2026-08-30
 
 ### Added

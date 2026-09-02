@@ -178,7 +178,6 @@ impl OAuthStateTransitionModel {
         ttl_ticks: u64,
         current_tick: u64,
     ) -> bool {
-        // Precondition checks
         if state_id.is_empty() || ttl_ticks == 0 {
             return false;
         }
@@ -247,7 +246,6 @@ impl OAuthStateTransitionModel {
                     self.payloads.remove(state_id);
                     None
                 } else {
-                    // Atomically consume
                     self.states.insert(
                         state_id.to_string(),
                         StateTransitionStatus::Consumed {
@@ -577,21 +575,17 @@ mod tests {
         let mut model = OAuthStateTransitionModel::new();
         let state = "formal_state_123";
 
-        // Insert
         assert!(model.insert(state, "client_1", 100, 10));
         assert!(model.verify_global_store_invariants());
 
-        // Duplicate insert fails
         assert!(!model.insert(state, "client_1", 100, 15));
 
-        // First take succeeds
         let entry = model.take_state(state, 20);
         assert!(entry.is_some());
         assert_eq!(entry.unwrap().state_id, state);
         assert!(model.verify_single_use_invariant(state));
         assert!(model.verify_global_store_invariants());
 
-        // Second take returns None
         assert!(model.take_state(state, 25).is_none());
         assert!(model.verify_single_use_invariant(state));
         assert!(model.verify_global_store_invariants());
@@ -602,10 +596,8 @@ mod tests {
         let mut model = OAuthStateTransitionModel::new();
         let state = "expired_state_formal";
 
-        // Insert with TTL = 50 ticks at tick = 10
         assert!(model.insert(state, "client_1", 50, 10));
 
-        // Query at tick 70 (elapsed = 60 >= 50 TTL) -> Expired
         assert!(model.take_state(state, 70).is_none());
         assert!(matches!(
             model.states.get(state),
@@ -694,7 +686,6 @@ mod tests {
         let public_6to4 = Ipv6Addr::new(0x2002, 0xc68c, 0x2174, 0, 0, 0, 0, 1);
         assert!(!SsrfFormalSpec::spec_is_restricted_ipv6(&public_6to4));
 
-        // Implementation/spec equivalence
         assert_eq!(
             crate::ssrf::is_restricted_ipv6(&v6),
             SsrfFormalSpec::spec_is_restricted_ipv6(&v6)

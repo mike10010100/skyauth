@@ -25,6 +25,41 @@ use crate::error::DPoPError;
 /// (used when the server sits behind a reverse proxy).
 pub type HtuOverrideFn = Arc<dyn Fn(&http::Uri) -> String + Send + Sync>;
 
+/// Derives the default DPoP target URI (`htu`) from an inbound request URI.
+///
+/// RFC 9449 § 4.2 requires `htu` to be the **absolute** HTTP(S) URI of the request
+/// target. HTTP/1.1 servers (and anything behind a reverse proxy) receive *origin-form*
+/// targets (`/xrpc/foo?bar`) with no scheme or authority, so this helper rebuilds the
+/// absolute form from the request's scheme and authority plus the path/query. Requests
+/// lacking a usable authority (e.g. unparsed absolute-form URIs missing host) fail
+/// closed rather than producing an htu that can never match a client signature.
+///
+/// Absolute-form URIs that already carry scheme + authority (common with HTTP/2 and
+/// test harnesses) are passed through with their path and query appended.
+fn default_htu_from_uri(scheme: &http::uri::Scheme, uri: &http::Uri) -> Option<String> {
+    let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    if let Some(authority) = uri.authority() {
+        if uri.scheme_str().is_some() {
+            return Some(format!(
+                "{}://{}{}",
+                scheme,
+                authority.as_str(),
+                path_and_query
+            ));
+        }
+    }
+    let host = uri.host()?;
+    let port = uri.port_u16();
+    let host_repr = match port {
+        // Strip default ports to match DPoP htu normalization (RFC 9449 § 4.2).
+        Some(443) if scheme == &http::uri::Scheme::HTTPS => host.to_string(),
+        Some(80) if scheme == &http::uri::Scheme::HTTP => host.to_string(),
+        Some(p) => format!("{host}:{p}"),
+        None => host.to_string(),
+    };
+    Some(format!("{scheme}://{host_repr}{path_and_query}"))
+}
+
 /// Tower layer that enforces AT Protocol DPoP OAuth authentication on inbound HTTP requests.
 ///
 /// Inspects the `Authorization: DPoP <access_token>` and `DPoP: <proof_jwt>` headers,
@@ -116,11 +151,12 @@ impl OAuthAuthLayer {
 
     /// Overrides how the DPoP target URI (`htu`) is derived from inbound request URIs.
     ///
-    /// By default the raw request URI string is used as `htu`. HTTP servers behind reverse
-    /// proxies or load balancers typically receive origin-form request targets (e.g.
-    /// `/xrpc/foo`) while clients sign the absolute URI (e.g.
-    /// `https://pds.example.com/xrpc/foo`). Configure this hook to reconstruct the
-    /// externally visible absolute URL:
+    /// By default the absolute `htu` is reconstructed from the trusted connection
+    /// scheme (defaulting to `https`), the request authority, and the path/query —
+    /// covering HTTP/2 absolute-form URIs and HTTP/1.1 origin-form targets. Servers
+    /// whose externally visible origin differs from the inbound authority (e.g.
+    /// public `https://pds.example.com` terminated by a proxy on a private host)
+    /// should configure this hook to substitute the public origin:
     ///
     /// ```ignore
     /// layer.with_htu_override(|uri| {
@@ -241,7 +277,6 @@ where
     }
 
     fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
-        // 1. Extract Authorization: DPoP <access_token>
         let auth_header = match req.headers().get(header::AUTHORIZATION) {
             Some(h) => match h.to_str() {
                 Ok(s) => s,
@@ -264,7 +299,6 @@ where
             }
         };
 
-        // 2. Extract DPoP proof header
         let dpop_header = match req
             .headers()
             .get("DPoP")
@@ -290,11 +324,36 @@ where
             }
         };
 
-        // 3. Compute expected values
         let htm = req.method().as_str();
         let htu = match self.htu_override.as_ref() {
             Some(f) => f(req.uri()),
-            None => req.uri().to_string(),
+            None => {
+                let scheme = req
+                    .extensions()
+                    .get::<http::request::Parts>()
+                    .and_then(|parts| parts.uri.scheme().cloned())
+                    .or_else(|| req.uri().scheme_str().and_then(|s| s.parse().ok()))
+                    .unwrap_or(http::uri::Scheme::HTTPS);
+                if scheme != http::uri::Scheme::HTTPS && scheme != http::uri::Scheme::HTTP {
+                    tracing::debug!("DPoP htu derivation rejected non-HTTP(S) scheme: {scheme}");
+                    return Box::pin(async {
+                        Ok(unauthorized_response("invalid_dpop_proof", None, None))
+                    });
+                }
+                match default_htu_from_uri(&scheme, req.uri()) {
+                    Some(htu) => htu,
+                    None => {
+                        tracing::debug!(
+                            "DPoP htu derivation failed: request URI '{}' has no usable authority \
+                             (origin-form requests must carry a Host header)",
+                            req.uri()
+                        );
+                        return Box::pin(async {
+                            Ok(unauthorized_response("invalid_dpop_proof", None, None))
+                        });
+                    }
+                }
+            }
         };
         let ath = if self.require_ath {
             Some(compute_access_token_hash(access_token))
@@ -302,7 +361,6 @@ where
             None
         };
 
-        // 4. Verify DPoP proof with anti-replay check
         let verification_result =
             self.verifier
                 .verify_proof(dpop_header, htm, &htu, None, ath.as_deref(), None);
@@ -319,6 +377,11 @@ where
                     ))
                 });
             }
+            Err(DPoPError::ReplayCacheSaturated) => {
+                // Server-side condition, not a client proof defect: 401 would mislead the legitimate client; 503 lets callers retry after backoff.
+                tracing::warn!("DPoP replay cache saturated in Tower middleware; returning 503");
+                return Box::pin(async { Ok(service_unavailable_response()) });
+            }
             Err(err) => {
                 tracing::debug!("DPoP proof verification failed in Tower middleware: {err}");
                 let fresh_nonce = self.nonce_source.as_ref().map(|s| s.generate_nonce());
@@ -332,7 +395,6 @@ where
             }
         };
 
-        // 5. Server Nonce Validation (RFC 9449 § 8)
         if let Some(ref nonce_source) = self.nonce_source {
             let valid_nonce = claims
                 .nonce
@@ -358,7 +420,6 @@ where
         let mut inner = self.inner.clone();
 
         Box::pin(async move {
-            // 6. Independently validate access token and its cnf.jkt binding to the DPoP key
             let user = match validator
                 .validate_access_token(&access_token_owned, &dpop_thumbprint)
                 .await
@@ -374,7 +435,6 @@ where
             req.extensions_mut().insert(ext);
             req.extensions_mut().insert(user);
 
-            // 7. Forward to inner service
             inner.call(req).await
         })
     }
@@ -406,6 +466,17 @@ fn unauthorized_response<ResBody: Default>(
     resp
 }
 
+/// Helper generating an HTTP 503 Service Unavailable response for server-side
+/// capacity conditions (e.g. DPoP replay-cache saturation), with `Retry-After`
+/// guidance so well-behaved clients back off rather than hammer the service.
+fn service_unavailable_response<ResBody: Default>() -> Response<ResBody> {
+    let mut resp = Response::new(ResBody::default());
+    *resp.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+    resp.headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    resp
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
 mod tests {
@@ -434,7 +505,6 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        // Mint valid JWT access token bound to client_jkt
         let claims = JwtAccessTokenClaims::new(
             "https://auth.example.com",
             "did:plc:alice123",
@@ -516,7 +586,6 @@ mod tests {
 
         let mut service = layer.layer(inner_service);
 
-        // First presentation succeeds
         let req1 = Request::builder()
             .method("GET")
             .uri(uri)
@@ -528,7 +597,6 @@ mod tests {
         let resp1 = service.call(req1).await.unwrap();
         assert_eq!(resp1.status(), StatusCode::OK);
 
-        // Second presentation of the exact same proof (replay) fails with 401
         let req2 = Request::builder()
             .method("GET")
             .uri(uri)
@@ -547,6 +615,64 @@ mod tests {
             .unwrap();
         assert!(www_auth.contains("invalid_dpop_proof"));
         assert!(www_auth.contains("replay detected"));
+    }
+
+    #[tokio::test]
+    async fn test_tower_replay_cache_saturation_returns_503() {
+        // Server-side capacity exhaustion, not a client proof defect: 503 + Retry-After instead of 401.
+        use crate::dpop::DPoPReplayCache;
+
+        let key = DPoPKey::generate();
+        let jkt = key.jwk_thumbprint();
+        let access_token = "saturation_test_token_001";
+        let ath = compute_access_token_hash(access_token);
+        let uri = "https://pds.example.com/xrpc/test";
+
+        let store = InMemoryTokenValidator::new();
+        store.register_token(
+            access_token,
+            "did:plc:saturated",
+            &jkt,
+            Some("atproto".to_string()),
+            None,
+        );
+
+        // Fill all 64 shards to their 2048-entry cap so the proof's shard (whatever
+        // it hashes to) is full; far-future expiry keeps probes "live" vs the real clock.
+        const SHARDS: usize = 64;
+        const SHARD_CAP: usize = 2048;
+        let cache = DPoPReplayCache::new();
+        let mut i = 0u64;
+        while cache.len() < SHARDS * SHARD_CAP {
+            let _ = cache.check_and_record(&jkt, &format!("probe{i}"), u64::MAX / 2, 0);
+            i += 1;
+            assert!(i < 2_000_000, "replay cache failed to saturate");
+        }
+        assert_eq!(cache.len(), SHARDS * SHARD_CAP);
+
+        let proof = key.create_proof("GET", uri, None, Some(&ath)).unwrap();
+        let verifier = Arc::new(DPoPVerifier::new().with_replay_cache(cache));
+        let layer = OAuthAuthLayer::from_token_store(verifier, store);
+        let inner_service = service_fn(|_req: Request<()>| async move {
+            Ok::<Response<String>, Infallible>(Response::new("SHOULD_NOT_REACH".to_string()))
+        });
+        let mut service = layer.layer(inner_service);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {access_token}"))
+            .header("DPoP", proof)
+            .body(())
+            .unwrap();
+
+        let resp = service.call(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "replay-cache saturation is a server-side condition and must map to 503"
+        );
+        assert!(resp.headers().contains_key(header::RETRY_AFTER));
     }
 
     #[tokio::test]
@@ -576,7 +702,6 @@ mod tests {
 
         let mut service = layer.layer(inner_service);
 
-        // 1. Initial request without server nonce receives 401 with DPoP-Nonce
         let proof_no_nonce = key.create_proof("GET", uri, None, Some(&ath)).unwrap();
         let req1 = Request::builder()
             .method("GET")
@@ -596,7 +721,6 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // 2. Client retries with the issued challenge nonce
         let proof_with_nonce = key
             .create_proof("GET", uri, Some(&issued_nonce), Some(&ath))
             .unwrap();
@@ -617,19 +741,20 @@ mod tests {
         let auth_key = SigningKey::random(&mut thread_rng());
         let auth_verifying_key = *auth_key.verifying_key();
 
-        // Attacker creates a fresh DPoP key and invents a token string
         let attacker_key = DPoPKey::generate();
         let invented_token = "fabricated_random_access_token_12345";
         let ath = compute_access_token_hash(invented_token);
         let uri = "https://pds.example.com/xrpc/app.bsky.actor.getProfile";
 
-        // DPoP proof signed with attacker's key hashing the invented token
         let proof = attacker_key
             .create_proof("GET", uri, None, Some(&ath))
             .unwrap();
 
         let verifier = Arc::new(DPoPVerifier::new());
-        let token_validator = JwtAccessTokenValidator::new().with_verifying_key(auth_verifying_key);
+        let token_validator = JwtAccessTokenValidator::new()
+            .with_verifying_key(auth_verifying_key)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
         let layer = OAuthAuthLayer::from_jwt_validator(verifier, token_validator);
 
         let inner_service = service_fn(|_req: Request<()>| async move {
@@ -673,7 +798,6 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        // Legitimate token issued to Alice
         let claims = JwtAccessTokenClaims::new(
             "https://auth.example.com",
             "did:plc:alice123",
@@ -685,7 +809,6 @@ mod tests {
         let alice_token = claims.sign_jwt(&auth_key, None).unwrap();
         let ath = compute_access_token_hash(&alice_token);
 
-        // Attacker presents Alice's token, but signs DPoP proof with Attacker's key
         let attacker_proof = attacker_key
             .create_proof("GET", uri, None, Some(&ath))
             .unwrap();
@@ -693,6 +816,7 @@ mod tests {
         let verifier = Arc::new(DPoPVerifier::new());
         let token_validator = JwtAccessTokenValidator::new()
             .with_verifying_key(auth_verifying_key)
+            .with_expected_issuer("https://auth.example.com")
             .with_expected_audience("https://pds.example.com");
         let layer = OAuthAuthLayer::from_jwt_validator(verifier, token_validator);
 
@@ -726,9 +850,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_tower_stolen_token_positive_control_with_own_proof() {
-        // Positive control: the identical token authenticates when presented with
-        // Alice's own DPoP key's proof, proving the previous rejection came from the
-        // cnf.jkt binding check rather than an unrelated validation failure.
+        // Positive control: the same token must authenticate with Alice's own proof,
+        // proving rejection came from the cnf.jkt binding check, not an unrelated failure.
         let auth_key = SigningKey::random(&mut thread_rng());
         let alice_key = DPoPKey::generate();
         let alice_jkt = alice_key.jwk_thumbprint();
@@ -757,6 +880,7 @@ mod tests {
         let verifier = Arc::new(DPoPVerifier::new());
         let token_validator = JwtAccessTokenValidator::new()
             .with_verifying_key(*auth_key.verifying_key())
+            .with_expected_issuer("https://auth.example.com")
             .with_expected_audience("https://pds.example.com");
         let layer = OAuthAuthLayer::from_jwt_validator(verifier, token_validator);
 
@@ -857,7 +981,6 @@ mod tests {
         let access_token = "proxied_request_token_abc";
         let ath = compute_access_token_hash(access_token);
 
-        // Client signs the externally visible absolute URL...
         let public_uri = "https://pds.example.com/xrpc/test";
 
         let proof = key
@@ -875,7 +998,6 @@ mod tests {
 
         let verifier = Arc::new(DPoPVerifier::new());
         let layer = OAuthAuthLayer::from_token_store(verifier, store).with_htu_override(|uri| {
-            // ...while the proxy delivers origin-form targets to the service.
             let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
             format!("https://pds.example.com{path_and_query}")
         });
@@ -899,6 +1021,199 @@ mod tests {
             resp.status(),
             StatusCode::OK,
             "origin-form request must authenticate using the overridden absolute htu"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tower_default_htu_handles_origin_form_with_host_authority() {
+        let key = DPoPKey::generate();
+        let jkt = key.jwk_thumbprint();
+        let access_token = "origin_form_default_htu_token";
+        let ath = compute_access_token_hash(access_token);
+
+        let public_uri = "https://pds.example.com/xrpc/test";
+        let proof = key
+            .create_proof("GET", public_uri, None, Some(&ath))
+            .unwrap();
+
+        let store = InMemoryTokenValidator::new();
+        store.register_token(
+            access_token,
+            "did:plc:originform",
+            &jkt,
+            Some("atproto".to_string()),
+            None,
+        );
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let layer = OAuthAuthLayer::from_token_store(verifier, store);
+
+        let inner_service = service_fn(|_req: Request<()>| async move {
+            Ok::<Response<String>, Infallible>(Response::new("OK".to_string()))
+        });
+
+        let mut service = layer.layer(inner_service);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("https://pds.example.com/xrpc/test")
+            .header(header::AUTHORIZATION, format!("DPoP {access_token}"))
+            .header("DPoP", proof)
+            .body(())
+            .unwrap();
+
+        let resp = service.call(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "absolute-form request must authenticate with the default htu derivation"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tower_default_htu_strips_default_https_port() {
+        // RFC 9449 § 4.2 htu normalization removes default ports.
+        let key = DPoPKey::generate();
+        let jkt = key.jwk_thumbprint();
+        let access_token = "default_port_htu_token";
+        let ath = compute_access_token_hash(access_token);
+
+        let proof = key
+            .create_proof("GET", "https://pds.example.com/xrpc/test", None, Some(&ath))
+            .unwrap();
+
+        let store = InMemoryTokenValidator::new();
+        store.register_token(
+            access_token,
+            "did:plc:defaultport",
+            &jkt,
+            Some("atproto".to_string()),
+            None,
+        );
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let layer = OAuthAuthLayer::from_token_store(verifier, store);
+
+        let inner_service = service_fn(|_req: Request<()>| async move {
+            Ok::<Response<String>, Infallible>(Response::new("OK".to_string()))
+        });
+
+        let mut service = layer.layer(inner_service);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("https://pds.example.com:443/xrpc/test")
+            .header(header::AUTHORIZATION, format!("DPoP {access_token}"))
+            .header("DPoP", proof)
+            .body(())
+            .unwrap();
+
+        let resp = service.call(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "explicit default port in authority must normalize away to match the signed htu"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tower_origin_form_without_authority_fails_closed() {
+        // Fail-closed: a path-only request can never match a client's signed absolute URI; reject rather than verify against a bogus htu.
+        let key = DPoPKey::generate();
+        let jkt = key.jwk_thumbprint();
+        let access_token = "no_authority_token";
+        let ath = compute_access_token_hash(access_token);
+
+        let proof = key
+            .create_proof("GET", "https://pds.example.com/xrpc/test", None, Some(&ath))
+            .unwrap();
+
+        let store = InMemoryTokenValidator::new();
+        store.register_token(
+            access_token,
+            "did:plc:noauthority",
+            &jkt,
+            Some("atproto".to_string()),
+            None,
+        );
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let layer = OAuthAuthLayer::from_token_store(verifier, store);
+
+        let inner_service = service_fn(|_req: Request<()>| async move {
+            Ok::<Response<String>, Infallible>(Response::new("SHOULD_NOT_REACH".to_string()))
+        });
+
+        let mut service = layer.layer(inner_service);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/xrpc/test")
+            .header(header::AUTHORIZATION, format!("DPoP {access_token}"))
+            .header("DPoP", proof)
+            .body(())
+            .unwrap();
+
+        let resp = service.call(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "request without an authority must fail closed before DPoP verification"
+        );
+        let www_auth = resp
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .expect("401 must carry WWW-Authenticate")
+            .to_str()
+            .unwrap();
+        assert!(www_auth.contains("invalid_dpop_proof"));
+    }
+
+    #[tokio::test]
+    async fn test_tower_origin_form_proxy_host_header_used_for_htu() {
+        // Host-header-only requests fail closed: the Host header is untrusted spoofable
+        // input, so htu derivation rejects path-only URIs even when a Host header exists.
+        let key = DPoPKey::generate();
+        let jkt = key.jwk_thumbprint();
+        let access_token = "host_header_only_token";
+        let ath = compute_access_token_hash(access_token);
+
+        let proof = key
+            .create_proof("GET", "https://pds.example.com/xrpc/test", None, Some(&ath))
+            .unwrap();
+
+        let store = InMemoryTokenValidator::new();
+        store.register_token(
+            access_token,
+            "did:plc:hostheader",
+            &jkt,
+            Some("atproto".to_string()),
+            None,
+        );
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let layer = OAuthAuthLayer::from_token_store(verifier, store);
+
+        let inner_service = service_fn(|_req: Request<()>| async move {
+            Ok::<Response<String>, Infallible>(Response::new("SHOULD_NOT_REACH".to_string()))
+        });
+
+        let mut service = layer.layer(inner_service);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/xrpc/test")
+            .header(header::HOST, "pds.example.com")
+            .header(header::AUTHORIZATION, format!("DPoP {access_token}"))
+            .header("DPoP", proof)
+            .body(())
+            .unwrap();
+
+        let resp = service.call(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "path-only URI must not authenticate even with a Host header present"
         );
     }
 }

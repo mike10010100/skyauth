@@ -23,8 +23,8 @@ use vstd::prelude::*;
 #[cfg(not(any(verus, verus_keep_ghost)))]
 pub use crate::verification::formal_models::*;
 
-// When compiling under standard rustc (cargo build / cargo test), define a transparent
-// fallback macro so that Verus proof syntax is recognized without compilation errors.
+// Under standard rustc (cargo build / cargo test), define a transparent fallback
+// macro so Verus proof syntax is recognized without compilation errors.
 #[cfg(not(any(verus, verus_keep_ghost)))]
 #[doc(hidden)]
 macro_rules! verus {
@@ -218,13 +218,13 @@ pub proof fn lemma_post_consumption_terminality(
 
 /// Specification of RFC 7636 unreserved character set.
 pub open spec fn is_unreserved_ascii(c: u8) -> bool {
-    (c >= 0x30 && c <= 0x39) // 0-9
-    || (c >= 0x41 && c <= 0x5a) // A-Z
-    || (c >= 0x61 && c <= 0x7a) // a-z
-    || c == 0x2d // -
-    || c == 0x2e // .
-    || c == 0x5f // _
-    || c == 0x7e // ~
+    (c >= 0x30 && c <= 0x39)
+    || (c >= 0x41 && c <= 0x5a)
+    || (c >= 0x61 && c <= 0x7a)
+    || c == 0x2d
+    || c == 0x2e
+    || c == 0x5f
+    || c == 0x7e
 }
 
 /// Specification of PKCE verifier validity condition.
@@ -308,7 +308,6 @@ pub proof fn theorem_constant_time_eq_soundness(a: (u8, u8), b: (u8, u8))
     let d1 = a.1 ^ b.1;
     assert(spec_constant_time_diff(a, b) == (d0 | d1));
     lemma_or_zero(d0, d1);
-    // Forward direction: accumulator zero => both XORs zero => bytes equal.
     if (d0 | d1) == 0 {
         assert(d0 == 0);
         assert(d1 == 0);
@@ -317,7 +316,6 @@ pub proof fn theorem_constant_time_eq_soundness(a: (u8, u8), b: (u8, u8))
         assert(a.0 == b.0 && a.1 == b.1);
         assert(spec_slices_equal(a, b));
     }
-    // Reverse direction: bytes equal => both XORs zero => accumulator zero.
     if spec_slices_equal(a, b) {
         assert(a.0 == b.0);
         assert(a.1 == b.1);
@@ -336,8 +334,8 @@ pub proof fn theorem_constant_time_eq_mismatched_first_octet(a: (u8, u8), b: (u8
     ensures !spec_slices_equal(a, b) && spec_constant_time_diff(a, b) != 0
 {
     lemma_xor_zero_iff_eq(a.0, b.0);
-    // From the lemma: (a.0 ^ b.0) == 0 <==> a.0 == b.0. The hypothesis gives a.0 != b.0,
-    // so the XOR must be non-zero.
+    // The lemma gives (a.0 ^ b.0) == 0 <==> a.0 == b.0; the hypothesis a.0 != b.0
+    // forces the XOR non-zero.
     assert(a.0 != b.0);
     let d0 = a.0 ^ b.0;
     let d1 = a.1 ^ b.1;

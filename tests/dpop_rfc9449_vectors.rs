@@ -13,7 +13,7 @@ use skyauth::error::DPoPError;
 
 #[test]
 fn test_rfc7638_section3_1_rsa_thumbprint() {
-    // Official RFC 7638 Section 3.1 Test Vector:
+    // RFC 7638 Section 3.1 official vector
     let n = "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw";
     let e = "AQAB";
 
@@ -23,7 +23,7 @@ fn test_rfc7638_section3_1_rsa_thumbprint() {
 
 #[test]
 fn test_rfc9449_figure8_and_11_ec_p256_thumbprint() {
-    // RFC 9449 Figure 8 & Figure 11 cnf.jkt matching key:
+    // RFC 9449 Figure 8 / Figure 11 cnf.jkt key
     let x = "l8tFrhx-34tV3hRICRDY9zCkDlpBhF42UQUfWVAWBFs";
     let y = "9VE4jf_Ok_o64zbTTlcuNJajHmt6v9TDVrU0CdvGRDA";
 
@@ -46,7 +46,6 @@ fn test_rfc9449_figure8_and_11_ec_p256_thumbprint() {
 
 #[test]
 fn test_rfc9449_section5_1_figure2_token_request_proof() {
-    // RFC 9449 Section 5.1 Figure 2 Token Request Proof
     let raw_jwt = "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwieCI6Imw4dEZyaHgtMzR0VjNoUklDUkRZOXpDa0RscEJoRjQyVVFVZldWQVdCRnMiLCJ5IjoiOVZFNGpmX09rX282NHpiVFRsY3VOSmFqSG10NnY5VERWclUwQ2R2R1JEQSIsImNydiI6IlAtMjU2In19.eyJqdGkiOiItQndDM0VTYzZhY2MybFRjIiwiaHRtIjoiUE9TVCIsImh0dSI6Imh0dHBzOi8vc2VydmVyLmV4YW1wbGUuY29tL3Rva2VuIiwiaWF0IjoxNTYyMjYyNjE2fQ.2-GxA6T8lP4vfrg8v-FdWP0A0zdrj8igiMLvqRMUvwnQg4PtFLbdLXiOSsX0x7NVY-FNyJK70nfbV37xRZT3Lg";
 
     let verifier = DPoPVerifier::new()
@@ -78,7 +77,6 @@ fn test_rfc9449_section5_1_figure2_token_request_proof() {
 
 #[test]
 fn test_rfc9449_section7_1_figure13_protected_resource_proof() {
-    // RFC 9449 Section 7.1 Figure 13 Protected Resource Request Proof with Access Token Hash (ath)
     let raw_jwt = "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwieCI6Imw4dEZyaHgtMzR0VjNoUklDUkRZOXpDa0RscEJoRjQyVVFVZldWQVdCRnMiLCJ5IjoiOVZFNGpmX09rX282NHpiVFRsY3VOSmFqSG10NnY5VERWclUwQ2R2R1JEQSIsImNydiI6IlAtMjU2In19.eyJqdGkiOiJlMWozVl9iS2ljOC1MQUVCIiwiaHRtIjoiR0VUIiwiaHR1IjoiaHR0cHM6Ly9yZXNvdXJjZS5leGFtcGxlLm9yZy9wcm90ZWN0ZWRyZXNvdXJjZSIsImlhdCI6MTU2MjI2MjYxOCwiYXRoIjoiZlVIeU8ycjJaM0RaNTNFc05yV0JiMHhXWG9hTnk1OUlpS0NBcWtzbVFFbyJ9.2oW9RP35yRqzhrtNP86L-Ey71EOptxRimPPToA1plemAgR6pxHF8y6-yqyVnmcw6Fy1dqd-jfxSYoMxhAJpLjA";
 
     let access_token = "Kz~8mXK1EalYznwH-LC-1fBAo.4Ljp~zsPE_NeO.gxU";
@@ -156,7 +154,6 @@ fn test_dpop_security_rejections() {
 
     let verifier = DPoPVerifier::new();
 
-    // 1. Method mismatch
     let res = verifier.verify_proof(
         &proof,
         "GET",
@@ -167,7 +164,6 @@ fn test_dpop_security_rejections() {
     );
     assert!(matches!(res, Err(DPoPError::MethodMismatch { .. })));
 
-    // 2. URI mismatch
     let res = verifier.verify_proof(
         &proof,
         "POST",
@@ -178,7 +174,6 @@ fn test_dpop_security_rejections() {
     );
     assert!(matches!(res, Err(DPoPError::UriMismatch { .. })));
 
-    // 3. Nonce mismatch
     let res = verifier.verify_proof(
         &proof,
         "POST",
@@ -189,7 +184,6 @@ fn test_dpop_security_rejections() {
     );
     assert!(matches!(res, Err(DPoPError::NonceMismatch { .. })));
 
-    // 4. Missing required nonce
     let proof_without_nonce = key
         .create_proof("POST", "https://server.example.com/token", None, None)
         .unwrap();
@@ -203,7 +197,6 @@ fn test_dpop_security_rejections() {
     );
     assert!(matches!(res, Err(DPoPError::MissingNonce)));
 
-    // 5. Access token hash mismatch
     let res = verifier.verify_proof(
         &proof,
         "POST",
@@ -214,7 +207,6 @@ fn test_dpop_security_rejections() {
     );
     assert!(matches!(res, Err(DPoPError::AthMismatch { .. })));
 
-    // 6. Missing required ath
     let res = verifier.verify_proof(
         &proof_without_nonce,
         "POST",
@@ -225,7 +217,6 @@ fn test_dpop_security_rejections() {
     );
     assert!(matches!(res, Err(DPoPError::MissingAth)));
 
-    // 7. Signature tampering
     let parts: Vec<&str> = proof.split('.').collect();
     let mut sig_bytes = base64url_decode(parts[2]).unwrap();
     sig_bytes[5] ^= 0xff;

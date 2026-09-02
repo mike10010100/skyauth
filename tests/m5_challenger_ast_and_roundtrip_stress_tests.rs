@@ -28,7 +28,6 @@ use skyauth::identity::{DidDocument, DidService, VerificationMethod};
 use skyauth::par::{ParParameters, ParResponse};
 use skyauth::pkce::{PkceMethod, PkcePair};
 
-// Static bundled schema includes
 const RFC8414_SCHEMA_STR: &str = include_str!("../schemas/rfc8414_authorization_server.json");
 const RFC9728_SCHEMA_STR: &str = include_str!("../schemas/rfc9728_protected_resource.json");
 const RFC9449_SCHEMA_STR: &str = include_str!("../schemas/rfc9449_dpop_proof.json");
@@ -41,7 +40,6 @@ const LEX_CREATE_SESSION_STR: &str =
 const LEX_REFRESH_SESSION_STR: &str =
     include_str!("../lexicons/com/atproto/server/refreshSession.json");
 
-/// Helper to convert ATProto Lexicon schema definitions into standard JSON Schema draft-07 ASTs.
 fn lexicon_to_json_schema(val: &Value) -> Value {
     match val {
         Value::Object(map) => {
@@ -59,14 +57,12 @@ fn lexicon_to_json_schema(val: &Value) -> Value {
     }
 }
 
-/// Helper to compile a JSON schema Value into a jsonschema validator.
 fn compile_validator(schema_json: &Value) -> jsonschema::Validator {
     let normalized = lexicon_to_json_schema(schema_json);
     jsonschema::validator_for(&normalized)
         .expect("Bundled JSON schema must be syntactically and semantically valid")
 }
 
-/// Helper to load a schema from disk or bundled constants.
 fn load_schema(rel_path: &str) -> Value {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let full_path = manifest_dir.join(rel_path);
@@ -101,17 +97,12 @@ fn load_schema(rel_path: &str) -> Value {
     }
 }
 
-// =========================================================================
-// SECTION 1: Deep Nesting & Recursive AST Traversal Injection
-// =========================================================================
-
 #[test]
 fn test_challenge_deeply_nested_object_injection_in_open_lexicon_schema() {
     let lex = load_schema("lexicons/com/atproto/server/createSession.json");
     let output_schema = &lex["defs"]["main"]["output"]["schema"];
     let validator = compile_validator(output_schema);
 
-    // Construct deeply nested object 100 levels deep inside didDoc ("type": "unknown")
     let mut deep_inner = json!({ "leaf_key": "deep_leaf_value" });
     for depth in 0..100 {
         deep_inner = json!({
@@ -139,7 +130,6 @@ fn test_challenge_deeply_nested_array_injection_in_open_lexicon_schema() {
     let output_schema = &lex["defs"]["main"]["output"]["schema"];
     let validator = compile_validator(output_schema);
 
-    // Construct deeply nested array 200 levels deep inside didDoc
     let mut deep_arr = json!(["innermost_element"]);
     for _ in 0..200 {
         deep_arr = json!([deep_arr]);
@@ -161,7 +151,6 @@ fn test_challenge_deeply_nested_array_injection_in_open_lexicon_schema() {
 
 #[test]
 fn test_challenge_deeply_nested_lexicon_normalizer_recursion_depth() {
-    // Construct a deeply nested synthetic lexicon schema definition (40 layers)
     let mut inner_schema = json!({
         "type": "object",
         "properties": {
@@ -199,13 +188,8 @@ fn test_challenge_deeply_nested_lexicon_normalizer_recursion_depth() {
     );
 }
 
-// =========================================================================
-// SECTION 2: Malformed Types & Type Mutation Fuzzing
-// =========================================================================
-
 #[test]
 fn test_challenge_float_where_integer_expected_rejections() {
-    // 1. RFC 9449: iat / exp as floating point numbers
     let dpop_schema = load_schema("schemas/rfc9449_dpop_proof.json");
     let dpop_val = compile_validator(&dpop_schema);
 
@@ -232,7 +216,6 @@ fn test_challenge_float_where_integer_expected_rejections() {
         "Floating point exp in DPoP must be rejected"
     );
 
-    // 2. PAR Response: expires_in as float
     let par_schema = json!({
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
@@ -259,7 +242,6 @@ fn test_challenge_negative_integers_and_boundary_violations() {
     let dpop_schema = load_schema("schemas/rfc9449_dpop_proof.json");
     let dpop_val = compile_validator(&dpop_schema);
 
-    // Negative iat
     let neg_iat = json!({
         "jti": "jti_123",
         "htm": "POST",
@@ -271,7 +253,6 @@ fn test_challenge_negative_integers_and_boundary_violations() {
         "Negative iat must be rejected (minimum: 0)"
     );
 
-    // Negative exp
     let neg_exp = json!({
         "jti": "jti_123",
         "htm": "POST",
@@ -284,7 +265,6 @@ fn test_challenge_negative_integers_and_boundary_violations() {
         "Negative exp must be rejected (minimum: 0)"
     );
 
-    // PAR schema expires_in = 0 when minimum is 1
     let par_schema = json!({
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
@@ -310,7 +290,6 @@ fn test_challenge_primitive_and_container_type_confusion_rejections() {
     let as_schema = load_schema("schemas/rfc8414_authorization_server.json");
     let as_val = compile_validator(&as_schema);
 
-    // Object where string array expected
     let obj_for_array = json!({
         "issuer": "https://auth.example.com",
         "authorization_endpoint": "https://auth.example.com/auth",
@@ -322,7 +301,6 @@ fn test_challenge_primitive_and_container_type_confusion_rejections() {
         "Object for string array must be rejected"
     );
 
-    // Array of integers where string array expected
     let int_array = json!({
         "issuer": "https://auth.example.com",
         "authorization_endpoint": "https://auth.example.com/auth",
@@ -334,7 +312,6 @@ fn test_challenge_primitive_and_container_type_confusion_rejections() {
         "Int array for string array must be rejected"
     );
 
-    // Boolean where URI string expected
     let bool_uri = json!({
         "issuer": true,
         "authorization_endpoint": "https://auth.example.com/auth",
@@ -345,7 +322,6 @@ fn test_challenge_primitive_and_container_type_confusion_rejections() {
         "Boolean for URI string must be rejected"
     );
 
-    // Number where boolean expected
     let num_for_bool = json!({
         "issuer": "https://auth.example.com",
         "authorization_endpoint": "https://auth.example.com/auth",
@@ -363,7 +339,6 @@ fn test_challenge_null_value_injection_in_mandatory_and_typed_fields() {
     let pds_schema = load_schema("schemas/rfc9728_protected_resource.json");
     let pds_val = compile_validator(&pds_schema);
 
-    // Null resource
     let null_resource = json!({
         "resource": null,
         "authorization_servers": ["https://auth.example.com"]
@@ -373,7 +348,6 @@ fn test_challenge_null_value_injection_in_mandatory_and_typed_fields() {
         "Null resource must be rejected"
     );
 
-    // Null item in authorization_servers array
     let null_item_array = json!({
         "resource": "https://pds.example.com",
         "authorization_servers": [null]
@@ -383,7 +357,6 @@ fn test_challenge_null_value_injection_in_mandatory_and_typed_fields() {
         "Null item in auth servers array must be rejected"
     );
 
-    // Null authorization_servers array
     let null_array = json!({
         "resource": "https://pds.example.com",
         "authorization_servers": null
@@ -394,13 +367,8 @@ fn test_challenge_null_value_injection_in_mandatory_and_typed_fields() {
     );
 }
 
-// =========================================================================
-// SECTION 3: `additionalProperties: false` Enforcement & Rogue Field Rejections
-// =========================================================================
-
 #[test]
 fn test_challenge_additional_properties_false_strict_rejections() {
-    // Create strict schema with additionalProperties: false
     let strict_dpop_schema = json!({
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": "Strict RFC 9449 DPoP Proof Claims",
@@ -419,7 +387,6 @@ fn test_challenge_additional_properties_false_strict_rejections() {
     });
     let strict_val = compile_validator(&strict_dpop_schema);
 
-    // Standard valid claims
     let valid_claims = json!({
         "jti": "jti_123",
         "htm": "POST",
@@ -431,7 +398,6 @@ fn test_challenge_additional_properties_false_strict_rejections() {
         "Valid claims must satisfy strict schema"
     );
 
-    // Rogue field injection
     let rogue_field = json!({
         "jti": "jti_123",
         "htm": "POST",
@@ -444,7 +410,6 @@ fn test_challenge_additional_properties_false_strict_rejections() {
         "Rogue field under additionalProperties: false must be rejected"
     );
 
-    // Rogue SQL/prototype-pollution key
     let proto_pollution = json!({
         "jti": "jti_123",
         "htm": "POST",
@@ -460,7 +425,6 @@ fn test_challenge_additional_properties_false_strict_rejections() {
 
 #[test]
 fn test_challenge_rust_struct_serialization_has_no_unexpected_rogue_keys() {
-    // Assert that serialized Rust domain structs do NOT produce rogue extra fields
     let strict_pds_schema = json!({
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
@@ -501,16 +465,11 @@ fn test_challenge_rust_struct_serialization_has_no_unexpected_rogue_keys() {
     );
 }
 
-// =========================================================================
-// SECTION 4: Null Byte (`\0`) & Control Character Injections
-// =========================================================================
-
 #[test]
 fn test_challenge_null_bytes_in_uri_fields_rejected_by_format_validator() {
     let as_schema = load_schema("schemas/rfc8414_authorization_server.json");
     let as_val = compile_validator(&as_schema);
 
-    // Null byte in issuer URI
     let null_byte_issuer = json!({
         "issuer": "https://auth.example.com\u{0000}/path",
         "authorization_endpoint": "https://auth.example.com/oauth/authorize",
@@ -521,7 +480,6 @@ fn test_challenge_null_bytes_in_uri_fields_rejected_by_format_validator() {
         "Null byte in issuer URI must be rejected by URI format validator"
     );
 
-    // Null byte in authorization_endpoint
     let null_byte_auth_ep = json!({
         "issuer": "https://auth.example.com",
         "authorization_endpoint": "https://auth.example.com/oauth\0/authorize",
@@ -532,7 +490,6 @@ fn test_challenge_null_bytes_in_uri_fields_rejected_by_format_validator() {
         "Null byte in authorization_endpoint must be rejected"
     );
 
-    // RFC 9449: Null byte in htu URI
     let dpop_schema = load_schema("schemas/rfc9449_dpop_proof.json");
     let dpop_val = compile_validator(&dpop_schema);
     let null_byte_htu = json!({
@@ -552,7 +509,6 @@ fn test_challenge_control_characters_in_uris_and_identifiers() {
     let as_schema = load_schema("schemas/rfc8414_authorization_server.json");
     let as_val = compile_validator(&as_schema);
 
-    // Tab, newline, carriage return in URI
     let newline_uri = json!({
         "issuer": "https://auth.example.com\n/oauth",
         "authorization_endpoint": "https://auth.example.com/oauth/authorize",
@@ -574,23 +530,18 @@ fn test_challenge_control_characters_in_uris_and_identifiers() {
     );
 }
 
-// =========================================================================
-// SECTION 5: Invalid RFC 3986 URIs & Empty String Boundary Attacks
-// =========================================================================
-
 #[test]
 fn test_challenge_invalid_rfc3986_uris_in_schema_fields() {
     let as_schema = load_schema("schemas/rfc8414_authorization_server.json");
     let as_val = compile_validator(&as_schema);
 
-    // Truly invalid RFC 3986 URIs (syntax violations, unclosed brackets, spaces, relative references)
     let invalid_uris = vec![
         "relative/path/not/an/absolute/uri",
         "/absolute/path/without/scheme",
-        "https://[invalid_ipv6",          // unclosed IPv6 bracket
-        "ht tps://spaces.com",            // space in scheme
-        "http://example .com",            // space in host
-        "https://example.com:not_a_port", // non-digit in port
+        "https://[invalid_ipv6",
+        "ht tps://spaces.com",
+        "http://example .com",
+        "https://example.com:not_a_port",
     ];
 
     for bad_uri in invalid_uris {
@@ -612,7 +563,6 @@ fn test_challenge_empty_strings_in_required_and_uri_fields() {
     let as_schema = load_schema("schemas/rfc8414_authorization_server.json");
     let as_val = compile_validator(&as_schema);
 
-    // Empty string for issuer (format: uri)
     let empty_issuer = json!({
         "issuer": "",
         "authorization_endpoint": "https://auth.example.com/oauth/authorize",
@@ -623,7 +573,6 @@ fn test_challenge_empty_strings_in_required_and_uri_fields() {
         "Empty string for issuer MUST be rejected by format: uri"
     );
 
-    // Empty string for authorization_endpoint
     let empty_auth_ep = json!({
         "issuer": "https://auth.example.com",
         "authorization_endpoint": "",
@@ -634,7 +583,6 @@ fn test_challenge_empty_strings_in_required_and_uri_fields() {
         "Empty string for authorization_endpoint MUST be rejected"
     );
 
-    // RFC 9728: Empty string for resource
     let pds_schema = load_schema("schemas/rfc9728_protected_resource.json");
     let pds_val = compile_validator(&pds_schema);
     let empty_resource = json!({
@@ -646,7 +594,6 @@ fn test_challenge_empty_strings_in_required_and_uri_fields() {
         "Empty string for resource MUST be rejected"
     );
 
-    // RFC 9728: Empty string in authorization_servers array
     let empty_item_in_array = json!({
         "resource": "https://pds.example.com",
         "authorization_servers": [""]
@@ -656,7 +603,6 @@ fn test_challenge_empty_strings_in_required_and_uri_fields() {
         "Empty string in authorization_servers array MUST be rejected"
     );
 
-    // RFC 9449: Empty string in htu
     let dpop_schema = load_schema("schemas/rfc9449_dpop_proof.json");
     let dpop_val = compile_validator(&dpop_schema);
     let empty_htu = json!({
@@ -671,16 +617,11 @@ fn test_challenge_empty_strings_in_required_and_uri_fields() {
     );
 }
 
-// =========================================================================
-// SECTION 6: Direct AST Validation vs Rust Structs Roundtrip Fidelity
-// =========================================================================
-
 #[test]
 fn test_challenge_roundtrip_authorization_server_metadata() {
     let schema = load_schema("schemas/rfc8414_authorization_server.json");
     let validator = compile_validator(&schema);
 
-    // 1. Full struct
     let full = AuthorizationServerMetadata {
         issuer: "https://auth.bsky.social".to_string(),
         authorization_endpoint: "https://auth.bsky.social/oauth/authorize".to_string(),
@@ -715,7 +656,6 @@ fn test_challenge_roundtrip_authorization_server_metadata() {
         "Roundtrip equality check failed for full AS metadata"
     );
 
-    // 2. Minimal JSON deserialization check
     let min_json = json!({
         "issuer": "https://minimal-auth.example.com",
         "authorization_endpoint": "https://minimal-auth.example.com/oauth/authorize",
@@ -765,8 +705,6 @@ fn test_challenge_null_field_serialization_discrepancy_in_protected_resource_met
     let schema = load_schema("schemas/rfc9728_protected_resource.json");
     let validator = compile_validator(&schema);
 
-    // When resource_documentation is None, serde serializes it as {"resource_documentation": null}
-    // because #[serde(skip_serializing_if = "Option::is_none")] is not present on the struct.
     let struct_with_none = ProtectedResourceMetadata {
         resource: "https://pds2.example.com".to_string(),
         authorization_servers: vec!["https://auth.example.com".to_string()],
@@ -778,13 +716,11 @@ fn test_challenge_null_field_serialization_discrepancy_in_protected_resource_met
     let serialized_none = serde_json::to_value(&struct_with_none).unwrap();
     assert_eq!(serialized_none["resource_documentation"], Value::Null);
 
-    // The RFC 9728 schema requires "type": "string", so "null" is strictly rejected
     assert!(
         !validator.is_valid(&serialized_none),
         "Serializing resource_documentation: None produces JSON null, which RFC 9728 schema AST rejects"
     );
 
-    // Conversely, omitting the key completely (as RFC 9728 intended) satisfies the schema
     let valid_omitted = json!({
         "resource": "https://pds2.example.com",
         "authorization_servers": ["https://auth.example.com"]
@@ -799,8 +735,6 @@ fn test_challenge_empty_par_endpoint_serialization_discrepancy_in_authorization_
     let schema = load_schema("schemas/rfc8414_authorization_server.json");
     let validator = compile_validator(&schema);
 
-    // When pushed_authorization_request_endpoint is empty String, it serializes as ""
-    // which violates RFC 8414 format: "uri" constraint.
     let struct_with_empty_par = AuthorizationServerMetadata {
         issuer: "https://auth.example.com".to_string(),
         authorization_endpoint: "https://auth.example.com/oauth/authorize".to_string(),
@@ -829,7 +763,6 @@ fn test_challenge_empty_par_endpoint_serialization_discrepancy_in_authorization_
         "Empty string for pushed_authorization_request_endpoint violates RFC 8414 format: uri"
     );
 
-    // Populated with valid URI satisfies the schema
     let mut valid_populated = struct_with_empty_par;
     valid_populated.pushed_authorization_request_endpoint =
         "https://auth.example.com/oauth/par".to_string();
@@ -842,7 +775,6 @@ fn test_challenge_roundtrip_dpop_proof_claims() {
     let schema = load_schema("schemas/rfc9449_dpop_proof.json");
     let validator = compile_validator(&schema);
 
-    // 1. Full claims
     let full = DPoPProofClaims {
         jti: "unique_jti_string_12345".to_string(),
         htm: "POST".to_string(),
@@ -858,7 +790,6 @@ fn test_challenge_roundtrip_dpop_proof_claims() {
     let deserialized: DPoPProofClaims = serde_json::from_value(serialized).unwrap();
     assert_eq!(full, deserialized);
 
-    // 2. Minimal claims (no optional fields)
     let minimal = DPoPProofClaims {
         jti: "minimal_jti_888".to_string(),
         htm: "GET".to_string(),
@@ -892,7 +823,6 @@ fn test_challenge_roundtrip_token_response() {
     });
     let validator = compile_validator(&token_schema);
 
-    // Full token response
     let full = TokenResponse {
         access_token: "dpop_access_jwt_string".to_string(),
         token_type: "DPoP".to_string(),
@@ -907,7 +837,6 @@ fn test_challenge_roundtrip_token_response() {
     let deserialized: TokenResponse = serde_json::from_value(serialized).unwrap();
     assert_eq!(full, deserialized);
 
-    // Minimal token response
     let minimal = TokenResponse {
         access_token: "bearer_token_string".to_string(),
         token_type: "Bearer".to_string(),
@@ -946,7 +875,6 @@ fn test_challenge_roundtrip_par_response_and_parameters() {
     let deserialized: ParResponse = serde_json::from_value(serialized).unwrap();
     assert_eq!(par_resp, deserialized);
 
-    // ParParameters serialization and roundtrip
     let par_params = ParParameters::new(
         "https://app.example.com/client-metadata.json",
         "https://app.example.com/callback",
@@ -1037,7 +965,6 @@ fn test_challenge_roundtrip_did_document_and_services() {
 
 #[test]
 fn test_challenge_roundtrip_jwk_ec_and_pkce_pair() {
-    // 1. JwkEc
     let jwk_schema = json!({
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
@@ -1063,7 +990,6 @@ fn test_challenge_roundtrip_jwk_ec_and_pkce_pair() {
     let jwk_deser: JwkEc = serde_json::from_value(jwk_json).unwrap();
     assert_eq!(jwk, jwk_deser);
 
-    // 2. PkcePair
     let pkce_schema = json!({
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
@@ -1087,10 +1013,6 @@ fn test_challenge_roundtrip_jwk_ec_and_pkce_pair() {
     let pkce_deser: PkcePair = serde_json::from_value(pkce_json).unwrap();
     assert_eq!(pkce, pkce_deser);
 }
-
-// =========================================================================
-// SECTION 7: Property-Based Roundtrip & Mutation Fuzzing (proptest)
-// =========================================================================
 
 proptest! {
     #[test]
@@ -1199,16 +1121,11 @@ proptest! {
     }
 }
 
-// =========================================================================
-// SECTION 8: Client Metadata & Lexicon Procedure Advanced Boundary Suites
-// =========================================================================
-
 #[test]
 fn test_challenge_client_metadata_boundary_and_extension_fields() {
     let schema = load_schema("schemas/atproto_client_metadata.json");
     let validator = compile_validator(&schema);
 
-    // Valid full client metadata with optional URIs
     let valid_full = json!({
         "client_id": "https://app.example.com/oauth/client-metadata.json",
         "client_name": "Full ATProto Client",
@@ -1230,7 +1147,6 @@ fn test_challenge_client_metadata_boundary_and_extension_fields() {
     });
     assert!(validator.is_valid(&valid_full));
 
-    // Invalid: application_type enum violation (e.g. "cli" or "desktop")
     let invalid_app_type = json!({
         "client_id": "https://app.example.com/client.json",
         "client_name": "CLI Tool",
@@ -1248,7 +1164,6 @@ fn test_challenge_client_metadata_boundary_and_extension_fields() {
         "Invalid application_type enum value must fail schema AST"
     );
 
-    // Invalid: non-URI in logo_uri
     let invalid_logo_uri = json!({
         "client_id": "https://app.example.com/client.json",
         "client_name": "Client",
@@ -1266,7 +1181,6 @@ fn test_challenge_client_metadata_boundary_and_extension_fields() {
         "Invalid logo_uri must fail format: uri constraint"
     );
 
-    // Invalid: boolean where string is expected for scope
     let bool_scope = json!({
         "client_id": "https://app.example.com/client.json",
         "client_name": "Client",
@@ -1283,28 +1197,22 @@ fn test_challenge_client_metadata_boundary_and_extension_fields() {
 
 #[test]
 fn test_challenge_lexicon_procedure_input_output_rejections() {
-    // 1. createSession input
     let cs_lex = load_schema("lexicons/com/atproto/server/createSession.json");
     let cs_input_schema = &cs_lex["defs"]["main"]["input"]["schema"];
     let cs_in_val = compile_validator(cs_input_schema);
 
-    // Missing password
     let missing_pwd = json!({ "identifier": "alice.bsky.social" });
     assert!(!cs_in_val.is_valid(&missing_pwd));
 
-    // Missing identifier
     let missing_ident = json!({ "password": "secret_password" });
     assert!(!cs_in_val.is_valid(&missing_ident));
 
-    // Integer for identifier
     let int_ident = json!({ "identifier": 12345, "password": "pwd" });
     assert!(!cs_in_val.is_valid(&int_ident));
 
-    // 2. createSession output
     let cs_output_schema = &cs_lex["defs"]["main"]["output"]["schema"];
     let cs_out_val = compile_validator(cs_output_schema);
 
-    // Missing did in output
     let missing_did = json!({
         "accessJwt": "jwt1",
         "refreshJwt": "jwt2",
@@ -1312,7 +1220,6 @@ fn test_challenge_lexicon_procedure_input_output_rejections() {
     });
     assert!(!cs_out_val.is_valid(&missing_did));
 
-    // Missing handle in output
     let missing_handle = json!({
         "accessJwt": "jwt1",
         "refreshJwt": "jwt2",
@@ -1320,12 +1227,10 @@ fn test_challenge_lexicon_procedure_input_output_rejections() {
     });
     assert!(!cs_out_val.is_valid(&missing_handle));
 
-    // 3. refreshSession output
     let rs_lex = load_schema("lexicons/com/atproto/server/refreshSession.json");
     let rs_output_schema = &rs_lex["defs"]["main"]["output"]["schema"];
     let rs_out_val = compile_validator(rs_output_schema);
 
-    // Valid output
     let valid_refresh = json!({
         "accessJwt": "fresh_access",
         "refreshJwt": "fresh_refresh",
@@ -1335,7 +1240,6 @@ fn test_challenge_lexicon_procedure_input_output_rejections() {
     });
     assert!(rs_out_val.is_valid(&valid_refresh));
 
-    // Missing refreshJwt
     let missing_ref = json!({
         "accessJwt": "fresh_access",
         "handle": "bob.bsky.social",

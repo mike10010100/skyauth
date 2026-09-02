@@ -14,15 +14,10 @@ use std::sync::Arc;
 use skyauth::dpop::{compute_access_token_hash, DPoPKey, DPoPNonceCache, DPoPVerifier};
 use skyauth::pkce::PkcePair;
 
-// =========================================================================
-// WORKLOAD 1: Complete End-to-End User Login Lifecycle
-// =========================================================================
-
 #[tokio::test]
 async fn test_w1_full_user_login_and_xrpc_lifecycle() {
     let env = MockOAuthEnvironment::start_default().await;
 
-    // Phase 1: User Identity Resolution
     let did = env
         .dns
         .resolve_handle_txt(TEST_ALICE_HANDLE)
@@ -30,7 +25,6 @@ async fn test_w1_full_user_login_and_xrpc_lifecycle() {
         .expect("handle found");
     assert_eq!(did, TEST_ALICE_DID);
 
-    // Phase 2: DID Document & PDS Resolution
     let client = reqwest::Client::new();
     let did_doc: serde_json::Value = client
         .get(format!("{}/{}", env.plc.uri(), did))
@@ -44,14 +38,12 @@ async fn test_w1_full_user_login_and_xrpc_lifecycle() {
     let pds_endpoint = did_doc["service"][0]["serviceEndpoint"].as_str().unwrap();
     assert_eq!(pds_endpoint, env.pds.uri());
 
-    // Assert Bidirectional Handle Verification
     let also_known_as = did_doc["alsoKnownAs"].as_array().unwrap();
     let is_verified = also_known_as
         .iter()
         .any(|v| v.as_str() == Some(&format!("at://{TEST_ALICE_HANDLE}")));
     assert!(is_verified, "Handle must match alsoKnownAs");
 
-    // Phase 3: OAuth Protected Resource & Authorization Server Discovery
     let pds_meta: serde_json::Value = client
         .get(format!(
             "{pds_endpoint}/.well-known/oauth-protected-resource"
@@ -80,12 +72,10 @@ async fn test_w1_full_user_login_and_xrpc_lifecycle() {
     let token_endpoint = as_meta["token_endpoint"].as_str().unwrap();
     let auth_endpoint = as_meta["authorization_endpoint"].as_str().unwrap();
 
-    // Phase 4: Generate PKCE, State, and DPoP Keypair
     let pkce = PkcePair::generate();
     let dpop_key = DPoPKey::generate();
     let state_token = "secure_random_state_token_256bit";
 
-    // Phase 5: Pushed Authorization Request (PAR)
     let request_uri = "urn:ietf:params:oauth:request_uri:req-alice-lifecycle-1";
     env.auth_server.mount_par_success(request_uri, 90).await;
 
@@ -113,7 +103,6 @@ async fn test_w1_full_user_login_and_xrpc_lifecycle() {
     let par_json: serde_json::Value = par_resp.json().await.unwrap();
     assert_eq!(par_json["request_uri"], request_uri);
 
-    // Phase 6: Build Authorization Redirect URL
     let mut auth_url = url::Url::parse(auth_endpoint).unwrap();
     auth_url
         .query_pairs_mut()
@@ -123,7 +112,6 @@ async fn test_w1_full_user_login_and_xrpc_lifecycle() {
         .as_str()
         .contains("request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3Areq-alice-lifecycle-1"));
 
-    // Phase 7: User redirects back with Authorization Code
     let auth_code = "auth_code_issued_after_user_consent";
     let access_token = "at_alice_access_token_super_valid";
     let refresh_token = "rt_alice_refresh_token_rotation_1";
@@ -157,7 +145,6 @@ async fn test_w1_full_user_login_and_xrpc_lifecycle() {
     assert_eq!(token_json["access_token"], access_token);
     assert_eq!(token_json["sub"], TEST_ALICE_DID);
 
-    // Phase 8: Access Protected XRPC Resource using DPoP-Bound Token
     let xrpc_url = format!("{pds_endpoint}/xrpc/app.bsky.actor.getProfile");
     let ath = compute_access_token_hash(access_token);
     let resource_proof = dpop_key
@@ -178,10 +165,6 @@ async fn test_w1_full_user_login_and_xrpc_lifecycle() {
     assert_eq!(profile["handle"], TEST_ALICE_HANDLE);
 }
 
-// =========================================================================
-// WORKLOAD 2: Multi-Hop Transparent Nonce Challenge Recovery
-// =========================================================================
-
 #[tokio::test]
 async fn test_w2_multi_hop_auto_nonce_negotiation_loop() {
     let env = MockOAuthEnvironment::start_default().await;
@@ -190,7 +173,6 @@ async fn test_w2_multi_hop_auto_nonce_negotiation_loop() {
     let nonce_cache = DPoPNonceCache::new();
     let dpop_key = DPoPKey::generate();
 
-    // Hop 1: PAR Endpoint Nonce Challenge
     let par_url = format!("{}/oauth/par", env.auth_server.uri());
     env.auth_server
         .mount_par_nonce_challenge_once("nonce-par-step1")
@@ -221,7 +203,6 @@ async fn test_w2_multi_hop_auto_nonce_negotiation_loop() {
     nonce_cache.set_nonce(&env.auth_server.uri(), new_nonce.clone());
     par_nonce = Some(new_nonce);
 
-    // Retry PAR with fresh nonce -> 201 Created
     env.auth_server
         .mount_par_success("urn:ietf:req-par-nonce-success", 90)
         .await;
@@ -238,7 +219,6 @@ async fn test_w2_multi_hop_auto_nonce_negotiation_loop() {
         .unwrap();
     assert_eq!(resp_par_2.status(), 201);
 
-    // Hop 2: Token Endpoint Nonce Challenge
     let token_url = format!("{}/oauth/token", env.auth_server.uri());
     env.auth_server
         .mount_token_nonce_challenge_once("nonce-token-step2")
@@ -266,7 +246,6 @@ async fn test_w2_multi_hop_auto_nonce_negotiation_loop() {
     nonce_cache.set_nonce(&env.auth_server.uri(), fresh_token_nonce.clone());
     token_nonce = Some(fresh_token_nonce);
 
-    // Retry Token exchange with fresh nonce -> 200 OK
     let access_token = "at_alice_after_nonce_dance";
     env.auth_server
         .mount_token_exchange_success(access_token, "rt_after_nonce", TEST_ALICE_DID, 3600)
@@ -282,7 +261,6 @@ async fn test_w2_multi_hop_auto_nonce_negotiation_loop() {
         .unwrap();
     assert_eq!(resp_token_2.status(), 200);
 
-    // Hop 3: Protected XRPC Resource Nonce Challenge
     let xrpc_url = format!("{}/xrpc/app.bsky.actor.getProfile", pds.uri());
     pds.server.reset().await;
     pds.mount_xrpc_dpop_nonce_challenge_once("nonce-pds-step3")
@@ -310,7 +288,6 @@ async fn test_w2_multi_hop_auto_nonce_negotiation_loop() {
         .unwrap();
     nonce_cache.set_nonce(&pds.uri(), fresh_pds_nonce.to_string());
 
-    // Retry XRPC resource request with fresh PDS nonce -> 200 OK
     pds.mount_xrpc_get_profile(TEST_ALICE_DID, TEST_ALICE_HANDLE)
         .await;
     let xrpc_proof_2 = dpop_key
@@ -325,10 +302,6 @@ async fn test_w2_multi_hop_auto_nonce_negotiation_loop() {
         .unwrap();
     assert_eq!(resp_xrpc_2.status(), 200);
 }
-
-// =========================================================================
-// WORKLOAD 3: High-Concurrency Multi-User Sessions
-// =========================================================================
 
 struct TestShardedStore {
     shards: Vec<parking_lot::RwLock<HashMap<String, String>>>,
@@ -381,10 +354,8 @@ async fn test_w3_high_concurrency_multi_user_lifecycle() {
             })
             .to_string();
 
-            // Store state
             store_clone.insert(state_token.clone(), session_data.clone());
 
-            // Consume state atomically
             let taken = store_clone.take(&state_token);
             assert_eq!(taken, Some(session_data));
             assert_eq!(store_clone.take(&state_token), None);
@@ -396,10 +367,6 @@ async fn test_w3_high_concurrency_multi_user_lifecycle() {
     }
 }
 
-// =========================================================================
-// WORKLOAD 4: Compromised Token & Replay Defense
-// =========================================================================
-
 #[test]
 fn test_w4_stolen_token_without_private_key_fails_dpop() {
     let legitimate_key = DPoPKey::generate();
@@ -409,19 +376,16 @@ fn test_w4_stolen_token_without_private_key_fails_dpop() {
 
     let target_uri = "https://pds.example.com/xrpc/profile";
 
-    // Legitimate user creates proof with legitimate key
     let legit_proof = legitimate_key
         .create_proof("GET", target_uri, None, Some(&ath))
         .unwrap();
 
-    // Attacker creates proof for same token with attacker's key
     let attacker_proof = attacker_key
         .create_proof("GET", target_uri, None, Some(&ath))
         .unwrap();
 
     let verifier = DPoPVerifier::new();
 
-    // Server expects legitimate user's JWK thumbprint
     let expected_jkt = legitimate_key.jwk_thumbprint();
 
     let (_, legit_jwk) = verifier
@@ -439,26 +403,18 @@ fn test_w4_stolen_token_without_private_key_fails_dpop() {
     );
 }
 
-// =========================================================================
-// WORKLOAD 5: Long-Running Daemon Key & Refresh Token Rotation
-// =========================================================================
-
 #[test]
 fn test_w5_daemon_key_rotation_and_session_persistence() {
-    // 1. Initial Keypair and Session
     let initial_key = DPoPKey::generate();
     let initial_pem = initial_key.to_pkcs8_pem().unwrap();
     let initial_refresh_token = "rt_session_init".to_string();
 
-    // 2. Simulate Daemon Restart & Key Reload
     let reloaded_key = DPoPKey::from_pkcs8_pem(&initial_pem).unwrap();
     assert_eq!(initial_key.jwk_thumbprint(), reloaded_key.jwk_thumbprint());
 
-    // 3. Perform Refresh Rotation
     let new_refresh_token = "rt_session_rotated_1".to_string();
     assert_ne!(initial_refresh_token, new_refresh_token);
 
-    // 4. Generate Fresh DPoP Key for Next Epoch
     let next_epoch_key = DPoPKey::generate();
     assert_ne!(
         initial_key.jwk_thumbprint(),

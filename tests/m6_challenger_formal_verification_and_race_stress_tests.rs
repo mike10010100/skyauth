@@ -64,13 +64,8 @@ fn mock_stored_entry(state: &str) -> StoredStateEntry {
     }
 }
 
-// =========================================================================
-// SECTION 1: Property-Based Verification Equivalence Tests
-// =========================================================================
-
 #[test]
 fn test_challenge_pkce_verifier_exhaustive_character_domain_and_length_boundaries() {
-    // 1. Valid character set: [A-Za-z0-9-._~]
     for b in 0..=255u8 {
         let is_unreserved_spec = PkceFormalSpec::is_unreserved_char(b);
         let expected =
@@ -80,7 +75,6 @@ fn test_challenge_pkce_verifier_exhaustive_character_domain_and_length_boundarie
             "PkceFormalSpec char check failed for byte {b:#04x}"
         );
 
-        // String with 42 valid characters plus one test byte
         let candidate = format!("{}{}", "A".repeat(42), b as char);
         let prod_valid = validate_verifier(&candidate).is_ok();
         let spec_valid = PkceFormalSpec::spec_validate_verifier(candidate.as_bytes());
@@ -90,7 +84,6 @@ fn test_challenge_pkce_verifier_exhaustive_character_domain_and_length_boundarie
         );
     }
 
-    // 2. Length boundary stress: 0 to 200
     for len in 0..=200 {
         let test_verifier = "a".repeat(len);
         let prod_valid = validate_verifier(&test_verifier).is_ok();
@@ -112,8 +105,6 @@ fn test_challenge_pkce_verifier_exhaustive_character_domain_and_length_boundarie
 
 #[test]
 fn test_challenge_pkce_s256_challenge_derivation_deterministic_spec_bijection() {
-    // For 1,000 random verifiers, prove challenge length is strictly 43
-    // and matches RFC 7636 Appendix B mathematical definition
     for len in 43..=128 {
         let pkce = PkcePair::generate_with_entropy_size((len * 3) / 4)
             .unwrap_or_else(|_| PkcePair::generate());
@@ -132,13 +123,10 @@ fn test_challenge_pkce_s256_challenge_derivation_deterministic_spec_bijection() 
 
 #[test]
 fn test_challenge_constant_time_eq_exhaustive_bit_flip_matrix() {
-    // Test constant_time_eq against ConstantTimeEqSpec for all possible 1-bit mutations
-    // across varying buffer sizes (1 to 64 bytes)
     for buf_len in [1, 2, 4, 8, 16, 32, 48, 64] {
         let base_buf: Vec<u8> = (0..buf_len).map(|i| (i * 37 + 11) as u8).collect();
         let identical_buf = base_buf.clone();
 
-        // Identical buffers must evaluate to true in all models
         assert!(constant_time_eq(&base_buf, &identical_buf));
         assert!(ConstantTimeEqSpec::spec_constant_time_eq_model(
             &base_buf,
@@ -150,7 +138,6 @@ fn test_challenge_constant_time_eq_exhaustive_bit_flip_matrix() {
             &identical_buf
         ));
 
-        // Flip every single bit across the entire buffer
         for byte_idx in 0..buf_len {
             for bit_idx in 0..8 {
                 let mut mutated_buf = base_buf.clone();
@@ -180,67 +167,52 @@ fn test_challenge_constant_time_eq_exhaustive_bit_flip_matrix() {
 #[test]
 fn test_challenge_ssrf_exhaustive_rfc_subspace_partitioning_equivalence() {
     let test_ips = [
-        // Boundaries of 0.0.0.0/8
         (Ipv4Addr::new(0, 0, 0, 0), true),
         (Ipv4Addr::new(0, 255, 255, 255), true),
         (Ipv4Addr::new(1, 0, 0, 0), false),
-        // Boundaries of 10.0.0.0/8
         (Ipv4Addr::new(10, 0, 0, 0), true),
         (Ipv4Addr::new(10, 255, 255, 255), true),
         (Ipv4Addr::new(11, 0, 0, 0), false),
-        // Boundaries of 100.64.0.0/10
         (Ipv4Addr::new(100, 63, 255, 255), false),
         (Ipv4Addr::new(100, 64, 0, 0), true),
         (Ipv4Addr::new(100, 127, 255, 255), true),
         (Ipv4Addr::new(100, 128, 0, 0), false),
-        // Boundaries of 127.0.0.0/8
         (Ipv4Addr::new(126, 255, 255, 255), false),
         (Ipv4Addr::new(127, 0, 0, 0), true),
         (Ipv4Addr::new(127, 255, 255, 255), true),
         (Ipv4Addr::new(128, 0, 0, 0), false),
-        // Boundaries of 169.254.0.0/16 (AWS / GCP metadata 169.254.169.254)
         (Ipv4Addr::new(169, 253, 255, 255), false),
         (Ipv4Addr::new(169, 254, 0, 0), true),
         (Ipv4Addr::new(169, 254, 169, 254), true),
         (Ipv4Addr::new(169, 254, 255, 255), true),
         (Ipv4Addr::new(169, 255, 0, 0), false),
-        // Boundaries of 172.16.0.0/12
         (Ipv4Addr::new(172, 15, 255, 255), false),
         (Ipv4Addr::new(172, 16, 0, 0), true),
         (Ipv4Addr::new(172, 31, 255, 255), true),
         (Ipv4Addr::new(172, 32, 0, 0), false),
-        // Boundaries of 192.0.0.0/24
         (Ipv4Addr::new(192, 0, 0, 0), true),
         (Ipv4Addr::new(192, 0, 0, 255), true),
         (Ipv4Addr::new(192, 0, 1, 0), false),
-        // Boundaries of 192.0.2.0/24
         (Ipv4Addr::new(192, 0, 2, 0), true),
         (Ipv4Addr::new(192, 0, 2, 255), true),
-        // Boundaries of 192.88.99.0/24
         (Ipv4Addr::new(192, 88, 99, 0), true),
         (Ipv4Addr::new(192, 88, 99, 255), true),
         (Ipv4Addr::new(192, 88, 100, 0), false),
-        // Boundaries of 192.168.0.0/16
         (Ipv4Addr::new(192, 167, 255, 255), false),
         (Ipv4Addr::new(192, 168, 0, 0), true),
         (Ipv4Addr::new(192, 168, 255, 255), true),
         (Ipv4Addr::new(192, 169, 0, 0), false),
-        // Boundaries of 198.18.0.0/15
         (Ipv4Addr::new(198, 17, 255, 255), false),
         (Ipv4Addr::new(198, 18, 0, 0), true),
         (Ipv4Addr::new(198, 19, 255, 255), true),
         (Ipv4Addr::new(198, 20, 0, 0), false),
-        // Boundaries of 198.51.100.0/24
         (Ipv4Addr::new(198, 51, 100, 0), true),
         (Ipv4Addr::new(198, 51, 100, 255), true),
-        // Boundaries of 203.0.113.0/24
         (Ipv4Addr::new(203, 0, 113, 0), true),
         (Ipv4Addr::new(203, 0, 113, 255), true),
-        // Boundaries of 224.0.0.0/4 (Multicast)
         (Ipv4Addr::new(223, 255, 255, 255), false),
         (Ipv4Addr::new(224, 0, 0, 0), true),
         (Ipv4Addr::new(239, 255, 255, 255), true),
-        // Boundaries of 240.0.0.0/4 (Reserved / Class E / Broadcast)
         (Ipv4Addr::new(240, 0, 0, 0), true),
         (Ipv4Addr::new(255, 255, 255, 255), true),
     ];
@@ -277,7 +249,6 @@ fn test_challenge_state_store_and_formal_model_state_machine_equivalence_traces(
     let mut model = OAuthStateTransitionModel::new();
     let store = OAuthStateStore::default();
 
-    // Trace 1: Normal Lifecycle: Insert -> Contains -> Take -> Take again
     let s1 = "trace_state_normal_1";
     assert_eq!(store.contains_state_sync(s1), model.states.contains_key(s1));
     assert!(model.insert(s1, "client_app", 100, 10));
@@ -303,12 +274,11 @@ fn test_challenge_state_store_and_formal_model_state_machine_equivalence_traces(
     assert!(model.verify_single_use_invariant(s1));
     assert!(model.verify_global_store_invariants());
 
-    // Trace 2: Expired State Lifecycle
     let s2 = "trace_state_expired_2";
-    assert!(model.insert(s2, "client_app", 10, 100)); // expires at tick 110
+    assert!(model.insert(s2, "client_app", 10, 100));
     assert!(store
         .insert_state_sync(s2.to_string(), mock_stored_entry(s2), Duration::ZERO)
-        .is_ok()); // immediately expired
+        .is_ok());
 
     assert_eq!(store.contains_state_sync(s2), false);
     assert_eq!(
@@ -320,14 +290,8 @@ fn test_challenge_state_store_and_formal_model_state_machine_equivalence_traces(
     assert!(model.verify_global_store_invariants());
 }
 
-// =========================================================================
-// SECTION 2: Concurrency & Boundary Stress on State Machine TTL / Races
-// =========================================================================
-
 #[test]
 fn test_challenge_150_threads_racing_at_exact_ttl_boundary() {
-    // 150 threads simultaneously execute `take_state` on a key with a short TTL (15ms).
-    // Invariant: Total successful consumptions across all 150 racers is in {0, 1}, NEVER > 1.
     for round in 0..15 {
         let store = Arc::new(OAuthStateStore::default());
         let state_key = format!("ttl_race_round_{round}_{}", thread_rng().gen::<u64>());
@@ -353,7 +317,6 @@ fn test_challenge_150_threads_racing_at_exact_ttl_boundary() {
 
             handles.push(std::thread::spawn(move || {
                 b.wait();
-                // Random micro-jitter to hit before, at, and after the 15ms TTL boundary
                 if i % 3 == 0 {
                     std::thread::sleep(Duration::from_millis(18));
                 }
@@ -381,7 +344,6 @@ async fn test_challenge_multi_key_concurrent_chaos_with_active_background_pruner
     let store = Arc::new(OAuthStateStore::default());
     let cancel_token = CancellationToken::new();
 
-    // Background pruner running every 5ms
     let pruner = store.spawn_pruning_task(Duration::from_millis(5), cancel_token.clone());
 
     let num_tasks = 40;
@@ -403,18 +365,15 @@ async fn test_challenge_multi_key_concurrent_chaos_with_active_background_pruner
                 let entry = mock_stored_entry(&state_key);
                 let ttl_ms = ((task_id * 17 + i * 13) % 30 + 1) as u64;
 
-                // Try insert
                 let _ = s
                     .insert_state(state_key.clone(), entry, Duration::from_millis(ttl_ms))
                     .await;
 
-                // Random short pause
                 if (task_id + i) % 3 == 0 {
                     tokio::time::sleep(Duration::from_millis(((task_id + i) % 10 + 1) as u64))
                         .await;
                 }
 
-                // Try take
                 if let Ok(Some(consumed)) = s.take_state(&state_key).await {
                     assert_eq!(consumed.state, state_key);
                     let mut guard = gc.write().unwrap();
@@ -429,11 +388,9 @@ async fn test_challenge_multi_key_concurrent_chaos_with_active_background_pruner
         t.await.unwrap();
     }
 
-    // Stop background pruner
     cancel_token.cancel();
     let _ = pruner.await;
 
-    // Verify all keys were consumed in single-use batches
     let guard = global_consumptions.read().unwrap();
     for (k, &count) in guard.iter() {
         assert!(count > 0, "Key {k} had zero successful takes");
@@ -442,7 +399,6 @@ async fn test_challenge_multi_key_concurrent_chaos_with_active_background_pruner
 
 #[test]
 fn test_challenge_anti_vacuity_gate_coverage_verification() {
-    // Trigger all Kani proof harnesses and verify all cover tags are actively hit
     proof_single_use_state_consumption();
     proof_ssrf_restricted_ip_rejection();
     proof_pkce_s256_verifier_bounds();
@@ -495,10 +451,6 @@ fn test_challenge_anti_vacuity_gate_coverage_verification() {
         "All anti-vacuity reachability gates must be triggered"
     );
 }
-
-// =========================================================================
-// SECTION 3: Proptest Arbitrary Equivalence Generators
-// =========================================================================
 
 proptest! {
     #[test]
