@@ -212,6 +212,44 @@ jobs:
             echo "Version ${{ steps.pkg_info.outputs.version }} is NOT published on crates.io yet."
           fi
 
+      # `needs:` cannot span workflow files, so the CodeQL Static Security Scan
+      # (a required branch-protection check that runs in codeql.yml) is invisible
+      # to job dependencies. v0.2.0 was released before its CodeQL conclusion as
+      # a result. Poll the combined commit status until both required CodeQL
+      # contexts conclude, failing closed on any non-success or on timeout.
+      - name: Wait for required CodeQL security scans on this commit
+        if: steps.check_published.outputs.published == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          contexts=("CodeQL Static Security Scan (rust)" "CodeQL Static Security Scan (actions)")
+          deadline=$(( $(date +%s) + 900 ))
+          while :; do
+            json=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/status")
+            all_ok=true
+            for c in "${contexts[@]}"; do
+              state=$(jq -r --arg c "$c" '[.statuses[] | select(.context == $c)][0].state // "missing"' <<<"$json")
+              case "$state" in
+                success) ;;
+                missing|pending|expected) all_ok=false ;;
+                *)
+                  echo "::error::Required check '${c}' concluded with state '${state}'; refusing to publish"
+                  exit 1
+                  ;;
+              esac
+            done
+            if $all_ok; then
+              echo "All required CodeQL scans succeeded on commit ${GITHUB_SHA}."
+              exit 0
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::Timed out waiting for required CodeQL scans; refusing to publish"
+              exit 1
+            fi
+            echo "Waiting for required CodeQL scans..."
+            sleep 15
+          done
+
       - name: Validate package before publish
         if: steps.check_published.outputs.published == 'false'
         run: cargo publish --dry-run --allow-dirty
