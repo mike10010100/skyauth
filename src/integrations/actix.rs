@@ -38,7 +38,7 @@ impl FromRequest for AuthenticatedUser {
     type Future = Ready<Result<Self, Self::Error>>;
 
     fn from_request(req: &HttpRequest, _payload: &mut Payload) -> Self::Future {
-        // First check for session extension in HttpRequest extensions
+        // OAuthSessionExtension is injected by the Tower middleware; it takes precedence over a bare AuthenticatedUser.
         let extensions = req.extensions();
         if let Some(ext) = extensions.get::<OAuthSessionExtension>() {
             return ready(Ok(ext.user.clone()));
@@ -48,7 +48,6 @@ impl FromRequest for AuthenticatedUser {
             return ready(Ok(user.clone()));
         }
 
-        // Fallback: Check if Authorization header is present
         if let Some(auth_header) = req.headers().get(header::AUTHORIZATION) {
             if let Ok(auth_str) = auth_header.to_str() {
                 if !auth_str.starts_with("DPoP ") && !auth_str.starts_with("dpop ") {

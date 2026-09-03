@@ -11,11 +11,19 @@ use serde::{Deserialize, Serialize};
 use crate::dpop::{compute_access_token_hash, DPoPKey};
 use crate::error::{AtprotoOAuthError, DPoPError, TokenError};
 
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
 /// An authenticated AT Protocol OAuth session.
 ///
 /// Holds the authenticated user's DID, DPoP-bound access token, single-use refresh token,
 /// session expiration time, and cryptographic [`DPoPKey`] for signing subsequent XRPC requests.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// # Memory Zeroization & Partial Moves
+/// This struct implements [`Drop`] and [`ZeroizeOnDrop`] to securely zeroize sensitive
+/// credentials (`access_token` and `refresh_token`) from memory on destruction. As a consequence
+/// of Rust's [`Drop`] safety rules (E0509), partial moves of individual fields out of
+/// this struct are prohibited; callers should borrow fields or clone the structure.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OAuthSession {
     /// Authenticated subject DID (e.g. `did:plc:...`).
     pub sub: String,
@@ -40,6 +48,44 @@ pub struct OAuthSession {
     /// Timestamp when this session was initially created or exchanged.
     pub created_at: SystemTime,
 }
+
+impl std::fmt::Debug for OAuthSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthSession")
+            .field("sub", &self.sub)
+            .field("access_token", &"[REDACTED]")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("token_type", &self.token_type)
+            .field("scope", &self.scope)
+            .field("expires_at", &self.expires_at)
+            .field("dpop_key", &self.dpop_key)
+            .field("pds_endpoint", &self.pds_endpoint)
+            .field("auth_server_issuer", &self.auth_server_issuer)
+            .field("token_endpoint", &self.token_endpoint)
+            .field("created_at", &self.created_at)
+            .finish()
+    }
+}
+
+impl Zeroize for OAuthSession {
+    fn zeroize(&mut self) {
+        self.access_token.zeroize();
+        if let Some(ref mut rt) = self.refresh_token {
+            rt.zeroize();
+        }
+    }
+}
+
+impl Drop for OAuthSession {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for OAuthSession {}
 
 impl OAuthSession {
     /// Creates a new `OAuthSession` after validating that `token_type` is case-insensitively `"DPoP"`.
@@ -110,12 +156,20 @@ impl OAuthSession {
     /// Atomically rotates the session tokens upon successful refresh token exchange.
     ///
     /// Updates `access_token`, `refresh_token`, and recalculates `expires_at` based on current time.
+    /// Outgoing token strings are zeroized in memory before being replaced.
     pub fn rotate_tokens(
         &mut self,
         access_token: impl Into<String>,
         refresh_token: Option<String>,
         expires_in_secs: Option<u64>,
     ) {
+        // Explicitly zeroize outgoing credentials before overwriting so the previous
+        // secrets are scrubbed rather than simply dropped unzeroed.
+        self.access_token.zeroize();
+        if let Some(ref mut rt) = self.refresh_token {
+            rt.zeroize();
+        }
+
         self.access_token = access_token.into();
         self.refresh_token = refresh_token;
         let now = SystemTime::now();

@@ -1,6 +1,6 @@
-//! Formal Verification & Anti-Vacuity Test Suite for `atproto-oauth`.
+//! Formal Specification & Mathematical Invariant Test Suite for `skyauth`.
 //!
-//! Executes deductive Verus contracts, Kani model checking proof harnesses,
+//! Executes formal transition models, Kani model checking proof harnesses,
 //! and anti-vacuity reachability checks under standard `cargo test`.
 
 #![allow(
@@ -21,30 +21,24 @@ use skyauth::dpop::normalize_htu;
 use skyauth::pkce::validate_verifier;
 use skyauth::ssrf::{is_restricted_ipv4, is_restricted_ipv6, SsrfFilter};
 use skyauth::store::OAuthStateStore;
+use skyauth::verification::formal_models::{
+    ConstantTimeEqSpec, DPoPHtuFormalSpec, OAuthStateTransitionModel, PkceFormalSpec,
+    SsrfFormalSpec, StateTransitionStatus,
+};
 use skyauth::verification::kani_harnesses::{
     global_coverage, proof_constant_time_eq_soundness, proof_dpop_htu_normalization_invariants,
     proof_pkce_s256_verifier_bounds, proof_single_use_state_consumption,
     proof_ssrf_restricted_ip_rejection,
 };
-use skyauth::verification::verus_contracts::{
-    ConstantTimeEqSpec, DPoPHtuFormalSpec, OAuthStateTransitionModel, PkceFormalSpec,
-    SsrfFormalSpec, StateTransitionStatus,
-};
-
-// =========================================================================
-// SECTION 1: Verus Deductive Contracts & Mathematical Invariant Tests
-// =========================================================================
 
 #[test]
-fn test_verus_state_machine_transition_invariants() {
+fn test_formal_state_machine_transition_invariants() {
     let mut model = OAuthStateTransitionModel::new();
-    let state = "verus_contract_test_state_1";
+    let state = "formal_contract_test_state_1";
 
-    // 1. Uninitialized state take returns None
     assert!(model.take_state(state, 0).is_none());
     assert!(model.verify_single_use_invariant(state));
 
-    // 2. Insert transitions to Pending
     assert!(model.insert(state, "client_app", 100, 10));
     assert!(matches!(
         model.states.get(state),
@@ -55,10 +49,8 @@ fn test_verus_state_machine_transition_invariants() {
     ));
     assert!(model.verify_global_store_invariants());
 
-    // 3. Duplicate insert fails
     assert!(!model.insert(state, "client_app_duplicate", 100, 15));
 
-    // 4. First take in valid window consumes state
     let entry = model.take_state(state, 50);
     assert!(entry.is_some());
     let entry = entry.unwrap();
@@ -72,7 +64,6 @@ fn test_verus_state_machine_transition_invariants() {
     ));
     assert!(model.verify_single_use_invariant(state));
 
-    // 5. Subsequent takes deterministically return None
     assert!(model.take_state(state, 55).is_none());
     assert!(model.take_state(state, 60).is_none());
     assert!(model.verify_single_use_invariant(state));
@@ -84,13 +75,8 @@ fn test_verus_state_machine_expiration_invariants() {
     let mut model = OAuthStateTransitionModel::new();
     let state = "verus_expired_state";
 
-    // Insert with TTL = 30 at tick 10 (expires at tick 40)
     assert!(model.insert(state, "client_app", 30, 10));
 
-    // Query at tick 39 (valid)
-    // Note: We won't take here, so it expires at tick 40
-
-    // Query at tick 40 (elapsed = 30 >= TTL 30) -> Expired
     assert!(model.take_state(state, 40).is_none());
     assert!(matches!(
         model.states.get(state),
@@ -100,7 +86,6 @@ fn test_verus_state_machine_expiration_invariants() {
     ));
     assert!(model.verify_single_use_invariant(state));
 
-    // Pruning expired states
     let state2 = "verus_prune_state";
     assert!(model.insert(state2, "client_app", 20, 10));
     let pruned = model.prune(35);
@@ -120,7 +105,6 @@ fn test_verus_state_machine_concurrent_interleaving_simulation() {
 
     assert!(model.insert(state, "client_app", 200, 0));
 
-    // 100 concurrent racers
     let (successes, failures) = model.simulate_concurrent_consumption_race(state, 100, 50);
     assert_eq!(successes, 1, "Strictly 1 racer must consume state");
     assert_eq!(failures, 99, "99 racers must receive None");
@@ -130,7 +114,6 @@ fn test_verus_state_machine_concurrent_interleaving_simulation() {
 
 #[test]
 fn test_verus_pkce_formal_spec_bounds_and_bijection() {
-    // Length domain: 43 to 128
     assert_eq!(PkceFormalSpec::spec_s256_challenge_len(), 43);
     for len in 0..200 {
         let is_valid = PkceFormalSpec::is_valid_verifier_len(len);
@@ -141,7 +124,6 @@ fn test_verus_pkce_formal_spec_bounds_and_bijection() {
         }
     }
 
-    // Character domain: [A-Za-z0-9-._~]
     for byte in 0..=255u8 {
         let is_unreserved = PkceFormalSpec::is_unreserved_char(byte);
         let expected = byte.is_ascii_alphanumeric()
@@ -164,14 +146,12 @@ fn test_verus_constant_time_eq_soundness_and_timing_independence() {
     assert!(ConstantTimeEqSpec::verify_soundness(s1, b"prefix_only"));
     assert!(ConstantTimeEqSpec::verify_soundness(b"", b""));
 
-    // Accumulator bitwise XOR model
     assert!(ConstantTimeEqSpec::spec_constant_time_eq_model(s1, s2));
     assert!(!ConstantTimeEqSpec::spec_constant_time_eq_model(s1, s3));
 }
 
 #[test]
 fn test_verus_ssrf_formal_spec_exhaustive_subspaces() {
-    // 15 IPv4 RFC restricted ranges
     let restricted_v4_samples = [
         Ipv4Addr::new(0, 0, 0, 1),
         Ipv4Addr::new(10, 0, 0, 1),
@@ -205,7 +185,6 @@ fn test_verus_ssrf_formal_spec_exhaustive_subspaces() {
         );
     }
 
-    // Public IPv4 samples MUST pass
     let public_v4_samples = [
         Ipv4Addr::new(1, 1, 1, 1),
         Ipv4Addr::new(8, 8, 8, 8),
@@ -226,10 +205,6 @@ fn test_verus_ssrf_formal_spec_exhaustive_subspaces() {
         );
     }
 }
-
-// =========================================================================
-// SECTION 2: Kani Proof Harness Execution & Anti-Vacuity Gate Tests
-// =========================================================================
 
 #[test]
 fn test_kani_proof_single_use_state_consumption_with_reachability() {
@@ -317,10 +292,6 @@ fn test_kani_proof_dpop_htu_normalization_invariants_with_reachability() {
     global_coverage().assert_all_covered(&required_tags);
 }
 
-// =========================================================================
-// SECTION 3: Property-Based Model Equivalence & State Space Exploration
-// =========================================================================
-
 fn mock_stored_state(state: &str) -> skyauth::client::StoredStateEntry {
     skyauth::client::StoredStateEntry {
         state: state.to_string(),
@@ -348,22 +319,18 @@ proptest! {
         let store = OAuthStateStore::default();
         let mut model = OAuthStateTransitionModel::new();
 
-        // 1. Initial lookup
         prop_assert_eq!(store.take_state_sync(&state_key).is_some(), model.take_state(&state_key, 0).is_some());
 
-        // 2. Insert into both
         let entry = mock_stored_state(&state_key);
         store.insert_state_sync(state_key.clone(), entry, Duration::from_secs(60)).unwrap();
         let model_inserted = model.insert(&state_key, "client_app", 60, 10);
         prop_assert!(model_inserted);
 
-        // 3. First take must succeed in both
         let store_take = store.take_state_sync(&state_key);
         let model_take = model.take_state(&state_key, 20);
         prop_assert_eq!(store_take.is_some(), model_take.is_some());
         prop_assert!(store_take.is_some());
 
-        // 4. Repeated takes must return None in both
         for _ in 0..repeat_takes {
             let next_store_take = store.take_state_sync(&state_key);
             let next_model_take = model.take_state(&state_key, 30);

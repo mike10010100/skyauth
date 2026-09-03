@@ -1,8 +1,8 @@
-# `atproto-oauth` Test Infrastructure & Mock Harness Blueprint
+# `skyauth` Test Infrastructure & Mock Harness Blueprint
 
 ## Overview
 
-The `atproto-oauth` End-to-End (E2E) test infrastructure provides a fully hermetic, deterministic, opaque-box testing environment for validating decentralized OAuth 2.1 authentication workflows as specified in **RFC 9449 (DPoP)**, **RFC 9126 (PAR)**, **RFC 7636 (PKCE)**, **RFC 8414 (OAuth Server Metadata)**, **RFC 9728 (OAuth Protected Resource Metadata)**, and the **ATProto OAuth Specification**.
+The `skyauth` End-to-End (E2E) test infrastructure provides a fully hermetic, deterministic, opaque-box testing environment for validating decentralized OAuth 2.1 authentication workflows as specified in **RFC 9449 (DPoP)**, **RFC 9126 (PAR)**, **RFC 7636 (PKCE)**, **RFC 8414 (OAuth Server Metadata)**, **RFC 9728 (OAuth Protected Resource Metadata)**, and the **ATProto OAuth Specification**.
 
 The test harness operates strictly without external network dependencies, spinning up ephemeral in-memory mock services and Wiremock HTTP servers on loopback interfaces.
 
@@ -84,15 +84,26 @@ The test suite incorporates authoritative test vectors directly from standard RF
 
 ## Test Suite Execution
 
-To execute the entire test infrastructure and verification suite:
+To execute the entire test infrastructure and verification suite (all mandatory quality gates — formatting, strict Clippy, tests, doc-tests, coverage, spec drift, Verus, and Kani — are defined in [`AGENTS.md`](AGENTS.md)):
 
 ```bash
 # Run all integration test suites and unit tests
-cargo test --all-targets
+cargo test --all-targets --all-features
+
+# Run rustdoc examples
+cargo test --doc --all-features
 
 # Run specific tiers
 cargo test --test tier1_feature_tests   # Tier 1: 125 Feature Tests
 cargo test --test tier2_boundary_tests  # Tier 2: 125 Boundary & Corner Tests
 cargo test --test tier3_pairwise_tests  # Tier 3: 30 Pairwise Interaction Tests
 cargo test --test tier4_workload_tests  # Tier 4: 5 Realistic Workload Tests
+cargo test --test tier5_adversarial_tests  # Tier 5: 65 Adversarial & Attack-Path Tests
+
+# Formal verification gates
+bash scripts/run_verus.sh               # Verus SMT deductive proofs (self-bootstrapping)
+cargo kani                              # Bounded model checking with anti-vacuity covers
+
+# Coverage gate (≥ 80% lines)
+cargo llvm-cov --all-features --fail-under-lines 80
 ```

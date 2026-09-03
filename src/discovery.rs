@@ -15,7 +15,7 @@ use url::Url;
 
 use crate::error::{DiscoveryError, SsrfError};
 use crate::identity::IdentityResolver;
-use crate::ssrf::SsrfFilter;
+use crate::ssrf::{SsrfFilter, MAX_OAUTH_RESPONSE_BYTES};
 
 /// RFC 9728 OAuth 2.0 Protected Resource Metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +77,15 @@ pub struct AuthorizationServerMetadata {
     /// Whether client ID metadata document resolution is supported.
     #[serde(default)]
     pub client_id_metadata_document_supported: bool,
+    /// Whether the authorization server requires RFC 9126 `request_uri` registration
+    /// via PAR. The ATProto OAuth profile mandates this; an explicit `false` is
+    /// rejected during capability validation (omission is treated as `true`).
+    #[serde(default = "crate::discovery::default_true")]
+    pub require_request_uri_registration: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Fully discovered and validated OAuth endpoints bundle.
@@ -106,10 +115,76 @@ pub struct DiscoveredAuthEndpoints {
     pub auth_server_metadata: AuthorizationServerMetadata,
 }
 
+/// Checks whether a URL is an origin-only URL (scheme + host + optional non-default port, no path/query/fragment).
+///
+/// Rejects explicit default HTTPS port (`:443`) or explicit default HTTP port (`:80`),
+/// as well as userinfo, paths (other than empty or `/`), query parameters, and fragments.
+fn is_origin_only(url_str: &str) -> bool {
+    if let Ok(parsed) = Url::parse(url_str) {
+        let scheme = parsed.scheme();
+        let host = parsed.host_str().unwrap_or("");
+        let is_loopback =
+            host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]";
+        if scheme != "https" && !(scheme == "http" && is_loopback) {
+            return false;
+        }
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            return false;
+        }
+        // The `url` crate normalizes default ports away (`port()` is `None` for explicit `:443`),
+        // so detect the explicit spelling from the raw AUTHORITY segment; scanning only there
+        // also avoids false positives from ports that merely contain ":443"/":80" (e.g. 44371).
+        let after_scheme = url_str
+            .split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(url_str);
+        let authority = after_scheme
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or(after_scheme);
+        let host_port = authority.rsplit('@').next().unwrap_or(authority);
+        let has_explicit_port = match host_port.rfind(']') {
+            Some(bracket_end) => host_port[bracket_end..].contains(':'),
+            None => host_port.contains(':'),
+        };
+        if has_explicit_port {
+            // Parse the port numerically so leading-zero spellings (`:0443`, `:0080`)
+            // match the default-port forms they normalize to; a non-numeric port fails
+            // the origin check outright.
+            let port_str = host_port.rsplit(':').next().unwrap_or("");
+            match port_str.parse::<u16>() {
+                Ok(443) if scheme == "https" => return false,
+                Ok(80) if scheme == "http" => return false,
+                Ok(_) => {}
+                Err(_) => return false,
+            }
+        }
+        if host_port.contains('\\') {
+            return false;
+        }
+        let path = parsed.path();
+        (path.is_empty() || path == "/") && parsed.query().is_none() && parsed.fragment().is_none()
+    } else {
+        false
+    }
+}
+
+/// Normalizes a URL to its ASCII origin representation (or stripped base).
+fn normalize_origin(url_str: &str) -> String {
+    if let Ok(parsed) = Url::parse(url_str) {
+        parsed.origin().ascii_serialization()
+    } else {
+        url_str.trim().trim_end_matches('/').to_string()
+    }
+}
+
 /// Fetches and parses RFC 9728 Protected Resource Metadata from a PDS endpoint.
 ///
 /// # Errors
 /// - Returns [`DiscoveryError::MissingAuthorizationServers`] if the `authorization_servers` list is empty.
+/// - Returns [`DiscoveryError::MultipleAuthorizationServers`] if more than 1 authorization server is listed.
+/// - Returns [`DiscoveryError::InvalidAuthorizationServerUrl`] if the authorization server URL is not a valid origin.
+/// - Returns [`DiscoveryError::ResourceMismatch`] if the `resource` field does not match the PDS endpoint origin.
 /// - Returns [`DiscoveryError::ProtectedResourceDiscoveryFailed`] if the HTTP request or JSON parsing fails.
 pub async fn fetch_protected_resource_metadata(
     ssrf_filter: &SsrfFilter,
@@ -121,7 +196,7 @@ pub async fn fetch_protected_resource_metadata(
     );
 
     let meta: ProtectedResourceMetadata = ssrf_filter
-        .safe_get_json(&url, 1_048_576)
+        .safe_get_json(&url, MAX_OAUTH_RESPONSE_BYTES)
         .await
         .map_err(|e| match e {
             SsrfError::HttpStatus(status, msg) => DiscoveryError::ProtectedResourceDiscoveryFailed(
@@ -133,10 +208,43 @@ pub async fn fetch_protected_resource_metadata(
             other => DiscoveryError::Ssrf(other),
         })?;
 
+    // ATProto requires exactly one authorization server.
     if meta.authorization_servers.is_empty() {
         return Err(DiscoveryError::MissingAuthorizationServers(
             pds_endpoint.to_string(),
         ));
+    }
+    if meta.authorization_servers.len() > 1 {
+        return Err(DiscoveryError::MultipleAuthorizationServers(
+            meta.authorization_servers.len(),
+        ));
+    }
+
+    let as_url = &meta.authorization_servers[0];
+    if !is_origin_only(as_url) {
+        return Err(DiscoveryError::InvalidAuthorizationServerUrl(
+            as_url.clone(),
+        ));
+    }
+
+    let expected_origin = normalize_origin(pds_endpoint);
+    let actual_origin = normalize_origin(&meta.resource);
+    if expected_origin != actual_origin {
+        return Err(DiscoveryError::ResourceMismatch {
+            expected: expected_origin,
+            actual: meta.resource.clone(),
+        });
+    }
+    // RFC 9728 identifiers for an origin-scoped resource are bare origins; a
+    // path, query, fragment, userinfo, or explicit default port would make the
+    // declared identifier differ from the queried PDS and is metadata-confusion
+    // signal, so it is rejected even at the same origin. Reuses is_origin_only
+    // for the same authority rules applied to authorization-server URLs.
+    if !is_origin_only(&meta.resource) {
+        return Err(DiscoveryError::ResourceMismatch {
+            expected: expected_origin,
+            actual: meta.resource.clone(),
+        });
     }
 
     Ok(meta)
@@ -163,14 +271,14 @@ pub async fn fetch_auth_server_metadata(
     let primary_url = format!("{base}/.well-known/oauth-authorization-server");
 
     let meta: AuthorizationServerMetadata = match ssrf_filter
-        .safe_get_json(&primary_url, 1_048_576)
+        .safe_get_json(&primary_url, MAX_OAUTH_RESPONSE_BYTES)
         .await
     {
         Ok(m) => m,
         Err(SsrfError::HttpStatus(404, _)) => {
             let fallback_url = format!("{base}/.well-known/openid-configuration");
             ssrf_filter
-                .safe_get_json(&fallback_url, 1_048_576)
+                .safe_get_json(&fallback_url, MAX_OAUTH_RESPONSE_BYTES)
                 .await
                 .map_err(|e| match e {
                     SsrfError::HttpStatus(status, msg) => {
@@ -201,22 +309,31 @@ pub async fn fetch_auth_server_metadata(
     Ok(meta)
 }
 
-/// Validates security capabilities and invariant compliance on Authorization Server Metadata.
+/// Validates security capabilities and invariant compliance on Authorization Server Metadata
+/// according to the AT Protocol OAuth specification profile.
 pub fn validate_auth_server_capabilities(
     meta: &AuthorizationServerMetadata,
     auth_server_url: &str,
 ) -> Result<(), DiscoveryError> {
-    // 1. Issuer Origin Equality Check
-    let expected_norm = auth_server_url.trim().trim_end_matches('/');
-    let actual_norm = meta.issuer.trim().trim_end_matches('/');
-    if expected_norm != actual_norm {
+    if !is_origin_only(auth_server_url) {
+        return Err(DiscoveryError::InvalidAuthorizationServerUrl(
+            auth_server_url.to_string(),
+        ));
+    }
+    if !is_origin_only(&meta.issuer) {
+        return Err(DiscoveryError::InvalidAuthorizationServerUrl(
+            meta.issuer.clone(),
+        ));
+    }
+    let expected_origin = normalize_origin(auth_server_url);
+    let actual_origin = normalize_origin(&meta.issuer);
+    if expected_origin != actual_origin {
         return Err(DiscoveryError::IssuerMismatch {
             expected: auth_server_url.to_string(),
             actual: meta.issuer.clone(),
         });
     }
 
-    // 2. PAR Endpoint Validation
     if meta.pushed_authorization_request_endpoint.trim().is_empty() {
         return Err(DiscoveryError::MissingParEndpoint(
             auth_server_url.to_string(),
@@ -229,7 +346,11 @@ pub fn validate_auth_server_capabilities(
         )));
     }
 
-    // 3. Token Endpoint Validation
+    // ATProto profile mandates PAR.
+    if !meta.require_pushed_authorization_requests {
+        return Err(DiscoveryError::ParNotRequired(auth_server_url.to_string()));
+    }
+
     if meta.token_endpoint.trim().is_empty() {
         return Err(DiscoveryError::MissingTokenEndpoint(
             auth_server_url.to_string(),
@@ -242,7 +363,6 @@ pub fn validate_auth_server_capabilities(
         )));
     }
 
-    // 4. Authorization Endpoint Validation
     if meta.authorization_endpoint.trim().is_empty() {
         return Err(DiscoveryError::MissingAuthorizationEndpoint(
             auth_server_url.to_string(),
@@ -255,7 +375,94 @@ pub fn validate_auth_server_capabilities(
         )));
     }
 
-    // 5. DPoP ES256 Algorithm Enforcement
+    if !meta.response_types_supported.iter().any(|r| r == "code") {
+        return Err(DiscoveryError::MissingResponseType(
+            auth_server_url.to_string(),
+        ));
+    }
+
+    if !meta
+        .grant_types_supported
+        .iter()
+        .any(|g| g == "authorization_code")
+    {
+        return Err(DiscoveryError::MissingGrantType {
+            auth_server: auth_server_url.to_string(),
+            missing: "authorization_code".to_string(),
+        });
+    }
+    if !meta
+        .grant_types_supported
+        .iter()
+        .any(|g| g == "refresh_token")
+    {
+        return Err(DiscoveryError::MissingGrantType {
+            auth_server: auth_server_url.to_string(),
+            missing: "refresh_token".to_string(),
+        });
+    }
+
+    // ATProto profile mandates both "none" and "private_key_jwt" auth methods.
+    let has_none = meta
+        .token_endpoint_auth_methods_supported
+        .iter()
+        .any(|m| m == "none");
+    let has_private_key_jwt = meta
+        .token_endpoint_auth_methods_supported
+        .iter()
+        .any(|m| m == "private_key_jwt");
+    if !has_none || !has_private_key_jwt {
+        return Err(DiscoveryError::MissingTokenAuthMethod(
+            auth_server_url.to_string(),
+        ));
+    }
+
+    if !meta
+        .token_endpoint_auth_signing_alg_values_supported
+        .iter()
+        .any(|alg| alg == "ES256")
+    {
+        return Err(DiscoveryError::MissingTokenAuthSigningAlg(
+            auth_server_url.to_string(),
+        ));
+    }
+    if meta
+        .token_endpoint_auth_signing_alg_values_supported
+        .iter()
+        .any(|alg| alg == "none")
+    {
+        return Err(DiscoveryError::InvalidTokenAuthSigningAlg(
+            auth_server_url.to_string(),
+        ));
+    }
+
+    if !meta.scopes_supported.iter().any(|s| s == "atproto") {
+        return Err(DiscoveryError::MissingAtprotoScope(
+            auth_server_url.to_string(),
+        ));
+    }
+
+    // RFC 9207 `iss` is mandatory in the ATProto profile.
+    if !meta.authorization_response_iss_parameter_supported {
+        return Err(DiscoveryError::MissingIssParameterSupport(
+            auth_server_url.to_string(),
+        ));
+    }
+
+    if !meta.client_id_metadata_document_supported {
+        return Err(DiscoveryError::MissingClientMetadataSupport(
+            auth_server_url.to_string(),
+        ));
+    }
+
+    // The ATProto OAuth profile mandates PAR request_uri registration; an explicit
+    // `require_request_uri_registration: false` contradicts it and is rejected.
+    if !meta.require_request_uri_registration {
+        return Err(DiscoveryError::MissingRequestUriRegistration(
+            auth_server_url.to_string(),
+        ));
+    }
+
     if !meta
         .dpop_signing_alg_values_supported
         .iter()
@@ -266,7 +473,6 @@ pub fn validate_auth_server_capabilities(
         ));
     }
 
-    // 6. PKCE S256 Challenge Method Enforcement
     if !meta
         .code_challenge_methods_supported
         .iter()
@@ -294,16 +500,13 @@ pub async fn discover_oauth_endpoints(
     resolver: &IdentityResolver,
     did_or_handle: &str,
 ) -> Result<DiscoveredAuthEndpoints, DiscoveryError> {
-    // 1. Identity Resolution & Bidirectional Verification
     let identity = resolver.resolve_ident(did_or_handle).await?;
 
-    // 2. Protected Resource Discovery
     let pds_meta =
         fetch_protected_resource_metadata(resolver.ssrf_filter(), &identity.pds_endpoint).await?;
 
     let auth_server_url = &pds_meta.authorization_servers[0];
 
-    // 3. Authorization Server Metadata Discovery
     let as_meta = fetch_auth_server_metadata(resolver.ssrf_filter(), auth_server_url).await?;
 
     Ok(DiscoveredAuthEndpoints {
@@ -342,9 +545,8 @@ impl IdentityResolver {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_validate_auth_server_capabilities_valid() {
-        let meta = AuthorizationServerMetadata {
+    fn valid_test_metadata() -> AuthorizationServerMetadata {
+        AuthorizationServerMetadata {
             issuer: "https://auth.example.com".to_string(),
             authorization_endpoint: "https://auth.example.com/oauth/authorize".to_string(),
             token_endpoint: "https://auth.example.com/oauth/token".to_string(),
@@ -357,33 +559,29 @@ mod tests {
                 "authorization_code".to_string(),
                 "refresh_token".to_string(),
             ],
-            token_endpoint_auth_methods_supported: vec!["none".to_string()],
+            token_endpoint_auth_methods_supported: vec![
+                "none".to_string(),
+                "private_key_jwt".to_string(),
+            ],
             token_endpoint_auth_signing_alg_values_supported: vec!["ES256".to_string()],
             scopes_supported: vec!["atproto".to_string()],
             authorization_response_iss_parameter_supported: true,
             client_id_metadata_document_supported: true,
-        };
+            require_request_uri_registration: true,
+        }
+    }
 
+    #[test]
+    fn test_validate_auth_server_capabilities_valid() {
+        let meta = valid_test_metadata();
         assert!(validate_auth_server_capabilities(&meta, "https://auth.example.com").is_ok());
     }
 
     #[test]
     fn test_validate_auth_server_capabilities_missing_es256() {
         let meta = AuthorizationServerMetadata {
-            issuer: "https://auth.example.com".to_string(),
-            authorization_endpoint: "https://auth.example.com/oauth/authorize".to_string(),
-            token_endpoint: "https://auth.example.com/oauth/token".to_string(),
-            pushed_authorization_request_endpoint: "https://auth.example.com/oauth/par".to_string(),
-            require_pushed_authorization_requests: true,
             dpop_signing_alg_values_supported: vec!["RS256".to_string()],
-            code_challenge_methods_supported: vec!["S256".to_string()],
-            response_types_supported: vec!["code".to_string()],
-            grant_types_supported: vec!["authorization_code".to_string()],
-            token_endpoint_auth_methods_supported: vec![],
-            token_endpoint_auth_signing_alg_values_supported: vec![],
-            scopes_supported: vec!["atproto".to_string()],
-            authorization_response_iss_parameter_supported: true,
-            client_id_metadata_document_supported: true,
+            ..valid_test_metadata()
         };
 
         assert!(matches!(
@@ -395,20 +593,8 @@ mod tests {
     #[test]
     fn test_validate_auth_server_capabilities_missing_s256_pkce() {
         let meta = AuthorizationServerMetadata {
-            issuer: "https://auth.example.com".to_string(),
-            authorization_endpoint: "https://auth.example.com/oauth/authorize".to_string(),
-            token_endpoint: "https://auth.example.com/oauth/token".to_string(),
-            pushed_authorization_request_endpoint: "https://auth.example.com/oauth/par".to_string(),
-            require_pushed_authorization_requests: true,
-            dpop_signing_alg_values_supported: vec!["ES256".to_string()],
             code_challenge_methods_supported: vec!["plain".to_string()],
-            response_types_supported: vec!["code".to_string()],
-            grant_types_supported: vec!["authorization_code".to_string()],
-            token_endpoint_auth_methods_supported: vec![],
-            token_endpoint_auth_signing_alg_values_supported: vec![],
-            scopes_supported: vec!["atproto".to_string()],
-            authorization_response_iss_parameter_supported: true,
-            client_id_metadata_document_supported: true,
+            ..valid_test_metadata()
         };
 
         assert!(matches!(
@@ -418,27 +604,151 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_auth_server_capabilities_explicit_false_request_uri_registration() {
+        // ATProto OAuth profile: require_request_uri_registration "must not be false".
+        let meta = AuthorizationServerMetadata {
+            require_request_uri_registration: false,
+            ..valid_test_metadata()
+        };
+
+        assert!(matches!(
+            validate_auth_server_capabilities(&meta, "https://auth.example.com"),
+            Err(DiscoveryError::MissingRequestUriRegistration(_))
+        ));
+    }
+
+    #[test]
+    fn test_auth_server_metadata_omitted_request_uri_registration_defaults_true() {
+        // Omission of the field must be treated as the spec default (true).
+        let json = serde_json::json!({
+            "issuer": "https://auth.example.com",
+            "authorization_endpoint": "https://auth.example.com/oauth/authorize",
+            "token_endpoint": "https://auth.example.com/oauth/token",
+            "pushed_authorization_request_endpoint": "https://auth.example.com/oauth/par",
+            "require_pushed_authorization_requests": true,
+            "dpop_signing_alg_values_supported": ["ES256"],
+            "code_challenge_methods_supported": ["S256"],
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
+            "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
+            "token_endpoint_auth_signing_alg_values_supported": ["ES256"],
+            "scopes_supported": ["atproto"],
+            "authorization_response_iss_parameter_supported": true,
+            "client_id_metadata_document_supported": true
+        });
+        let meta: AuthorizationServerMetadata = serde_json::from_value(json).unwrap();
+        assert!(meta.require_request_uri_registration);
+    }
+
+    #[test]
+    fn test_auth_server_metadata_explicit_false_request_uri_registration_deserializes() {
+        let json = serde_json::json!({
+            "issuer": "https://auth.example.com",
+            "authorization_endpoint": "https://auth.example.com/oauth/authorize",
+            "token_endpoint": "https://auth.example.com/oauth/token",
+            "require_request_uri_registration": false
+        });
+        let meta: AuthorizationServerMetadata = serde_json::from_value(json).unwrap();
+        assert!(!meta.require_request_uri_registration);
+    }
+
+    #[test]
     fn test_validate_auth_server_capabilities_issuer_mismatch() {
         let meta = AuthorizationServerMetadata {
             issuer: "https://attacker.example.com".to_string(),
-            authorization_endpoint: "https://auth.example.com/oauth/authorize".to_string(),
-            token_endpoint: "https://auth.example.com/oauth/token".to_string(),
-            pushed_authorization_request_endpoint: "https://auth.example.com/oauth/par".to_string(),
-            require_pushed_authorization_requests: true,
-            dpop_signing_alg_values_supported: vec!["ES256".to_string()],
-            code_challenge_methods_supported: vec!["S256".to_string()],
-            response_types_supported: vec!["code".to_string()],
-            grant_types_supported: vec!["authorization_code".to_string()],
-            token_endpoint_auth_methods_supported: vec![],
-            token_endpoint_auth_signing_alg_values_supported: vec![],
-            scopes_supported: vec!["atproto".to_string()],
-            authorization_response_iss_parameter_supported: true,
-            client_id_metadata_document_supported: true,
+            ..valid_test_metadata()
         };
 
         assert!(matches!(
             validate_auth_server_capabilities(&meta, "https://auth.example.com"),
             Err(DiscoveryError::IssuerMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn test_validate_auth_server_capabilities_missing_token_auth_signing_alg() {
+        let meta = AuthorizationServerMetadata {
+            token_endpoint_auth_signing_alg_values_supported: vec!["RS256".to_string()],
+            ..valid_test_metadata()
+        };
+
+        assert!(matches!(
+            validate_auth_server_capabilities(&meta, "https://auth.example.com"),
+            Err(DiscoveryError::MissingTokenAuthSigningAlg(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_auth_server_capabilities_invalid_token_auth_signing_alg_none() {
+        let meta = AuthorizationServerMetadata {
+            token_endpoint_auth_signing_alg_values_supported: vec![
+                "ES256".to_string(),
+                "none".to_string(),
+            ],
+            ..valid_test_metadata()
+        };
+
+        assert!(matches!(
+            validate_auth_server_capabilities(&meta, "https://auth.example.com"),
+            Err(DiscoveryError::InvalidTokenAuthSigningAlg(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_auth_server_capabilities_explicit_443_rejected() {
+        let meta = AuthorizationServerMetadata {
+            issuer: "https://auth.example.com:443".to_string(),
+            ..valid_test_metadata()
+        };
+
+        assert!(matches!(
+            validate_auth_server_capabilities(&meta, "https://auth.example.com"),
+            Err(DiscoveryError::InvalidAuthorizationServerUrl(_))
+        ));
+
+        let valid_meta = valid_test_metadata();
+        assert!(matches!(
+            validate_auth_server_capabilities(&valid_meta, "https://auth.example.com:443"),
+            Err(DiscoveryError::InvalidAuthorizationServerUrl(_))
+        ));
+    }
+
+    #[test]
+    fn test_is_origin_only_rejects_explicit_443() {
+        assert!(is_origin_only("https://auth.example.com"));
+        assert!(!is_origin_only("https://auth.example.com:443"));
+        assert!(!is_origin_only("https://auth.example.com:443/"));
+        assert!(is_origin_only("https://auth.example.com:8443"));
+    }
+
+    #[test]
+    fn test_is_origin_only_rejects_leading_zero_and_malformed_ports() {
+        // Leading-zero spellings normalize to the default port.
+        assert!(!is_origin_only("https://auth.example.com:0443"));
+        assert!(!is_origin_only("http://auth.example.com:0080"));
+        // Non-numeric and malformed ports never form a valid origin.
+        assert!(!is_origin_only("https://auth.example.com:not_a_port"));
+        assert!(!is_origin_only("https://auth.example.com:443\\"));
+        // A port that merely contains the default digits stays valid.
+        assert!(is_origin_only("https://auth.example.com:44371"));
+        assert!(is_origin_only("http://127.0.0.1:8080"));
+    }
+
+    #[test]
+    fn test_is_origin_only_loopback_http_acceptance_boundaries() {
+        assert!(is_origin_only("http://localhost"));
+        assert!(is_origin_only("http://127.0.0.1"));
+        assert!(is_origin_only("http://127.0.0.1:8080"));
+        assert!(is_origin_only("http://[::1]:8080"));
+        assert!(!is_origin_only("http://auth.example.com"));
+        assert!(!is_origin_only("http://auth.example.com:80"));
+        assert!(!is_origin_only("http://auth.example.com:8080"));
+        assert!(!is_origin_only("http://127.0.0.2")); // near-loopback, not loopback
+        assert!(!is_origin_only("http://user@127.0.0.1"));
+        assert!(!is_origin_only("http://127.0.0.1/xrpc"));
+        assert!(!is_origin_only("https://auth.example.com/?a=b"));
+        assert!(!is_origin_only("https://auth.example.com/#frag"));
+        assert!(is_origin_only("https://auth.example.com:8080"));
+        assert!(is_origin_only("https://auth.example.com:44371"));
     }
 }

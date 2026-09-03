@@ -1,26 +1,35 @@
-name: CI & Quality Gates
+name: CI & Formal Verification
 
-on:
+'on':
   push:
-    branches: [main]
+    branches: ["main", "fix/**"]
   pull_request:
-    branches: [main]
-  workflow_dispatch:
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   version-bump-check:
     name: Enforce Semantic Version Bump & CHANGELOG on PRs
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     if: github.event_name == 'pull_request'
     steps:
       - name: Checkout repository with full history
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Verify Semantic Version Bump & CHANGELOG Entry
         run: |
@@ -30,136 +39,138 @@ jobs:
   fmt-and-clippy:
     name: Code Formatting & Strict Clippy Safety Guards
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           components: rustfmt, clippy
 
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@v2
+      - name: Cargo Cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-lint-
 
-      - name: Verify Formatting (cargo fmt)
+      - name: Check code formatting
         run: cargo fmt --all -- --check
 
-      - name: Strict Compiler Lints & Invariants (cargo clippy)
+      - name: Check clippy lints
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   test:
     name: Full Test Suite, RFC Vectors & Spec Drift Verification
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@v2
+      - name: Cargo Cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-
+
+      - name: Run all tests
+        run: cargo test --all-targets --all-features
+
+      - name: Run documentation tests
+        run: cargo test --doc --all-features
 
       - name: Verify ATProto Lexicon & RFC Schema Synchronization
         run: |
           chmod +x ./scripts/sync_specs.sh
           ./scripts/sync_specs.sh --verify
 
-      - name: Run all Unit, Integration, and RFC Vector Tests
-        run: cargo test --all-targets --all-features --verbose
-
-      - name: Run Documentation Tests
-        run: cargo test --doc --all-features
-
-  security-audit:
-    name: Supply Chain & License Audit (cargo-deny)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Run cargo-deny security checks
-        uses: EmbarkStudios/cargo-deny-action@v2
-
   coverage:
-    name: Test Coverage & Regression Gate (>= 80%)
+    name: Code Coverage (cargo-llvm-cov ≥ 80%)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        with:
+          tool: cargo-llvm-cov
 
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@v2
+      - name: Measure coverage with 80% gate
+        run: cargo llvm-cov --all-features --fail-under-lines 80
 
-      - name: Run Test Coverage & Enforce 80% Threshold
-        run: cargo llvm-cov --all-targets --all-features --fail-under-lines 80 --summary-only
-
-  publish:
-    name: Auto-Publish to Crates.io & Create GitHub Release
+  security-audit:
+    name: Supply Chain & License Audit (cargo-deny)
     runs-on: ubuntu-latest
-    needs: [fmt-and-clippy, test, security-audit, coverage]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Run cargo-deny security checks
+        uses: EmbarkStudios/cargo-deny-action@b66acf5e9fe20f8aba065be86778a8a4c846f902 # v2
 
-      - name: Extract Current Version & Name
-        id: pkg_info
-        run: |
-          VERSION=$(grep -m1 '^[[:space:]]*version[[:space:]]*=' Cargo.toml | awk -F'"' '{print $2}')
-          NAME=$(grep -m1 '^[[:space:]]*name[[:space:]]*=' Cargo.toml | awk -F'"' '{print $2}')
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "name=${NAME}" >> $GITHUB_OUTPUT
-          echo "Detected package: ${NAME} v${VERSION}"
+  kani:
+    name: Kani Bounded Model Checking
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - name: Check if Version Already Published on Crates.io
-        id: check_published
-        run: |
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "User-Agent: CI-Check" "https://crates.io/api/v1/crates/${{ steps.pkg_info.outputs.name }}/${{ steps.pkg_info.outputs.version }}" || echo "000")
-          if [ "$HTTP_STATUS" -eq 200 ]; then
-            echo "published=true" >> $GITHUB_OUTPUT
-            echo "Version ${{ steps.pkg_info.outputs.version }} is already published on crates.io."
-          else
-            echo "published=false" >> $GITHUB_OUTPUT
-            echo "Version ${{ steps.pkg_info.outputs.version }} is NOT published on crates.io yet."
-          fi
+      - name: Run Kani Proofs
+        uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
 
-      - name: Publish to Crates.io
-        if: steps.check_published.outputs.published == 'false' && env.CARGO_REGISTRY_TOKEN != ''
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          echo "Publishing ${{ steps.pkg_info.outputs.name }} v${{ steps.pkg_info.outputs.version }} to crates.io..."
-          cargo publish --allow-dirty --token "${CARGO_REGISTRY_TOKEN}"
-          # Decommission legacy package name on crates.io
-          cargo yank --version 0.1.0 atproto-oauth-rs --token "${CARGO_REGISTRY_TOKEN}" || true
+  verus:
+    name: Verus Deductive Verification
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - name: Create or Update GitHub Release Tag
-        if: steps.check_published.outputs.published == 'false'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: "v${{ steps.pkg_info.outputs.version }}"
-        run: |
-          if ! gh release view "${TAG_NAME}" >/dev/null 2>&1; then
-            echo "Creating GitHub Release ${TAG_NAME}..."
-            gh release create "${TAG_NAME}" \
-              --title "${TAG_NAME} - Production Release" \
-              --notes-file CHANGELOG.md
-          else
-            echo "GitHub Release ${TAG_NAME} already exists."
-          fi
-
+      - name: Run Verus Verification
+        run: bash scripts/run_verus.sh

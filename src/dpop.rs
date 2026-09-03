@@ -6,15 +6,18 @@
 //! <https://datatracker.ietf.org/doc/html/rfc9449>.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use ahash::RandomState;
 use p256::ecdsa::{SigningKey, VerifyingKey};
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey, LineEnding};
 use parking_lot::RwLock;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use url::Url;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::crypto::{
     base64url_decode, base64url_decode_fixed, base64url_encode, constant_time_eq,
@@ -22,6 +25,7 @@ use crate::crypto::{
     verifying_key_from_coordinates, verifying_key_to_coordinates,
 };
 use crate::error::{CryptoError, DPoPError};
+use crate::store::NUM_SHARDS;
 
 /// Default maximum permitted proof age (300 seconds / 5 minutes).
 pub const DEFAULT_MAX_PROOF_AGE: Duration = Duration::from_secs(300);
@@ -77,6 +81,13 @@ impl JwkEc {
 }
 
 /// An ephemeral or persistent ECDSA P-256 keypair for DPoP proof signing.
+///
+/// # Memory Guarantees
+/// The underlying [`p256::ecdsa::SigningKey`] zeroizes the private scalar on drop
+/// (guaranteed by the `ecdsa` crate's `ZeroizeOnDrop` implementation). Auxiliary
+/// exports (`to_bytes`, `to_bytes_b64`, `to_pkcs8_pem`) wrap intermediate buffers
+/// in [`Zeroizing`] where possible; string exports (`to_bytes_b64`, `to_pkcs8_pem`)
+/// necessarily return heap copies the caller should treat as sensitive.
 #[derive(Clone)]
 pub struct DPoPKey {
     signing_key: SigningKey,
@@ -172,18 +183,25 @@ impl DPoPKey {
             .map_err(|e| CryptoError::Pem(format!("Failed to export PKCS#8 PEM: {e}")))
     }
 
-    /// Exports the private key scalar as a raw 32-byte array.
+    /// Exports the private key scalar as a zeroized-on-drop 32-byte buffer.
     #[must_use]
-    pub fn to_bytes(&self) -> [u8; 32] {
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&self.signing_key.to_bytes());
+    pub fn to_bytes(&self) -> Zeroizing<[u8; 32]> {
+        let mut out = Zeroizing::new([0u8; 32]);
+        // SigningKey::to_bytes returns a plain FieldBytes (GenericArray) that does
+        // not zeroize on drop; bind, copy, and wipe it so the plaintext scalar
+        // does not linger on the stack.
+        let mut scalar = self.signing_key.to_bytes();
+        out.copy_from_slice(&scalar);
+        scalar.zeroize();
         out
     }
 
-    /// Exports the private key as an unpadded Base64URL string.
+    /// Exports the private key as an unpadded Base64URL string stored in a
+    /// zeroized-on-drop buffer.
     #[must_use]
-    pub fn to_bytes_b64(&self) -> String {
-        base64url_encode(&self.signing_key.to_bytes())
+    pub fn to_bytes_b64(&self) -> Zeroizing<String> {
+        let raw = self.to_bytes();
+        Zeroizing::new(base64url_encode(&*raw))
     }
 
     /// Imports an ECDSA P-256 private key from raw 32-byte scalar bytes.
@@ -203,8 +221,10 @@ impl DPoPKey {
     ///
     /// Returns [`CryptoError`] if decoding or key parsing fails.
     pub fn from_bytes_b64(b64: &str) -> Result<Self, CryptoError> {
-        let bytes = base64url_decode(b64)?;
-        Self::from_slice(&bytes)
+        let mut bytes = base64url_decode(b64)?;
+        let res = Self::from_slice(&bytes);
+        bytes.zeroize();
+        res
     }
 
     /// Derives the public [`JwkEc`] representation corresponding to this keypair.
@@ -351,6 +371,7 @@ pub struct DPoPProofClaims {
 pub struct DPoPVerifier {
     max_clock_skew: Duration,
     max_proof_age: Duration,
+    replay_cache: Option<DPoPReplayCache>,
 }
 
 impl Default for DPoPVerifier {
@@ -360,12 +381,14 @@ impl Default for DPoPVerifier {
 }
 
 impl DPoPVerifier {
-    /// Creates a new DPoP verifier with default timing tolerances (60s skew, 300s age).
+    /// Creates a new DPoP verifier with default timing tolerances (60s skew, 300s age)
+    /// and built-in anti-replay protection.
     #[must_use]
     pub fn new() -> Self {
         Self {
             max_clock_skew: DEFAULT_CLOCK_SKEW_LEEWAY,
             max_proof_age: DEFAULT_MAX_PROOF_AGE,
+            replay_cache: Some(DPoPReplayCache::new()),
         }
     }
 
@@ -381,6 +404,32 @@ impl DPoPVerifier {
     pub fn with_max_proof_age(mut self, age: Duration) -> Self {
         self.max_proof_age = age;
         self
+    }
+
+    /// Sets a custom or shared [`DPoPReplayCache`].
+    #[must_use]
+    pub fn with_replay_cache(mut self, cache: DPoPReplayCache) -> Self {
+        self.replay_cache = Some(cache);
+        self
+    }
+
+    /// Configures whether anti-replay protection is enabled for this verifier.
+    #[must_use]
+    pub fn with_replay_prevention(mut self, enabled: bool) -> Self {
+        if enabled {
+            if self.replay_cache.is_none() {
+                self.replay_cache = Some(DPoPReplayCache::new());
+            }
+        } else {
+            self.replay_cache = None;
+        }
+        self
+    }
+
+    /// Returns a reference to the active [`DPoPReplayCache`], if enabled.
+    #[must_use]
+    pub fn replay_cache(&self) -> Option<&DPoPReplayCache> {
+        self.replay_cache.as_ref()
     }
 
     /// Verifies an inbound RFC 9449 DPoP proof JWT against expected request parameters.
@@ -422,7 +471,6 @@ impl DPoPVerifier {
         let payload_bytes = base64url_decode(parts[1])?;
         let signature_bytes = base64url_decode(parts[2])?;
 
-        // 1. Validate Header
         let header_val: serde_json::Value = serde_json::from_slice(&header_bytes)
             .map_err(|e| DPoPError::MalformedJwt(format!("Failed to parse header JSON: {e}")))?;
 
@@ -467,14 +515,12 @@ impl DPoPVerifier {
             )));
         }
 
-        // 2. Verify Cryptographic Signature
         let verifying_key = jwk.to_verifying_key()?;
         let signing_input = format!("{}.{}", parts[0], parts[1]);
 
         verify_p256_raw(&verifying_key, signing_input.as_bytes(), &signature_bytes)
             .map_err(|_| DPoPError::SignatureVerificationFailed)?;
 
-        // 3. Validate Payload Claims
         let claims: DPoPProofClaims = serde_json::from_slice(&payload_bytes)
             .map_err(|e| DPoPError::MalformedJwt(format!("Failed to parse payload JSON: {e}")))?;
 
@@ -482,7 +528,6 @@ impl DPoPVerifier {
             return Err(DPoPError::MissingClaim("jti"));
         }
 
-        // Method verification (case-insensitive)
         if !claims.htm.eq_ignore_ascii_case(expected_htm) {
             return Err(DPoPError::MethodMismatch {
                 expected: expected_htm.to_uppercase(),
@@ -490,7 +535,6 @@ impl DPoPVerifier {
             });
         }
 
-        // URI verification (normalized comparison)
         let norm_expected_htu = normalize_htu(expected_htu)?;
         let norm_claims_htu = normalize_htu(&claims.htu)?;
         if norm_claims_htu != norm_expected_htu {
@@ -500,7 +544,6 @@ impl DPoPVerifier {
             });
         }
 
-        // Nonce verification
         if let Some(exp_nonce) = expected_nonce {
             match &claims.nonce {
                 Some(actual_nonce) => {
@@ -515,7 +558,6 @@ impl DPoPVerifier {
             }
         }
 
-        // Access token hash (ath) verification
         if let Some(exp_ath) = expected_ath {
             match &claims.ath {
                 Some(actual_ath) => {
@@ -530,7 +572,6 @@ impl DPoPVerifier {
             }
         }
 
-        // Timing validations
         let now = match now_override {
             Some(time) => time
                 .duration_since(UNIX_EPOCH)
@@ -545,7 +586,6 @@ impl DPoPVerifier {
         let skew_secs = self.max_clock_skew.as_secs();
         let max_age_secs = self.max_proof_age.as_secs();
 
-        // Check if iat is in future beyond clock skew leeway
         if claims.iat > now.saturating_add(skew_secs) {
             return Err(DPoPError::FutureProof {
                 iat: claims.iat,
@@ -554,7 +594,6 @@ impl DPoPVerifier {
             });
         }
 
-        // Check proof age
         if now.saturating_sub(claims.iat) > max_age_secs {
             return Err(DPoPError::ProofTooOld {
                 iat: claims.iat,
@@ -563,11 +602,19 @@ impl DPoPVerifier {
             });
         }
 
-        // Check optional exp claim
         if let Some(exp) = claims.exp {
             if exp.saturating_add(skew_secs) < now {
                 return Err(DPoPError::ExpiredProof { exp, now });
             }
+        }
+
+        // Anti-Replay Check (RFC 9449 § 4.3 item 4 & § 11.1)
+        if let Some(ref cache) = self.replay_cache {
+            let jkt = jwk.thumbprint();
+            // Expire entries on the server's acceptance window, NEVER the attacker-controlled `exp` claim: a far-future `exp` would create immortal cache entries (DoS).
+            let expires_at = now.saturating_add(max_age_secs).saturating_add(skew_secs);
+
+            cache.check_and_record(&jkt, &claims.jti, expires_at, now)?;
         }
 
         Ok((claims, jwk))
@@ -700,6 +747,270 @@ impl DPoPNonceCache {
     pub fn clear_nonce(&self, origin: &str) {
         let mut guard = self.cache.write();
         guard.remove(&origin.trim().to_ascii_lowercase());
+    }
+}
+
+/// Replay-cache admissions between amortized lazy prunes of expired entries.
+pub(crate) const REPLAY_PRUNE_HINT_INTERVAL: u64 = 64;
+/// Replay-cache per-shard size that triggers opportunistic expiry pruning.
+pub(crate) const REPLAY_PRUNE_THRESHOLD: usize = 512;
+/// Replay-cache per-shard hard capacity; live admissions beyond this fail closed.
+pub(crate) const REPLAY_SHARD_CAPACITY: usize = 2048;
+/// Nonce-cache size that triggers opportunistic expiry pruning.
+pub(crate) const NONCE_PRUNE_THRESHOLD: usize = 1024;
+/// Nonce-cache hard capacity; generation beyond this fails closed.
+pub(crate) const NONCE_CACHE_CAPACITY: usize = 4096;
+
+/// In-memory 64-shard partitioned concurrent cache for tracking consumed DPoP `jti` identifiers.
+///
+/// Prevents DPoP proof replay attacks within the acceptance time window per RFC 9449 § 4.3 and § 11.1.
+/// Keyed on `(jkt, jti)` composite identifiers to enforce uniqueness per public key thumbprint.
+///
+/// # Scope Limitation (Multi-Replica Deployments)
+/// This cache is per-process: `shards` is an in-process [`Arc`], so sharing via
+/// [`DPoPVerifier::with_replay_cache`] only deduplicates proofs within one process. If a
+/// resource server runs multiple replicas behind a load balancer, an attacker can replay a
+/// captured proof against a second replica, which has no record of the `jti`. RFC 9449 § 11.1
+/// treats the acceptance window as the exposure bound, but horizontally scaled deployments
+/// desiring strict anti-replay must back this abstraction with a shared store (e.g. Redis).
+#[derive(Debug, Clone)]
+pub struct DPoPReplayCache {
+    shards: Arc<[RwLock<HashMap<String, u64>>; NUM_SHARDS]>,
+    hasher: RandomState,
+    /// Per-shard monotonic hint counters: prune lazily every 64 admissions,
+    /// amortizing the O(n) retain pass instead of running it on every insert.
+    prune_hints: Arc<[AtomicU64; NUM_SHARDS]>,
+}
+
+impl Default for DPoPReplayCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DPoPReplayCache {
+    /// Creates a new empty `DPoPReplayCache` partitioned across 64 independent `RwLock` shards.
+    #[must_use]
+    pub fn new() -> Self {
+        let shards = std::array::from_fn(|_| RwLock::new(HashMap::new()));
+        let prune_hints = std::array::from_fn(|_| AtomicU64::new(0));
+        Self {
+            shards: Arc::new(shards),
+            hasher: RandomState::new(),
+            prune_hints: Arc::new(prune_hints),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn shard_index(&self, key: &str) -> usize {
+        use std::hash::{BuildHasher, Hasher};
+        let mut hasher = self.hasher.build_hasher();
+        hasher.write(key.as_bytes());
+        (hasher.finish() as usize) % NUM_SHARDS
+    }
+
+    #[inline]
+    fn shard_for(&self, key: &str) -> &RwLock<HashMap<String, u64>> {
+        let idx = self.shard_index(key);
+        &self.shards[idx]
+    }
+
+    /// Checks if a `(jkt, jti)` pair has already been consumed and is still valid (not expired).
+    ///
+    /// If not consumed, atomically records the entry with expiration timestamp `expires_at_secs`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DPoPError::ReplayDetected`] if the `jti` was already consumed and has not yet expired.
+    pub fn check_and_record(
+        &self,
+        jkt: &str,
+        jti: &str,
+        expires_at_secs: u64,
+        now_secs: u64,
+    ) -> Result<(), DPoPError> {
+        let composite_key = format!("{jkt}:{jti}");
+        let shard_idx = self.shard_index(&composite_key);
+        let shard = &self.shards[shard_idx];
+        let mut guard = shard.write();
+
+        if let Some(&existing_exp) = guard.get(&composite_key) {
+            if existing_exp > now_secs {
+                return Err(DPoPError::ReplayDetected {
+                    jti: jti.to_string(),
+                });
+            }
+        }
+
+        let admissions = self.prune_hints[shard_idx].fetch_add(1, Ordering::Relaxed);
+        if guard.len() > REPLAY_PRUNE_THRESHOLD && admissions % REPLAY_PRUNE_HINT_INTERVAL == 0 {
+            guard.retain(|_, &mut exp| exp > now_secs);
+        }
+
+        // Fail closed at capacity rather than evicting live proofs; expired entries always remain prunable.
+        if guard.len() >= REPLAY_SHARD_CAPACITY {
+            guard.retain(|_, &mut exp| exp > now_secs);
+            if guard.len() >= REPLAY_SHARD_CAPACITY {
+                return Err(DPoPError::ReplayCacheSaturated);
+            }
+        }
+
+        guard.insert(composite_key, expires_at_secs);
+        Ok(())
+    }
+
+    /// Checks if a `(jkt, jti)` has been consumed without modifying state.
+    #[must_use]
+    pub fn is_consumed(&self, jkt: &str, jti: &str, now_secs: u64) -> bool {
+        let composite_key = format!("{jkt}:{jti}");
+        let shard = self.shard_for(&composite_key);
+        let guard = shard.read();
+        if let Some(&exp) = guard.get(&composite_key) {
+            exp > now_secs
+        } else {
+            false
+        }
+    }
+
+    /// Explicitly prunes all expired entries across all shards.
+    pub fn prune_expired(&self, now_secs: u64) {
+        for shard in self.shards.iter() {
+            let mut guard = shard.write();
+            guard.retain(|_, &mut exp| exp > now_secs);
+        }
+    }
+
+    /// Returns the total number of cached entries across all shards.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.shards.iter().map(|s| s.read().len()).sum()
+    }
+
+    /// Returns `true` if the cache contains no entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Clears all entries from the cache.
+    pub fn clear(&self) {
+        for shard in self.shards.iter() {
+            let mut guard = shard.write();
+            guard.clear();
+        }
+    }
+}
+
+/// Server-side DPoP challenge nonce generation and verification per RFC 9449 § 8.
+pub trait DPoPServerNonceSource: Send + Sync + 'static {
+    /// Generates a fresh challenge nonce.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DPoPError::NonceCacheSaturated`] when the source cannot store the
+    /// new nonce (capacity exhaustion); the empty string is never a valid nonce.
+    fn generate_nonce(&self) -> Result<String, DPoPError>;
+    /// Verifies whether the presented nonce is valid and active.
+    fn verify_nonce(&self, nonce: &str) -> bool;
+}
+
+impl<T: DPoPServerNonceSource + ?Sized> DPoPServerNonceSource for Arc<T> {
+    fn generate_nonce(&self) -> Result<String, DPoPError> {
+        (**self).generate_nonce()
+    }
+
+    fn verify_nonce(&self, nonce: &str) -> bool {
+        (**self).verify_nonce(nonce)
+    }
+}
+
+/// In-memory implementation of [`DPoPServerNonceSource`] tracking nonces with time-to-live.
+#[derive(Debug, Clone)]
+pub struct InMemoryServerNonceSource {
+    nonces: Arc<RwLock<HashMap<String, u64>>>,
+    ttl: Duration,
+    single_use: bool,
+}
+
+impl InMemoryServerNonceSource {
+    /// Creates a new `InMemoryServerNonceSource` with the specified nonce time-to-live.
+    ///
+    /// By default nonces are reusable until expiry (`single_use: false`), accommodating
+    /// legitimate client retries. For strict RFC 9449 § 8 single-use semantics, build
+    /// with [`Self::with_single_use`].
+    #[must_use]
+    pub fn new(ttl: Duration) -> Self {
+        Self {
+            nonces: Arc::new(RwLock::new(HashMap::new())),
+            ttl,
+            single_use: false,
+        }
+    }
+
+    /// Enables strict single-use semantics: each nonce is consumed on first successful
+    /// verification and cannot be presented again (RFC 9449 § 8).
+    #[must_use]
+    pub fn with_single_use(mut self) -> Self {
+        self.single_use = true;
+        self
+    }
+
+    /// Prunes expired nonces from memory.
+    pub fn prune_expired(&self, now_secs: u64) {
+        let mut guard = self.nonces.write();
+        guard.retain(|_, &mut exp| exp > now_secs);
+    }
+}
+
+impl DPoPServerNonceSource for InMemoryServerNonceSource {
+    fn generate_nonce(&self) -> Result<String, DPoPError> {
+        let mut raw = [0u8; 24];
+        rand::thread_rng().fill_bytes(&mut raw);
+        let nonce = base64url_encode(&raw);
+
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let exp = now_secs.saturating_add(self.ttl.as_secs());
+
+        let mut guard = self.nonces.write();
+        if guard.len() > NONCE_PRUNE_THRESHOLD {
+            guard.retain(|_, &mut e| e > now_secs);
+        }
+        // Fail closed at capacity rather than evicting a live nonce: admissions are pre-authentication, so an attacker must not displace nonces for legitimate clients.
+        if guard.len() >= NONCE_CACHE_CAPACITY {
+            return Err(DPoPError::NonceCacheSaturated);
+        }
+        guard.insert(nonce.clone(), exp);
+        Ok(nonce)
+    }
+
+    fn verify_nonce(&self, nonce: &str) -> bool {
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let trimmed = nonce.trim();
+        if self.single_use {
+            // Consume atomically with verification (write lock avoids a TOCTOU window).
+            let mut guard = self.nonces.write();
+            if let Some(&exp) = guard.get(trimmed) {
+                if exp > now_secs {
+                    guard.remove(trimmed);
+                    return true;
+                }
+            }
+            false
+        } else {
+            let guard = self.nonces.read();
+            if let Some(&exp) = guard.get(trimmed) {
+                exp > now_secs
+            } else {
+                false
+            }
+        }
     }
 }
 
@@ -892,5 +1203,128 @@ mod tests {
         assert!(pem.contains("BEGIN PRIVATE KEY"));
         let imported = DPoPKey::from_pkcs8_pem(&pem).unwrap();
         assert_eq!(key.public_jwk(), imported.public_jwk());
+    }
+
+    #[test]
+    fn test_dpop_verifier_replay_detection() {
+        let key = DPoPKey::generate();
+        let uri = "https://pds.example.com/xrpc/test";
+        let proof = key.create_proof("GET", uri, None, None).unwrap();
+
+        let verifier = DPoPVerifier::new();
+
+        let (claims, jwk) = verifier
+            .verify_proof(&proof, "GET", uri, None, None, None)
+            .unwrap();
+        assert_eq!(jwk.thumbprint(), key.jwk_thumbprint());
+
+        let err = verifier
+            .verify_proof(&proof, "GET", uri, None, None, None)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            DPoPError::ReplayDetected { ref jti } if jti == &claims.jti
+        ));
+    }
+
+    #[test]
+    fn test_dpop_replay_cache_sharding_and_expiry() {
+        let cache = DPoPReplayCache::new();
+        let jkt = "test_jkt_123";
+        let jti = "test_jti_456";
+
+        assert!(!cache.is_consumed(jkt, jti, 1000));
+        assert!(cache.check_and_record(jkt, jti, 1500, 1000).is_ok());
+        assert!(cache.is_consumed(jkt, jti, 1000));
+
+        let err = cache.check_and_record(jkt, jti, 1500, 1200).unwrap_err();
+        assert!(matches!(err, DPoPError::ReplayDetected { .. }));
+
+        assert!(!cache.is_consumed(jkt, jti, 1600));
+        assert!(cache.check_and_record(jkt, jti, 2000, 1600).is_ok());
+    }
+
+    #[test]
+    fn test_in_memory_server_nonce_source_lifecycle() {
+        let source = InMemoryServerNonceSource::new(Duration::from_secs(60));
+        let nonce = source.generate_nonce().unwrap();
+        assert!(source.verify_nonce(&nonce));
+        let mut raw = [0u8; 24];
+        rand::thread_rng().fill_bytes(&mut raw);
+        let unissued_nonce = base64url_encode(&raw);
+        assert!(!source.verify_nonce(&unissued_nonce));
+    }
+
+    #[test]
+    fn test_in_memory_server_nonce_source_single_use() {
+        let reusable = InMemoryServerNonceSource::new(Duration::from_secs(60));
+        let nonce = reusable.generate_nonce().unwrap();
+        assert!(reusable.verify_nonce(&nonce));
+        assert!(reusable.verify_nonce(&nonce));
+
+        let strict = InMemoryServerNonceSource::new(Duration::from_secs(60)).with_single_use();
+        let nonce = strict.generate_nonce().unwrap();
+        assert!(strict.verify_nonce(&nonce));
+        assert!(
+            !strict.verify_nonce(&nonce),
+            "consumed nonce must not verify again"
+        );
+
+        let second = strict.generate_nonce().unwrap();
+        assert!(strict.verify_nonce(&second));
+    }
+
+    #[test]
+    fn test_in_memory_server_nonce_source_saturation_fails_closed() {
+        let source = InMemoryServerNonceSource::new(Duration::from_secs(3600));
+        let mut i = 0;
+        while source.nonces.read().len() < NONCE_CACHE_CAPACITY {
+            assert!(source.generate_nonce().is_ok());
+            i += 1;
+            assert!(i < 100_000, "nonce cache failed to fill");
+        }
+        // At hard capacity, admission is refused with an explicit error — never an
+        // empty-string nonce or eviction of live nonces.
+        assert!(matches!(
+            source.generate_nonce(),
+            Err(DPoPError::NonceCacheSaturated)
+        ));
+    }
+
+    #[test]
+    fn test_dpop_replay_cache_saturation_protection() {
+        let cache = DPoPReplayCache::new();
+        let target_shard = 0;
+        let mut recorded_jtis = Vec::new();
+        let mut count = 0;
+        let mut i = 0;
+        while count < REPLAY_SHARD_CAPACITY {
+            let key = format!("jkt:{i}");
+            if cache.shard_index(&key) == target_shard {
+                assert!(cache
+                    .check_and_record("jkt", &format!("{i}"), 5000, 1000)
+                    .is_ok());
+                recorded_jtis.push(format!("{i}"));
+                count += 1;
+            }
+            i += 1;
+        }
+
+        let overflow_jti = loop {
+            let key = format!("jkt:{i}");
+            if cache.shard_index(&key) == target_shard {
+                break format!("{i}");
+            }
+            i += 1;
+        };
+        let res = cache.check_and_record("jkt", &overflow_jti, 5000, 1000);
+        assert!(matches!(res, Err(DPoPError::ReplayCacheSaturated)));
+
+        for jti in &recorded_jtis {
+            assert!(
+                cache.is_consumed("jkt", jti, 1000),
+                "live replay entry was evicted under saturation: jti={jti}"
+            );
+        }
     }
 }

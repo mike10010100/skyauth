@@ -56,7 +56,6 @@ async fn test_full_login_and_code_exchange_e2e() {
         .build()
         .unwrap();
 
-    // 1. Initiate Login
     let (auth_req, stored_state) = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
 
     assert_eq!(auth_req.request_uri, request_uri);
@@ -67,7 +66,6 @@ async fn test_full_login_and_code_exchange_e2e() {
         .as_str()
         .contains("request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3Areq-alice-m3-01"));
 
-    // 2. Exchange Code
     let session = client
         .exchange_code("auth_code_from_redirect", &stored_state)
         .await
@@ -81,7 +79,6 @@ async fn test_full_login_and_code_exchange_e2e() {
     assert!(!session.is_expired());
     assert_eq!(session.dpop_auth_header(), format!("DPoP {access_token}"));
 
-    // 3. Create DPoP proof for resource access
     let xrpc_url = format!("{}/xrpc/app.bsky.actor.getProfile", env.pds.uri());
     let proof = session.create_dpop_proof("GET", &xrpc_url, None).unwrap();
 
@@ -125,31 +122,33 @@ async fn test_callback_handler_with_iss_and_state_validation() {
 
     let (_, stored_state) = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
 
-    // Valid callback with matching state and iss
     let valid_cb =
         CallbackParams::new("code_valid_123", &stored_state.state).with_iss(&env.auth_server.uri());
 
-    let session = client
-        .handle_callback(&valid_cb, &stored_state)
-        .await
-        .unwrap();
+    let session = client.handle_callback(&valid_cb).await.unwrap();
     assert_eq!(session.sub(), TEST_ALICE_DID);
 
-    // Mismatched state should fail
+    let err_replay = client.handle_callback(&valid_cb).await;
+    assert!(matches!(
+        err_replay,
+        Err(AtprotoOAuthError::Token(TokenError::InvalidState(_)))
+    ));
+
     let invalid_state_cb =
         CallbackParams::new("code_valid_123", "wrong_state_token").with_iss(&env.auth_server.uri());
     let err_state = client
-        .handle_callback(&invalid_state_cb, &stored_state)
+        .handle_callback_with_entry(&invalid_state_cb, &stored_state)
         .await;
     assert!(matches!(
         err_state,
         Err(AtprotoOAuthError::Token(TokenError::InvalidState(_)))
     ));
 
-    // Mismatched issuer should fail
     let invalid_iss_cb = CallbackParams::new("code_valid_123", &stored_state.state)
         .with_iss("https://attacker-issuer.com");
-    let err_iss = client.handle_callback(&invalid_iss_cb, &stored_state).await;
+    let err_iss = client
+        .handle_callback_with_entry(&invalid_iss_cb, &stored_state)
+        .await;
     assert!(matches!(
         err_iss,
         Err(AtprotoOAuthError::Token(TokenError::IssuerMismatch { .. }))
@@ -160,7 +159,6 @@ async fn test_callback_handler_with_iss_and_state_validation() {
 async fn test_par_auto_nonce_retry_success() {
     let env = MockOAuthEnvironment::start_default().await;
 
-    // Challenge nonce once, then succeed
     env.auth_server
         .mount_par_nonce_challenge_once("fresh-par-nonce-turn-1")
         .await;
@@ -194,7 +192,6 @@ async fn test_par_auto_nonce_retry_success() {
 async fn test_par_nonce_retry_exhaustion_fails() {
     let env = MockOAuthEnvironment::start_default().await;
 
-    // Always challenge nonce
     env.auth_server
         .mount_par_nonce_challenge("infinite-nonce-loop")
         .await;
@@ -227,7 +224,6 @@ async fn test_token_exchange_auto_nonce_retry_success() {
     let request_uri = "urn:ietf:params:oauth:request_uri:req-tok-01";
     env.auth_server.mount_par_success(request_uri, 90).await;
 
-    // Token endpoint challenges once with fresh nonce, then succeeds
     env.auth_server
         .mount_token_nonce_challenge_once("token-fresh-nonce-99")
         .await;
@@ -272,7 +268,6 @@ async fn test_token_exchange_invalid_token_type_rejected() {
     let request_uri = "urn:ietf:params:oauth:request_uri:req-tok-invalid-type";
     env.auth_server.mount_par_success(request_uri, 90).await;
 
-    // Mock token endpoint returning Bearer instead of DPoP
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
         .respond_with(
@@ -320,7 +315,6 @@ async fn test_token_exchange_sub_mismatch_rejected() {
     let request_uri = "urn:ietf:params:oauth:request_uri:req-tok-sub-mismatch";
     env.auth_server.mount_par_success(request_uri, 90).await;
 
-    // Server returns different sub DID than expected
     env.auth_server
         .mount_token_exchange_success(
             "at_sample",
@@ -463,7 +457,6 @@ async fn test_refresh_session_nonce_retry_success() {
     )
     .unwrap();
 
-    // Token refresh endpoint challenges nonce once
     auth_server
         .mount_token_nonce_challenge_once("refresh-challenge-nonce-88")
         .await;
@@ -501,7 +494,7 @@ async fn test_refresh_session_missing_refresh_token_rejected() {
     let mut session = OAuthSession::new(
         TEST_ALICE_DID,
         "at_initial_token",
-        None, // No refresh token
+        None,
         "DPoP",
         Some("atproto".to_string()),
         Some(300),
@@ -666,7 +659,7 @@ fn test_session_expiration_leeway_calculations() {
         None,
         "DPoP",
         None,
-        Some(60), // Expires in 60s
+        Some(60),
         key,
         None,
         None,

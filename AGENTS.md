@@ -75,6 +75,43 @@ cargo clippy --all-targets --all-features -- -D warnings
 # 3. Run all unit and integration test suites
 cargo test --all-targets --all-features
 
-# 4. Verify specification drift
+# 4. Run rustdoc examples (documentation tests)
+cargo test --doc --all-features
+
+# 5. Verify specification drift
 bash scripts/sync_specs.sh --verify
+
+# 6. Run Verus deductive formal verification (SMT proofs)
+bash scripts/run_verus.sh
+
+# 7. Run Kani bounded model checking harnesses (must verify all harnesses with 0 failures
+#    and all anti-vacuity cover properties satisfied)
+cargo kani
 ```
+
+CI additionally enforces a coverage gate (`cargo llvm-cov --all-features --fail-under-lines 80`)
+and a supply-chain audit (`cargo-deny`); run the coverage gate locally when touching test
+coverage-sensitive code.
+
+Steps 6–7 are **non-optional for this repository**: the crate's headline guarantee is formal
+verification, so changes to `src/verification/`, `src/crypto.rs`, `src/dpop.rs`, `src/ssrf.rs`,
+`src/store.rs`, or `src/pkce.rs` without re-proving the corresponding invariants are incomplete.
+
+### Formal Verification Toolchain Bootstrap
+
+Neither Verus nor Kani is preinstalled on a fresh machine. Both self-bootstrap:
+
+- **Verus**: `scripts/run_verus.sh` auto-downloads a pinned release into `~/.verus` on first run.
+- **Kani**: `cargo install kani-verifier --locked` then `cargo kani setup` (installs a pinned
+  nightly toolchain). Only needed once per environment.
+
+If `cargo kani` cannot be run in an offline/CI-restricted environment, fall back to the
+executable formal-model tests (`cargo test --test formal_verification_tests`) and **explicitly
+state in the handoff report that the Kani gate could not run** — never silently skip it.
+
+The same policy applies to the Verus gate: `scripts/run_verus.sh` exits non-zero unless Verus is
+installed, or the environment variable `ALLOW_VERUS_FALLBACK=1` is set to run only the executable
+model tests. Offline fallback for Verus requires the same explicit disclosure in the handoff
+report — never silently skip it either. `ALLOW_VERUS_FALLBACK=1` is a local-development escape
+hatch **only**: it must never be set in CI, workflow files, or any environment whose pass/fail
+result gates merging.

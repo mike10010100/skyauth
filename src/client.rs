@@ -5,6 +5,7 @@
 //! RFC 9449 DPoP-bound code exchange, single-use refresh token rotation, and transparent
 //! auto-nonce negotiation loops.
 
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use url::Url;
 
@@ -12,13 +13,19 @@ use crate::crypto::base64url_encode;
 use crate::dpop::{compute_access_token_hash, extract_dpop_nonce, DPoPKey, DPoPNonceCache};
 use crate::error::{AtprotoOAuthError, DPoPError, ParError, TokenError};
 use crate::identity::{IdentityResolver, IdentityResolverBuilder};
-use crate::par::{build_authorization_url, execute_par_request, ParParameters};
+use crate::par::{
+    build_authorization_url, execute_par_request, execute_par_request_with_credentials,
+    ParParameters,
+};
 use crate::pkce::PkcePair;
 use crate::session::OAuthSession;
-use crate::ssrf::SsrfFilter;
+use crate::ssrf::{read_bounded_body, SsrfFilter, MAX_OAUTH_RESPONSE_BYTES};
+use crate::store::{OAuthStateStore, OAuthStore, DEFAULT_STATE_TTL};
+
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Client configuration and metadata for an AT Protocol OAuth client.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct OAuthClientMetadata {
     /// Canonical OAuth client ID (usually a Client Metadata Document URL).
     pub client_id: String,
@@ -30,6 +37,21 @@ pub struct OAuthClientMetadata {
     pub client_name: Option<String>,
     /// Optional client secret for confidential client authentication.
     pub client_secret: Option<String>,
+}
+
+impl std::fmt::Debug for OAuthClientMetadata {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthClientMetadata")
+            .field("client_id", &self.client_id)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("scope", &self.scope)
+            .field("client_name", &self.client_name)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 impl OAuthClientMetadata {
@@ -71,7 +93,13 @@ impl OAuthClientMetadata {
 ///
 /// Saved into the OAuth state store prior to user agent redirection, and consumed
 /// atomically upon callback receipt to guarantee single-use CSRF/replay protection.
-#[derive(Debug, Clone)]
+///
+/// # Memory Zeroization & Partial Moves
+/// This struct implements [`Drop`] and [`ZeroizeOnDrop`] to securely zeroize sensitive
+/// cryptographic credentials (`code_verifier`) from memory on destruction. As a consequence
+/// of Rust's [`Drop`] safety rules (E0509), partial moves of individual fields out of
+/// this struct are prohibited; callers should borrow fields or clone the structure.
+#[derive(Clone)]
 pub struct StoredStateEntry {
     /// The random state identifier token.
     pub state: String,
@@ -101,15 +129,54 @@ pub struct StoredStateEntry {
     pub expires_in_secs: u64,
 }
 
+impl std::fmt::Debug for StoredStateEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredStateEntry")
+            .field("state", &self.state)
+            .field("client_id", &self.client_id)
+            .field("code_verifier", &"[REDACTED]")
+            .field("dpop_key", &self.dpop_key)
+            .field("issuer", &self.issuer)
+            .field("did", &self.did)
+            .field("handle", &self.handle)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("pds_endpoint", &self.pds_endpoint)
+            .field("token_endpoint", &self.token_endpoint)
+            .field("scopes", &self.scopes)
+            .field("created_at", &self.created_at)
+            .field("expires_in_secs", &self.expires_in_secs)
+            .finish()
+    }
+}
+
+impl Zeroize for StoredStateEntry {
+    fn zeroize(&mut self) {
+        self.code_verifier.zeroize();
+    }
+}
+
+impl Drop for StoredStateEntry {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for StoredStateEntry {}
+
 impl StoredStateEntry {
     /// Checks whether this stored state entry has expired.
+    ///
+    /// Fails closed: if the system clock is earlier than `created_at` (backward
+    /// step / NTP correction), the entry is treated as expired rather than valid.
     #[must_use]
     pub fn is_expired(&self) -> bool {
         let now = SystemTime::now();
         let max_age = Duration::from_secs(self.expires_in_secs);
-        now.duration_since(self.created_at)
-            .map(|elapsed| elapsed > max_age)
-            .unwrap_or(false)
+        match now.duration_since(self.created_at) {
+            Ok(elapsed) => elapsed > max_age,
+            // Clock moved backward below `created_at`: fail closed.
+            Err(_) => true,
+        }
     }
 }
 
@@ -185,6 +252,8 @@ pub struct AtprotoOAuthClientBuilder {
     resolver: Option<IdentityResolver>,
     nonce_cache: Option<DPoPNonceCache>,
     ssrf_filter: SsrfFilter,
+    state_store: Option<Arc<OAuthStateStore>>,
+    state_ttl: Duration,
 }
 
 impl Default for AtprotoOAuthClientBuilder {
@@ -202,6 +271,8 @@ impl AtprotoOAuthClientBuilder {
             resolver: None,
             nonce_cache: None,
             ssrf_filter: SsrfFilter::default(),
+            state_store: None,
+            state_ttl: DEFAULT_STATE_TTL,
         }
     }
 
@@ -210,6 +281,12 @@ impl AtprotoOAuthClientBuilder {
     pub fn client_metadata(mut self, metadata: OAuthClientMetadata) -> Self {
         self.metadata = Some(metadata);
         self
+    }
+
+    /// Alias for [`Self::client_metadata`].
+    #[must_use]
+    pub fn metadata(self, metadata: OAuthClientMetadata) -> Self {
+        self.client_metadata(metadata)
     }
 
     /// Sets the identity resolver.
@@ -240,12 +317,39 @@ impl AtprotoOAuthClientBuilder {
         self
     }
 
+    /// Sets the shared OAuth state store for session tracking and single-use consumption.
+    #[must_use]
+    pub fn state_store(mut self, store: Arc<OAuthStateStore>) -> Self {
+        self.state_store = Some(store);
+        self
+    }
+
+    /// Sets the TTL duration for authorization state entries.
+    #[must_use]
+    pub fn state_ttl(mut self, ttl: Duration) -> Self {
+        self.state_ttl = ttl;
+        self
+    }
+
     /// Builds the configured [`AtprotoOAuthClient`].
     ///
     /// # Panics / Errors
     ///
     /// Returns error if client metadata is missing.
+    /// Builds the configured [`AtprotoOAuthClient`].
+    ///
+    /// # Panics / Errors
+    ///
+    /// Returns [`AtprotoOAuthError`] if client metadata was not configured, or if
+    /// the configured `state_ttl` is not a whole number of seconds — sub-second
+    /// TTLs would be truncated by `StoredStateEntry::expires_in_secs`, making
+    /// entries appear instantly expired while the store still holds them.
     pub fn build(self) -> Result<AtprotoOAuthClient, AtprotoOAuthError> {
+        if self.state_ttl.subsec_nanos() != 0 {
+            return Err(AtprotoOAuthError::Token(TokenError::InvalidStateTtl(
+                self.state_ttl,
+            )));
+        }
         let metadata = self
             .metadata
             .ok_or(ParError::MissingField("client_metadata"))?;
@@ -257,18 +361,17 @@ impl AtprotoOAuthClientBuilder {
         });
 
         let nonce_cache = self.nonce_cache.unwrap_or_default();
-
-        let http_client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(15))
-            .build()
-            .map_err(|e| TokenError::Http(e.to_string()))?;
+        let state_store = self
+            .state_store
+            .unwrap_or_else(|| Arc::new(OAuthStateStore::new(self.state_ttl)));
 
         Ok(AtprotoOAuthClient {
             metadata,
             resolver,
             nonce_cache,
             ssrf_filter: self.ssrf_filter,
-            http_client,
+            state_store,
+            state_ttl: self.state_ttl,
         })
     }
 }
@@ -283,7 +386,8 @@ pub struct AtprotoOAuthClient {
     resolver: IdentityResolver,
     nonce_cache: DPoPNonceCache,
     ssrf_filter: SsrfFilter,
-    http_client: reqwest::Client,
+    state_store: Arc<OAuthStateStore>,
+    state_ttl: Duration,
 }
 
 impl AtprotoOAuthClient {
@@ -295,17 +399,14 @@ impl AtprotoOAuthClient {
         let resolver = IdentityResolverBuilder::new()
             .ssrf_filter(ssrf_filter)
             .build();
-        let http_client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(15))
-            .build()
-            .unwrap_or_default();
 
         Self {
             metadata,
             resolver,
             nonce_cache: DPoPNonceCache::new(),
             ssrf_filter,
-            http_client,
+            state_store: Arc::new(OAuthStateStore::default()),
+            state_ttl: DEFAULT_STATE_TTL,
         }
     }
 
@@ -339,6 +440,34 @@ impl AtprotoOAuthClient {
         &self.ssrf_filter
     }
 
+    /// Returns a reference to the internal OAuth state store.
+    #[must_use]
+    pub fn state_store(&self) -> &Arc<OAuthStateStore> {
+        &self.state_store
+    }
+
+    /// Returns the configured state TTL duration.
+    #[must_use]
+    pub const fn state_ttl(&self) -> Duration {
+        self.state_ttl
+    }
+
+    /// Initiates an OAuth authorization flow for a user handle or DID and returns the [`AuthorizationRequest`].
+    ///
+    /// The authorization state entry is automatically registered into the client's internal
+    /// state store for atomic, single-use callback verification via [`Self::handle_callback`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AtprotoOAuthError`] if identity resolution, PAR, or cryptographic operations fail.
+    pub async fn authorize(
+        &self,
+        handle_or_did: &str,
+    ) -> Result<AuthorizationRequest, AtprotoOAuthError> {
+        let (req, _) = self.initiate_login(handle_or_did).await?;
+        Ok(req)
+    }
+
     /// Initiates an OAuth login flow for a user handle or DID.
     ///
     /// # Pipeline
@@ -348,7 +477,8 @@ impl AtprotoOAuthClient {
     /// 4. Generates an ephemeral session [`DPoPKey`].
     /// 5. Pushes parameters to the authorization server's PAR endpoint with DPoP proof.
     /// 6. Constructs the browser authorization redirect URL with `client_id` and `request_uri`.
-    /// 7. Returns `(AuthorizationRequest, StoredStateEntry)`.
+    /// 7. Automatically inserts the state entry into [`Self::state_store`].
+    /// 8. Returns `(AuthorizationRequest, StoredStateEntry)`.
     ///
     /// # Errors
     ///
@@ -367,22 +497,18 @@ impl AtprotoOAuthClient {
         handle_or_did: &str,
         scope: &str,
     ) -> Result<(AuthorizationRequest, StoredStateEntry), AtprotoOAuthError> {
-        // 1. Identity & OAuth Discovery
         let endpoints = self
             .resolver
             .discover_oauth_endpoints(handle_or_did)
             .await?;
 
-        // 2. PKCE and State Generation
         let pkce = PkcePair::generate();
         let mut state_bytes = [0u8; 32];
         rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut state_bytes);
         let state = base64url_encode(&state_bytes);
 
-        // 3. Ephemeral DPoP Keypair
         let dpop_key = DPoPKey::generate();
 
-        // 4. PAR Request Builder
         let mut params = ParParameters::new(
             &self.metadata.client_id,
             &self.metadata.redirect_uri,
@@ -397,24 +523,33 @@ impl AtprotoOAuthClient {
             params = params.with_login_hint(&endpoints.did);
         }
 
-        // 5. Execute PAR with DPoP signing & auto-nonce retry
-        let par_res = execute_par_request(
-            &self.ssrf_filter,
-            &endpoints.par_endpoint,
-            &params,
-            &dpop_key,
-            &self.nonce_cache,
-        )
-        .await?;
+        let par_res = if let Some(ref secret) = self.metadata.client_secret {
+            execute_par_request_with_credentials(
+                &self.ssrf_filter,
+                &endpoints.par_endpoint,
+                &params,
+                &dpop_key,
+                &self.nonce_cache,
+                &[("client_secret", secret.as_str())],
+            )
+            .await?
+        } else {
+            execute_par_request(
+                &self.ssrf_filter,
+                &endpoints.par_endpoint,
+                &params,
+                &dpop_key,
+                &self.nonce_cache,
+            )
+            .await?
+        };
 
-        // 6. Build Authorization Redirect URL
         let auth_url = build_authorization_url(
             &endpoints.authorization_endpoint,
             &self.metadata.client_id,
             &par_res.request_uri,
         )?;
 
-        // 7. Assemble StoredStateEntry and AuthorizationRequest
         let stored_state = StoredStateEntry {
             state: state.clone(),
             client_id: self.metadata.client_id.clone(),
@@ -428,12 +563,16 @@ impl AtprotoOAuthClient {
             token_endpoint: endpoints.token_endpoint,
             scopes: scope.to_string(),
             created_at: SystemTime::now(),
-            expires_in_secs: 300,
+            expires_in_secs: self.state_ttl.as_secs(),
         };
+
+        self.state_store
+            .insert_state(state.clone(), stored_state.clone(), self.state_ttl)
+            .await?;
 
         let auth_req = AuthorizationRequest {
             authorization_url: auth_url,
-            state,
+            state: state.clone(),
             request_uri: par_res.request_uri,
             expires_in: par_res.expires_in,
             stored_state: stored_state.clone(),
@@ -460,14 +599,21 @@ impl AtprotoOAuthClient {
         code: &str,
         state_entry: &StoredStateEntry,
     ) -> Result<OAuthSession, AtprotoOAuthError> {
-        let form_body = serde_urlencoded::to_string([
+        let mut form_pairs: Vec<(&str, &str)> = vec![
             ("grant_type", "authorization_code"),
             ("code", code),
-            ("redirect_uri", &state_entry.redirect_uri),
-            ("client_id", &state_entry.client_id),
-            ("code_verifier", &state_entry.code_verifier),
-        ])
-        .map_err(|e| TokenError::Http(e.to_string()))?;
+            ("redirect_uri", state_entry.redirect_uri.as_str()),
+            ("client_id", state_entry.client_id.as_str()),
+            ("code_verifier", state_entry.code_verifier.as_str()),
+        ];
+
+        // Confidential-client authentication (RFC 6749 § 2.3.1, client_secret_post)
+        if let Some(ref secret) = self.metadata.client_secret {
+            form_pairs.push(("client_secret", secret.as_str()));
+        }
+
+        let form_body =
+            serde_urlencoded::to_string(form_pairs).map_err(|e| TokenError::Http(e.to_string()))?;
 
         let resp_json: TokenResponse = self
             .send_dpop_token_request(
@@ -477,12 +623,10 @@ impl AtprotoOAuthClient {
             )
             .await?;
 
-        // 1. Validate token_type == "DPoP" (case-insensitive)
         if !resp_json.token_type.eq_ignore_ascii_case("DPoP") {
             return Err(TokenError::InvalidTokenType(resp_json.token_type).into());
         }
 
-        // 2. Validate sub DID
         if resp_json.sub.trim().is_empty() {
             return Err(TokenError::MissingDid.into());
         }
@@ -496,12 +640,11 @@ impl AtprotoOAuthClient {
             }
         }
 
-        // 3. Validate Scope contains "atproto"
-        if let Some(ref scope_str) = resp_json.scope {
-            let has_atproto = scope_str.split_whitespace().any(|s| s == "atproto");
-            if !has_atproto {
-                return Err(TokenError::MissingAtprotoScope(scope_str.clone()).into());
-            }
+        let scope_str = resp_json.scope.as_deref().ok_or(TokenError::MissingScope)?;
+
+        let has_atproto = scope_str.split_whitespace().any(|s| s == "atproto");
+        if !has_atproto {
+            return Err(TokenError::MissingAtprotoScope(scope_str.to_string()).into());
         }
 
         OAuthSession::new(
@@ -518,12 +661,46 @@ impl AtprotoOAuthClient {
         )
     }
 
-    /// Handles an OAuth redirect callback by verifying `state` and `iss` before code exchange.
+    /// Handles an OAuth redirect callback by atomically consuming the stored state from the
+    /// internal [`OAuthStateStore`], verifying expiration and RFC 9207 `iss`, and exchanging the code.
+    ///
+    /// # Single-Use Guarantee
+    /// The state token is atomically consumed from storage on first attempt. Replaying the callback
+    /// or presenting an expired state will immediately return an error.
     ///
     /// # Errors
-    /// - Returns [`TokenError::InvalidState`] if callback `state` does not match `state_entry.state`.
-    /// - Returns [`TokenError::IssuerMismatch`] if callback `iss` does not match `state_entry.issuer`.
+    /// - Returns [`TokenError::InvalidState`] if the state token is not found, has expired, or was already consumed.
+    /// - Returns [`TokenError::StateExpired`] if the stored state entry has expired.
+    /// - Returns [`TokenError::MissingCallbackIssuer`] if callback `iss` is missing.
+    /// - Returns [`TokenError::IssuerMismatch`] if callback `iss` does not match the stored issuer.
     pub async fn handle_callback(
+        &self,
+        callback_params: &CallbackParams,
+    ) -> Result<OAuthSession, AtprotoOAuthError> {
+        let state_entry = self
+            .state_store
+            .take_state(&callback_params.state)
+            .await?
+            .ok_or_else(|| {
+                TokenError::InvalidState(format!(
+                    "State token '{}' not found, expired, or already consumed",
+                    callback_params.state
+                ))
+            })?;
+
+        self.handle_callback_with_entry(callback_params, &state_entry)
+            .await
+    }
+
+    /// Handles an OAuth redirect callback with an explicitly provided [`StoredStateEntry`],
+    /// enforcing expiration and RFC 9207 `iss` verification before code exchange.
+    ///
+    /// # Errors
+    /// - Returns [`TokenError::InvalidState`] if `callback_params.state` does not match `state_entry.state`.
+    /// - Returns [`TokenError::StateExpired`] if `state_entry` has expired.
+    /// - Returns [`TokenError::MissingCallbackIssuer`] if callback `iss` is missing.
+    /// - Returns [`TokenError::IssuerMismatch`] if callback `iss` does not match `state_entry.issuer`.
+    pub async fn handle_callback_with_entry(
         &self,
         callback_params: &CallbackParams,
         state_entry: &StoredStateEntry,
@@ -536,16 +713,23 @@ impl AtprotoOAuthClient {
             .into());
         }
 
-        if let Some(ref callback_iss) = callback_params.iss {
-            let norm_callback = callback_iss.trim().trim_end_matches('/');
-            let norm_expected = state_entry.issuer.trim().trim_end_matches('/');
-            if norm_callback != norm_expected {
-                return Err(TokenError::IssuerMismatch {
-                    expected: state_entry.issuer.clone(),
-                    actual: callback_iss.clone(),
-                }
-                .into());
+        if state_entry.is_expired() {
+            return Err(TokenError::StateExpired.into());
+        }
+
+        let callback_iss = callback_params
+            .iss
+            .as_deref()
+            .ok_or(TokenError::MissingCallbackIssuer)?;
+
+        let norm_callback = callback_iss.trim().trim_end_matches('/');
+        let norm_expected = state_entry.issuer.trim().trim_end_matches('/');
+        if norm_callback != norm_expected {
+            return Err(TokenError::IssuerMismatch {
+                expected: state_entry.issuer.clone(),
+                actual: callback_iss.to_string(),
             }
+            .into());
         }
 
         self.exchange_code(&callback_params.code, state_entry).await
@@ -572,12 +756,19 @@ impl AtprotoOAuthClient {
             .ok_or(TokenError::MissingField("token_endpoint"))?
             .to_string();
 
-        let form_body = serde_urlencoded::to_string([
+        let mut form_pairs: Vec<(&str, &str)> = vec![
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
-            ("client_id", &self.metadata.client_id),
-        ])
-        .map_err(|e| TokenError::Http(e.to_string()))?;
+            ("client_id", self.metadata.client_id.as_str()),
+        ];
+
+        // Confidential-client authentication (RFC 6749 § 2.3.1, client_secret_post)
+        if let Some(ref secret) = self.metadata.client_secret {
+            form_pairs.push(("client_secret", secret.as_str()));
+        }
+
+        let form_body =
+            serde_urlencoded::to_string(form_pairs).map_err(|e| TokenError::Http(e.to_string()))?;
 
         let resp_json: TokenResponse = self
             .send_dpop_token_request(&token_endpoint, session.dpop_key(), form_body.into_bytes())
@@ -593,6 +784,15 @@ impl AtprotoOAuthClient {
                 actual: resp_json.sub,
             }
             .into());
+        }
+
+        // Scope revalidation: reject silent scope narrowing on rotation (RFC 6749 § 6:
+        // the refreshed scope MUST NOT exceed the original grant, and ATProto profiles
+        // mandate that "atproto" remains present).
+        if let Some(ref new_scope) = resp_json.scope {
+            if !new_scope.split_whitespace().any(|s| s == "atproto") {
+                return Err(TokenError::MissingAtprotoScope(new_scope.clone()).into());
+            }
         }
 
         session.rotate_tokens(
@@ -621,193 +821,14 @@ impl AtprotoOAuthClient {
         dpop_key: &DPoPKey,
         body_bytes: Vec<u8>,
     ) -> Result<TokenResponse, AtprotoOAuthError> {
-        let parsed_url = Url::parse(token_endpoint).map_err(|e| {
-            TokenError::Http(format!(
-                "Invalid token endpoint URL '{token_endpoint}': {e}"
-            ))
-        })?;
-
-        self.ssrf_filter
-            .validate_url(&parsed_url)
-            .map_err(TokenError::from)?;
-
-        let server_origin = parsed_url.origin().ascii_serialization();
-
-        // Initial Attempt with cached nonce (if any)
-        let initial_nonce = self.nonce_cache.get_nonce(&server_origin);
-        let proof =
-            dpop_key.create_proof("POST", token_endpoint, initial_nonce.as_deref(), None)?;
-
-        let resp = self
-            .http_client
-            .post(token_endpoint)
-            .header("content-type", "application/x-www-form-urlencoded")
-            .header("accept", "application/json")
-            .header("dpop", proof)
-            .body(body_bytes.clone())
-            .send()
-            .await
-            .map_err(|e| TokenError::Http(e.to_string()))?;
-
-        // Cache any returned DPoP-Nonce header
-        if let Some(new_nonce) = extract_dpop_nonce(
-            resp.headers()
-                .get("dpop-nonce")
-                .and_then(|h| h.to_str().ok()),
-        ) {
-            self.nonce_cache.set_nonce(&server_origin, new_nonce);
-        }
-
-        let status = resp.status();
-
-        // Check for use_dpop_nonce error challenge
-        if status == reqwest::StatusCode::BAD_REQUEST || status == reqwest::StatusCode::UNAUTHORIZED
-        {
-            let resp_bytes = resp
-                .bytes()
-                .await
-                .map_err(|e| TokenError::Http(e.to_string()))?;
-
-            let json_err: Option<serde_json::Value> = serde_json::from_slice(&resp_bytes).ok();
-            let is_nonce_error = json_err
-                .as_ref()
-                .and_then(|j| j.get("error"))
-                .and_then(|e| e.as_str())
-                == Some("use_dpop_nonce");
-
-            if is_nonce_error {
-                let fresh_nonce = self.nonce_cache.get_nonce(&server_origin).ok_or_else(|| {
-                    TokenError::RequestFailed {
-                        status: status.as_u16(),
-                        error: "use_dpop_nonce".to_string(),
-                        description: Some(
-                            "Missing DPoP-Nonce header in challenge response".to_string(),
-                        ),
-                    }
-                })?;
-
-                // Single Retry with fresh nonce
-                let retry_proof =
-                    dpop_key.create_proof("POST", token_endpoint, Some(&fresh_nonce), None)?;
-
-                let retry_resp = self
-                    .http_client
-                    .post(token_endpoint)
-                    .header("content-type", "application/x-www-form-urlencoded")
-                    .header("accept", "application/json")
-                    .header("dpop", retry_proof)
-                    .body(body_bytes)
-                    .send()
-                    .await
-                    .map_err(|e| TokenError::Http(e.to_string()))?;
-
-                if let Some(new_nonce) = extract_dpop_nonce(
-                    retry_resp
-                        .headers()
-                        .get("dpop-nonce")
-                        .and_then(|h| h.to_str().ok()),
-                ) {
-                    self.nonce_cache.set_nonce(&server_origin, new_nonce);
-                }
-
-                let retry_status = retry_resp.status();
-                if retry_status.is_success() {
-                    let bytes = retry_resp
-                        .bytes()
-                        .await
-                        .map_err(|e| TokenError::Http(e.to_string()))?;
-                    let res: TokenResponse = serde_json::from_slice(&bytes)
-                        .map_err(|e| TokenError::Json(e.to_string()))?;
-                    return Ok(res);
-                }
-
-                let err_bytes = retry_resp
-                    .bytes()
-                    .await
-                    .map_err(|e| TokenError::Http(e.to_string()))?;
-                let err_json: Option<serde_json::Value> = serde_json::from_slice(&err_bytes).ok();
-                if err_json
-                    .as_ref()
-                    .and_then(|j| j.get("error"))
-                    .and_then(|e| e.as_str())
-                    == Some("use_dpop_nonce")
-                {
-                    return Err(DPoPError::NonceRetryLimitExceeded.into());
-                }
-
-                let error_code = err_json
-                    .as_ref()
-                    .and_then(|j| j.get("error"))
-                    .and_then(|e| e.as_str())
-                    .unwrap_or("token_request_failed")
-                    .to_string();
-                let error_desc = err_json
-                    .as_ref()
-                    .and_then(|j| j.get("error_description"))
-                    .and_then(|d| d.as_str())
-                    .map(ToString::to_string);
-
-                return Err(TokenError::RequestFailed {
-                    status: retry_status.as_u16(),
-                    error: error_code,
-                    description: error_desc,
-                }
-                .into());
-            }
-
-            let error_code = json_err
-                .as_ref()
-                .and_then(|j| j.get("error"))
-                .and_then(|e| e.as_str())
-                .unwrap_or("token_request_failed")
-                .to_string();
-            let error_desc = json_err
-                .as_ref()
-                .and_then(|j| j.get("error_description"))
-                .and_then(|d| d.as_str())
-                .map(ToString::to_string);
-
-            return Err(TokenError::RequestFailed {
-                status: status.as_u16(),
-                error: error_code,
-                description: error_desc,
-            }
-            .into());
-        }
-
-        if !status.is_success() {
-            let err_bytes = resp
-                .bytes()
-                .await
-                .map_err(|e| TokenError::Http(e.to_string()))?;
-            let err_json: Option<serde_json::Value> = serde_json::from_slice(&err_bytes).ok();
-            let error_code = err_json
-                .as_ref()
-                .and_then(|j| j.get("error"))
-                .and_then(|e| e.as_str())
-                .unwrap_or("token_request_failed")
-                .to_string();
-            let error_desc = err_json
-                .as_ref()
-                .and_then(|j| j.get("error_description"))
-                .and_then(|d| d.as_str())
-                .map(ToString::to_string);
-
-            return Err(TokenError::RequestFailed {
-                status: status.as_u16(),
-                error: error_code,
-                description: error_desc,
-            }
-            .into());
-        }
-
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| TokenError::Http(e.to_string()))?;
-        let res: TokenResponse =
-            serde_json::from_slice(&bytes).map_err(|e| TokenError::Json(e.to_string()))?;
-        Ok(res)
+        send_dpop_token_request_inner(
+            &self.ssrf_filter,
+            &self.nonce_cache,
+            token_endpoint,
+            dpop_key,
+            body_bytes,
+        )
+        .await
     }
 
     /// Executes an arbitrary HTTP request authenticated with DPoP and automatic nonce retry handling.
@@ -825,15 +846,16 @@ impl AtprotoOAuthClient {
         let parsed_url = Url::parse(url_str)
             .map_err(|e| TokenError::Http(format!("Invalid URL '{url_str}': {e}")))?;
 
-        self.ssrf_filter
-            .validate_url(&parsed_url)
+        let (client, _pinned_addr, host_header) = self
+            .ssrf_filter
+            .build_pinned_client(&parsed_url)
+            .await
             .map_err(TokenError::from)?;
 
         let server_origin = parsed_url.origin().ascii_serialization();
 
         let ath = access_token.map(compute_access_token_hash);
 
-        // 1. Initial Attempt
         let initial_nonce = self.nonce_cache.get_nonce(&server_origin);
         let proof = dpop_key.create_proof(
             method.as_str(),
@@ -842,9 +864,9 @@ impl AtprotoOAuthClient {
             ath.as_deref(),
         )?;
 
-        let mut req = self
-            .http_client
+        let mut req = client
             .request(method.clone(), url_str)
+            .header(reqwest::header::HOST, host_header.clone())
             .header("dpop", proof);
 
         if let Some(token) = access_token {
@@ -895,9 +917,15 @@ impl AtprotoOAuthClient {
                     ath.as_deref(),
                 )?;
 
-                let mut retry_req = self
-                    .http_client
+                let (retry_client, _retry_pinned_addr, retry_host_header) = self
+                    .ssrf_filter
+                    .build_pinned_client(&parsed_url)
+                    .await
+                    .map_err(TokenError::from)?;
+
+                let mut retry_req = retry_client
                     .request(method, url_str)
+                    .header(reqwest::header::HOST, retry_host_header)
                     .header("dpop", retry_proof);
 
                 if let Some(token) = access_token {
@@ -928,7 +956,6 @@ impl AtprotoOAuthClient {
                 if retry_status == reqwest::StatusCode::BAD_REQUEST
                     || retry_status == reqwest::StatusCode::UNAUTHORIZED
                 {
-                    // Check if still failing with use_dpop_nonce
                     let retry_is_nonce = retry_resp
                         .headers()
                         .get("dpop-nonce")
@@ -945,6 +972,293 @@ impl AtprotoOAuthClient {
 
         Ok(resp)
     }
+
+    /// Validates an XRPC NSID against the ATProto NSID grammar
+    /// (`<https://atproto.com/specs/nsid>`, mirroring the reference validator in
+    /// `bluesky-social/atproto/packages/syntax`).
+    ///
+    /// Grammar: `nsid = authority delim name` where every segment is
+    /// `alpha *( alpha / number / "-" )` (<=63 chars, no leading/trailing hyphen),
+    /// the total length is <=317, the first authority segment must start with a
+    /// letter, and the final name segment is `alpha *( alpha / number )` — letters
+    /// and digits only, no hyphens, no leading digit.
+    fn validate_xrpc_nsid(nsid: &str) -> Result<(), TokenError> {
+        let trimmed = nsid.trim_start_matches('/');
+        if trimmed.is_empty() || trimmed.len() > 317 {
+            return Err(TokenError::InvalidNsid(nsid.to_string()));
+        }
+        if trimmed.contains("..") || trimmed.contains('\\') || trimmed.contains('%') {
+            return Err(TokenError::InvalidNsid(nsid.to_string()));
+        }
+        let segments: Vec<&str> = trimmed.split('.').collect();
+        if segments.len() < 3 {
+            return Err(TokenError::InvalidNsid(nsid.to_string()));
+        }
+        for seg in &segments {
+            if seg.is_empty()
+                || seg.len() > 63
+                || seg.starts_with('-')
+                || seg.ends_with('-')
+                || !seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            {
+                return Err(TokenError::InvalidNsid(nsid.to_string()));
+            }
+        }
+        // First authority segment must start with a letter.
+        if !segments[0]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        {
+            return Err(TokenError::InvalidNsid(nsid.to_string()));
+        }
+        // Name segment: starts with a letter, then letters/digits only (no hyphens).
+        let name = segments[segments.len() - 1];
+        let name_chars: Vec<char> = name.chars().collect();
+        let starts_with_letter = name_chars.first().is_some_and(|c| c.is_ascii_alphabetic());
+        if !starts_with_letter || name_chars.iter().any(|c| !c.is_ascii_alphanumeric()) {
+            return Err(TokenError::InvalidNsid(nsid.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Executes an authenticated XRPC request against the session's PDS endpoint with DPoP signing and auto-nonce retry.
+    ///
+    /// # Arguments
+    ///
+    /// - `session`: The authenticated [`OAuthSession`].
+    /// - `nsid`: The Lexicon method identifier (e.g. `"com.atproto.repo.describeRepo"`).
+    /// - `query_params`: Optional URL query parameter key-value pairs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AtprotoOAuthError`] if the PDS endpoint is missing or invalid, the NSID
+    /// fails Lexicon NSID grammar validation, or the request fails.
+    pub async fn send_xrpc_request(
+        &self,
+        session: &OAuthSession,
+        nsid: &str,
+        query_params: &[(&str, &str)],
+    ) -> Result<reqwest::Response, AtprotoOAuthError> {
+        Self::validate_xrpc_nsid(nsid).map_err(AtprotoOAuthError::Token)?;
+        let pds_endpoint = session
+            .pds_endpoint()
+            .ok_or(TokenError::MissingField("pds_endpoint"))?;
+        let mut url = Url::parse(pds_endpoint)
+            .map_err(|e| TokenError::Http(format!("Invalid PDS endpoint: {e}")))?;
+        let trimmed_nsid = nsid.trim_start_matches('/');
+        // Preserve any base path on the PDS endpoint (e.g. `https://host/pds`) so
+        // sub-path deployments resolve to `/pds/xrpc/...` and the DPoP `htu` matches
+        // the actual request target.
+        let base_path = url.path().trim_end_matches('/');
+        url.set_path(&format!("{}/xrpc/{}", base_path, trimmed_nsid));
+        if !query_params.is_empty() {
+            url.query_pairs_mut()
+                .extend_pairs(query_params.iter().copied());
+        }
+        self.send_dpop_request(
+            session.dpop_key(),
+            reqwest::Method::GET,
+            url.as_str(),
+            Some(session.access_token()),
+            None,
+            None,
+        )
+        .await
+    }
+}
+
+/// Extracts the OAuth `error` and `error_description` fields from a JSON body.
+fn parse_oauth_error_fields(json: Option<&serde_json::Value>) -> (String, Option<String>) {
+    let error_code = json
+        .and_then(|j| j.get("error"))
+        .and_then(|e| e.as_str())
+        .unwrap_or("token_request_failed")
+        .to_string();
+    let error_desc = json
+        .and_then(|j| j.get("error_description"))
+        .and_then(|d| d.as_str())
+        .map(ToString::to_string);
+    (error_code, error_desc)
+}
+
+/// Checks whether a parsed JSON body is a `use_dpop_nonce` DPoP challenge.
+fn is_use_dpop_nonce_error(json: Option<&serde_json::Value>) -> bool {
+    json.and_then(|j| j.get("error")).and_then(|e| e.as_str()) == Some("use_dpop_nonce")
+}
+
+/// Reads a bounded body and parses it as lenient JSON, returning `None` on non-JSON bodies.
+async fn read_bounded_json(
+    resp: reqwest::Response,
+) -> Result<Option<serde_json::Value>, TokenError> {
+    let bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
+        .await
+        .map_err(|e| TokenError::Http(e.to_string()))?;
+    Ok(serde_json::from_slice(&bytes).ok())
+}
+
+/// Free-function core for DPoP-bound token endpoint requests with transparent
+/// auto-nonce retry, shared by code exchange and session refresh.
+///
+/// Redirects are rejected per RFC 6749; a single retry is performed when the
+/// server responds with a `use_dpop_nonce` challenge.
+async fn send_dpop_token_request_inner(
+    ssrf_filter: &SsrfFilter,
+    nonce_cache: &DPoPNonceCache,
+    token_endpoint: &str,
+    dpop_key: &DPoPKey,
+    body_bytes: Vec<u8>,
+) -> Result<TokenResponse, AtprotoOAuthError> {
+    let parsed_url = Url::parse(token_endpoint).map_err(|e| {
+        TokenError::Http(format!(
+            "Invalid token endpoint URL '{token_endpoint}': {e}"
+        ))
+    })?;
+
+    let (client, _pinned_addr, host_header) = ssrf_filter
+        .build_pinned_client(&parsed_url)
+        .await
+        .map_err(TokenError::from)?;
+
+    let server_origin = parsed_url.origin().ascii_serialization();
+
+    let initial_nonce = nonce_cache.get_nonce(&server_origin);
+    let proof = dpop_key.create_proof("POST", token_endpoint, initial_nonce.as_deref(), None)?;
+
+    let resp = client
+        .post(token_endpoint)
+        .header(reqwest::header::HOST, host_header.clone())
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("accept", "application/json")
+        .header("dpop", proof)
+        .body(body_bytes.clone())
+        .send()
+        .await
+        .map_err(|e| TokenError::Http(e.to_string()))?;
+
+    if let Some(new_nonce) = extract_dpop_nonce(
+        resp.headers()
+            .get("dpop-nonce")
+            .and_then(|h| h.to_str().ok()),
+    ) {
+        nonce_cache.set_nonce(&server_origin, new_nonce);
+    }
+
+    let status = resp.status();
+
+    if status.is_redirection() {
+        return Err(TokenError::RequestFailed {
+            status: status.as_u16(),
+            error: "invalid_request".to_string(),
+            description: Some("Redirects are not permitted for token endpoints".to_string()),
+        }
+        .into());
+    }
+
+    if status == reqwest::StatusCode::BAD_REQUEST || status == reqwest::StatusCode::UNAUTHORIZED {
+        let json_err = read_bounded_json(resp).await?;
+        if is_use_dpop_nonce_error(json_err.as_ref()) {
+            let fresh_nonce =
+                nonce_cache
+                    .get_nonce(&server_origin)
+                    .ok_or_else(|| TokenError::RequestFailed {
+                        status: status.as_u16(),
+                        error: "use_dpop_nonce".to_string(),
+                        description: Some(
+                            "Missing DPoP-Nonce header in challenge response".to_string(),
+                        ),
+                    })?;
+
+            let retry_proof =
+                dpop_key.create_proof("POST", token_endpoint, Some(&fresh_nonce), None)?;
+
+            let (retry_client, _retry_pinned_addr, retry_host_header) = ssrf_filter
+                .build_pinned_client(&parsed_url)
+                .await
+                .map_err(TokenError::from)?;
+
+            let retry_resp = retry_client
+                .post(token_endpoint)
+                .header(reqwest::header::HOST, retry_host_header)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("accept", "application/json")
+                .header("dpop", retry_proof)
+                .body(body_bytes)
+                .send()
+                .await
+                .map_err(|e| TokenError::Http(e.to_string()))?;
+
+            if let Some(new_nonce) = extract_dpop_nonce(
+                retry_resp
+                    .headers()
+                    .get("dpop-nonce")
+                    .and_then(|h| h.to_str().ok()),
+            ) {
+                nonce_cache.set_nonce(&server_origin, new_nonce);
+            }
+
+            let retry_status = retry_resp.status();
+
+            if retry_status.is_redirection() {
+                return Err(TokenError::RequestFailed {
+                    status: retry_status.as_u16(),
+                    error: "invalid_request".to_string(),
+                    description: Some(
+                        "Redirects are not permitted for token endpoints".to_string(),
+                    ),
+                }
+                .into());
+            }
+
+            if retry_status.is_success() {
+                let bytes = read_bounded_body(retry_resp, MAX_OAUTH_RESPONSE_BYTES)
+                    .await
+                    .map_err(|e| TokenError::Http(e.to_string()))?;
+                let res: TokenResponse =
+                    serde_json::from_slice(&bytes).map_err(|e| TokenError::Json(e.to_string()))?;
+                return Ok(res);
+            }
+
+            let err_json = read_bounded_json(retry_resp).await?;
+            if is_use_dpop_nonce_error(err_json.as_ref()) {
+                return Err(DPoPError::NonceRetryLimitExceeded.into());
+            }
+
+            let (error_code, error_desc) = parse_oauth_error_fields(err_json.as_ref());
+            return Err(TokenError::RequestFailed {
+                status: retry_status.as_u16(),
+                error: error_code,
+                description: error_desc,
+            }
+            .into());
+        }
+
+        let (error_code, error_desc) = parse_oauth_error_fields(json_err.as_ref());
+        return Err(TokenError::RequestFailed {
+            status: status.as_u16(),
+            error: error_code,
+            description: error_desc,
+        }
+        .into());
+    }
+
+    if !status.is_success() {
+        let err_json = read_bounded_json(resp).await?;
+        let (error_code, error_desc) = parse_oauth_error_fields(err_json.as_ref());
+        return Err(TokenError::RequestFailed {
+            status: status.as_u16(),
+            error: error_code,
+            description: error_desc,
+        }
+        .into());
+    }
+
+    let bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
+        .await
+        .map_err(|e| TokenError::Http(e.to_string()))?;
+    let res: TokenResponse =
+        serde_json::from_slice(&bytes).map_err(|e| TokenError::Json(e.to_string()))?;
+    Ok(res)
 }
 
 #[cfg(test)]
@@ -1003,11 +1317,162 @@ mod tests {
         assert!(entry.is_expired());
     }
 
+    #[tokio::test]
+    async fn test_handle_callback_with_expired_entry_rejected() {
+        let client = AtprotoOAuthClient::builder()
+            .client_metadata(OAuthClientMetadata::new(
+                "https://app.example.com/client.json",
+                "https://app.example.com/callback",
+            ))
+            .allow_insecure_localhost(true)
+            .build()
+            .unwrap();
+
+        let expired_entry = StoredStateEntry {
+            state: "state_exp".to_string(),
+            client_id: "https://app.example.com/client.json".to_string(),
+            code_verifier: "verifier123".to_string(),
+            dpop_key: DPoPKey::generate(),
+            issuer: "https://auth.example.com".to_string(),
+            did: Some("did:plc:alice".to_string()),
+            handle: Some("alice.bsky.social".to_string()),
+            redirect_uri: "https://app.example.com/callback".to_string(),
+            pds_endpoint: "https://pds.example.com".to_string(),
+            token_endpoint: "https://auth.example.com/oauth/token".to_string(),
+            scopes: "atproto".to_string(),
+            created_at: SystemTime::now() - Duration::from_secs(400),
+            expires_in_secs: 300,
+        };
+
+        let cb = CallbackParams::new("code123", "state_exp").with_iss("https://auth.example.com");
+        let err = client.handle_callback_with_entry(&cb, &expired_entry).await;
+        assert!(matches!(
+            err,
+            Err(AtprotoOAuthError::Token(TokenError::StateExpired))
+        ));
+    }
+
     #[test]
     fn test_callback_params() {
         let cb = CallbackParams::new("code123", "state123").with_iss("https://auth.example.com");
         assert_eq!(cb.code, "code123");
         assert_eq!(cb.state, "state123");
         assert_eq!(cb.iss.as_deref(), Some("https://auth.example.com"));
+    }
+
+    #[tokio::test]
+    async fn test_send_xrpc_request_missing_pds_endpoint() {
+        let client = AtprotoOAuthClient::builder()
+            .client_metadata(OAuthClientMetadata::new(
+                "https://app.example.com/client.json",
+                "https://app.example.com/callback",
+            ))
+            .allow_insecure_localhost(true)
+            .build()
+            .unwrap();
+
+        let session = OAuthSession::new(
+            "did:plc:alice123",
+            "at_123",
+            None,
+            "DPoP",
+            None,
+            None,
+            DPoPKey::generate(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let err = client
+            .send_xrpc_request(&session, "com.atproto.repo.describeRepo", &[])
+            .await;
+        assert!(matches!(
+            err,
+            Err(AtprotoOAuthError::Token(TokenError::MissingField(
+                "pds_endpoint"
+            )))
+        ));
+    }
+
+    #[test]
+    fn test_validate_xrpc_nsid_accepts_valid_grammar() {
+        // Includes upstream interop-suite valid cases: digit-start authority
+        // segments ("one.2.three"), hyphenated authority segments ("a-0.b-1.c"),
+        // and camel-case names ("com.example.fooBar").
+        for nsid in [
+            "com.atproto.repo.describeRepo",
+            "/app.bsky.feed.getTimeline",
+            "a.b.c",
+            "one.2.three",
+            "one.two.three.four-and.FiVe",
+            "a-0.b-1.c",
+            "com.example.fooBar",
+            "com.example.fooBarV2",
+            "m.xn--masekowski-d0b.pl",
+        ] {
+            assert!(
+                AtprotoOAuthClient::validate_xrpc_nsid(nsid).is_ok(),
+                "expected valid NSID: {nsid}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_xrpc_nsid_rejects_traversal_and_malformed() {
+        for nsid in [
+            "../../admin",
+            "com.atproto..describeRepo",
+            "com..atproto",
+            "com.atproto.repo.",
+            "com.atproto",
+            ".one.two.three",
+            "1.0.0.127.record",
+            "0two.example.foo",
+            "3com.atproto.repo",
+            "com.atproto.-repo",
+            "com.atproto.repo.name-",
+            "com.atproto.repo.-name",
+            "a-0.b-1.c-3",
+            "a-0.b-1.c-o",
+            "com.example.foo.*",
+            "com.example.foo.blah*",
+            "com.atproto.re\\po",
+            "com.atproto.re%70o",
+            "",
+        ] {
+            assert!(
+                matches!(
+                    AtprotoOAuthClient::validate_xrpc_nsid(nsid),
+                    Err(TokenError::InvalidNsid(_))
+                ),
+                "expected InvalidNsid: {nsid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_xrpc_nsid_length_limits() {
+        // Segment cap: 63 chars is valid, 64 is not.
+        let seg63 = "o".repeat(63);
+        let seg64 = "o".repeat(64);
+        assert!(AtprotoOAuthClient::validate_xrpc_nsid(&format!("com.{seg63}.foo")).is_ok());
+        assert!(matches!(
+            AtprotoOAuthClient::validate_xrpc_nsid(&format!("com.{seg64}.foo")),
+            Err(TokenError::InvalidNsid(_))
+        ));
+        // Total cap: 317 chars (253-char authority + '.' + 63-char name), matching
+        // the upstream length-check vectors.
+        let long_authority = format!("{}.{}.{}.{}", seg63, seg63, "o".repeat(62), "o".repeat(62));
+        let nsid_317 = format!("{long_authority}.{}", "f".repeat(63));
+        assert_eq!(nsid_317.len(), 317);
+        assert!(AtprotoOAuthClient::validate_xrpc_nsid(&nsid_317).is_ok());
+        let nsid_318 = format!("{nsid_317}x");
+        assert_eq!(nsid_318.len(), 318);
+        assert!(matches!(
+            AtprotoOAuthClient::validate_xrpc_nsid(&nsid_318),
+            Err(TokenError::InvalidNsid(_))
+        ));
     }
 }

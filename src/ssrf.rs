@@ -2,7 +2,7 @@
 //!
 //! This module provides strict, production-grade IP address filtering and socket
 //! connection pinning to prevent SSRF and DNS rebinding attacks across all outbound
-//! identity and discovery network requests in `atproto-oauth`.
+//! identity and discovery network requests in `skyauth`.
 //!
 //! ## Threat Model & Defense Strategy
 //!
@@ -43,36 +43,21 @@ use crate::error::SsrfError;
 #[must_use]
 pub fn is_restricted_ipv4(ip: &Ipv4Addr) -> bool {
     let octets = ip.octets();
-    // 0.0.0.0/8
     octets[0] == 0
-    // 10.0.0.0/8
-    || octets[0] == 10
-    // 100.64.0.0/10 (100.64.0.0 - 100.127.255.255)
-    || (octets[0] == 100 && (octets[1] & 0xC0) == 64)
-    // 127.0.0.0/8
-    || octets[0] == 127
-    // 169.254.0.0/16 (includes 169.254.169.254 and 169.254.170.2)
-    || (octets[0] == 169 && octets[1] == 254)
-    // 172.16.0.0/12 (172.16.0.0 - 172.31.255.255)
-    || (octets[0] == 172 && (16..=31).contains(&octets[1]))
-    // 192.0.0.0/24
-    || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
-    // 192.0.2.0/24
-    || (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
-    // 192.88.99.0/24
-    || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)
-    // 192.168.0.0/16
-    || (octets[0] == 192 && octets[1] == 168)
-    // 198.18.0.0/15 (198.18.0.0 - 198.19.255.255)
-    || (octets[0] == 198 && (octets[1] == 18 || octets[1] == 19))
-    // 198.51.100.0/24
-    || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
-    // 203.0.113.0/24
-    || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113)
-    // 224.0.0.0/4 (multicast)
-    || (octets[0] >= 224 && octets[0] <= 239)
-    // 240.0.0.0/4 (reserved / Class E, includes 255.255.255.255)
-    || (octets[0] >= 240)
+        || octets[0] == 10
+        || (octets[0] == 100 && (octets[1] & 0xC0) == 64)
+        || octets[0] == 127
+        || (octets[0] == 169 && octets[1] == 254)
+        || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
+        || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)
+        || (octets[0] == 192 && octets[1] == 168)
+        || (octets[0] == 198 && (octets[1] == 18 || octets[1] == 19))
+        || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
+        || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113)
+        || (octets[0] >= 224 && octets[0] <= 239)
+        || (octets[0] >= 240)
 }
 
 /// Determines if an IPv6 address belongs to a restricted, private, or special-purpose range.
@@ -84,6 +69,8 @@ pub fn is_restricted_ipv4(ip: &Ipv4Addr) -> bool {
 /// - `::ffff:0:0:0/96`: IPv4-translated (RFC 6052)
 /// - `64:ff9b::/96`: Well-Known IPv4/IPv6 translation prefix (RFC 6052)
 /// - `2001:db8::/32`: Documentation prefix (RFC 3849)
+/// - `2001::/32`: Teredo tunneling (RFC 4380, deprecated per RFC 8194), unconditionally blocked
+/// - `2002::/16`: 6to4 tunneling (RFC 7526, deprecated) with embedded IPv4 re-evaluated via [`is_restricted_ipv4`]
 /// - `fc00::/7`: Unique Local Address (ULA) (RFC 4193: `fc00::/8`, `fd00::/8`)
 /// - `fe80::/10`: Link-Local Unicast (RFC 4291)
 /// - `fec0::/10`: Deprecated Site-Local Unicast (RFC 3879)
@@ -92,29 +79,27 @@ pub fn is_restricted_ipv4(ip: &Ipv4Addr) -> bool {
 pub fn is_restricted_ipv6(ip: &Ipv6Addr) -> bool {
     let seg = ip.segments();
 
-    // ::/128
     ip.is_unspecified()
-    // ::1/128
     || ip.is_loopback()
-    // ::ffff:0:0/96 (IPv4-mapped IPv6)
     || if let Some(mapped) = ip.to_ipv4_mapped() {
         is_restricted_ipv4(&mapped)
     } else {
         false
     }
-    // ::ffff:0:0:0/96 (IPv4-translated)
     || (seg[0] == 0 && seg[1] == 0 && seg[2] == 0 && seg[3] == 0 && seg[4] == 0xffff && seg[5] == 0)
-    // 64:ff9b::/96
     || (seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2] == 0 && seg[3] == 0 && seg[4] == 0 && seg[5] == 0)
-    // 2001:db8::/32
     || (seg[0] == 0x2001 && seg[1] == 0x0db8)
-    // fc00::/7
+    // Teredo's embedded IPv4 is XOR-0xffff obfuscated, so the whole prefix is blocked rather than re-evaluated.
+    || (seg[0] == 0x2001 && seg[1] == 0)
+    || (seg[0] == 0x2002 && is_restricted_ipv4(&Ipv4Addr::new(
+        ((seg[1] >> 8) & 0xff) as u8,
+        (seg[1] & 0xff) as u8,
+        ((seg[2] >> 8) & 0xff) as u8,
+        (seg[2] & 0xff) as u8,
+    )))
     || ((seg[0] & 0xfe00) == 0xfc00)
-    // fe80::/10
     || ((seg[0] & 0xffc0) == 0xfe80)
-    // fec0::/10
     || ((seg[0] & 0xffc0) == 0xfec0)
-    // ff00::/8
     || ((seg[0] & 0xff00) == 0xff00)
 }
 
@@ -128,11 +113,16 @@ pub fn is_restricted_ip(ip: IpAddr) -> bool {
 }
 
 /// Checks if a hostname matches any cloud metadata or internal hostnames.
+///
+/// Bare `localhost` is also blocked; test/dev environments should use an explicit
+/// loopback IP literal (e.g. `127.0.0.1` or `::1`) instead, which [`SsrfFilter`]
+/// handles via `allow_insecure_localhost`.
 #[must_use]
 pub fn is_blocked_hostname(host: &str) -> bool {
     let lower = host.to_ascii_lowercase();
     let trimmed = lower.trim_end_matches('.');
-    trimmed == "metadata.google.internal"
+    trimmed == "localhost"
+        || trimmed == "metadata.google.internal"
         || trimmed == "instance-data"
         || trimmed == "metadata.internal"
         || trimmed == "169.254.169.254"
@@ -210,7 +200,22 @@ impl SsrfFilter {
             return Err(SsrfError::BlockedHost(host.to_string()));
         }
 
-        // If host is an IP literal, validate immediately
+        // Test mode exempts only explicit loopback; metadata, `.internal`, `.local`, and `.localhost` hosts stay blocked.
+        if self.allow_insecure_localhost {
+            let lower_host = host.to_ascii_lowercase();
+            let trimmed_host = lower_host.trim_end_matches('.');
+            let metadata_or_internal = trimmed_host == "metadata.google.internal"
+                || trimmed_host == "instance-data"
+                || trimmed_host == "metadata.internal"
+                || trimmed_host == "169.254.169.254"
+                || trimmed_host.ends_with(".internal")
+                || trimmed_host.ends_with(".local")
+                || trimmed_host.ends_with(".localhost");
+            if metadata_or_internal {
+                return Err(SsrfError::BlockedHost(host.to_string()));
+            }
+        }
+
         if let Ok(ip) = host.parse::<IpAddr>() {
             self.validate_ip(ip)?;
         }
@@ -238,13 +243,11 @@ impl SsrfFilter {
             host.to_string()
         };
 
-        // If host is an IP literal
         if let Ok(ip) = host.parse::<IpAddr>() {
             self.validate_ip(ip)?;
             return Ok((SocketAddr::new(ip, port), host_header));
         }
 
-        // Asynchronous DNS resolution via tokio
         let lookup_target = format!("{host}:{port}");
         let mut addrs: Vec<SocketAddr> = tokio::net::lookup_host(&lookup_target)
             .await
@@ -257,13 +260,12 @@ impl SsrfFilter {
             )));
         }
 
-        // Validate EVERY returned address to prevent multi-IP rebinding
+        // Validate EVERY returned address: one clean IP must not mask a restricted one (multi-IP rebinding).
         for addr in &addrs {
             self.validate_ip(addr.ip())?;
         }
 
-        // When insecure localhost is permitted (for tests/dev), prefer IPv4 (127.0.0.1)
-        // since wiremock and local test servers typically bind to IPv4.
+        // Prefer IPv4 in test mode: wiremock and local servers typically bind 127.0.0.1, not ::1.
         if self.allow_insecure_localhost {
             addrs.sort_by_key(|a| if a.is_ipv4() { 0 } else { 1 });
         }
@@ -271,8 +273,51 @@ impl SsrfFilter {
         Ok((addrs[0], host_header))
     }
 
+    /// Validates a URL and resolves all DNS records, ensuring no resolved IP is restricted.
+    ///
+    /// # Errors
+    /// Returns [`SsrfError`] if the URL syntax is invalid, DNS resolution fails, or any resolved IP is restricted.
+    pub async fn validate_url_and_dns(&self, url: &Url) -> Result<SocketAddr, SsrfError> {
+        let (pinned_addr, _host_header) = self.resolve_and_pin(url).await?;
+        Ok(pinned_addr)
+    }
+
+    /// Constructs an SSRF-safe, DNS-pinned [`reqwest::Client`] configured with disabled automatic redirects
+    /// (`Policy::none()`), connection/request timeouts, and socket pinning to a verified IP address.
+    ///
+    /// # Security Invariants
+    /// 1. Resolves all DNS records for the URL's hostname.
+    /// 2. Validates *every* resolved IP address against restricted and private ranges.
+    /// 3. Binds the HTTP client connection directly to the verified socket address via `.resolve()`.
+    /// 4. Disables automatic redirects to prevent credential / token forwarding.
+    ///
+    /// # Errors
+    /// Returns [`SsrfError`] if DNS resolution fails, an IP is blocked, or the client cannot be built.
+    pub async fn build_pinned_client(
+        &self,
+        url: &Url,
+    ) -> Result<(reqwest::Client, SocketAddr, String), SsrfError> {
+        let (pinned_addr, host_header) = self.resolve_and_pin(url).await?;
+        let host_only = url.host_str().unwrap_or("localhost");
+
+        let mut builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(10));
+
+        if host_only.parse::<IpAddr>().is_err() {
+            builder = builder.resolve(host_only, pinned_addr);
+        }
+
+        let client = builder
+            .build()
+            .map_err(|e| SsrfError::Http(e.to_string()))?;
+
+        Ok((client, pinned_addr, host_header))
+    }
+
     /// Executes a safe HTTP GET request with SSRF validation, DNS pinning, redirect depth bounding,
-    /// and response size limits.
+    /// and streaming response size limits.
     ///
     /// # Arguments
     /// - `url_str`: The target URL string.
@@ -284,21 +329,8 @@ impl SsrfFilter {
         let mut redirects_remaining = 3usize;
 
         loop {
-            let (pinned_addr, host_header) = self.resolve_and_pin(&current_url).await?;
-
-            let host_only = current_url.host_str().unwrap_or("localhost");
-            let mut builder = reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .timeout(std::time::Duration::from_secs(10));
-
-            if host_only.parse::<IpAddr>().is_err() {
-                builder = builder.resolve(host_only, pinned_addr);
-            }
-
-            let client = builder
-                .build()
-                .map_err(|e| SsrfError::Http(e.to_string()))?;
+            let (client, _pinned_addr, host_header) =
+                self.build_pinned_client(&current_url).await?;
 
             let resp = client
                 .get(current_url.as_str())
@@ -337,19 +369,8 @@ impl SsrfFilter {
                 ));
             }
 
-            let bytes = resp
-                .bytes()
-                .await
-                .map_err(|e| SsrfError::Http(e.to_string()))?;
-
-            if bytes.len() > max_bytes {
-                return Err(SsrfError::ResponseTooLarge {
-                    max_bytes,
-                    actual_bytes: bytes.len(),
-                });
-            }
-
-            return Ok(bytes.to_vec());
+            let bytes = read_bounded_body(resp, max_bytes).await?;
+            return Ok(bytes);
         }
     }
 
@@ -366,6 +387,49 @@ impl SsrfFilter {
         let bytes = self.safe_get(url_str, max_bytes).await?;
         serde_json::from_slice(&bytes).map_err(|e| SsrfError::Json(e.to_string()))
     }
+}
+
+/// Maximum allowable HTTP response body size for OAuth and discovery endpoints (1 MiB = 1,048,576 bytes).
+pub const MAX_OAUTH_RESPONSE_BYTES: usize = 1_048_576;
+
+/// Reads an HTTP response body incrementally chunk-by-chunk, aborting immediately
+/// if the accumulated size exceeds `max_bytes` to prevent memory exhaustion / DoS.
+///
+/// # Errors
+/// - Returns [`SsrfError::ResponseTooLarge`] as soon as `max_bytes` is exceeded.
+/// - Returns [`SsrfError::Http`] if a network stream error occurs.
+pub async fn read_bounded_body(
+    mut resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, SsrfError> {
+    if let Some(content_length) = resp.content_length() {
+        if content_length > max_bytes as u64 {
+            return Err(SsrfError::ResponseTooLarge {
+                max_bytes,
+                actual_bytes: content_length as usize,
+            });
+        }
+    }
+
+    let mut buffer = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| SsrfError::Http(e.to_string()))?
+    {
+        if buffer.len().saturating_add(chunk.len()) > max_bytes {
+            let actual = resp
+                .content_length()
+                .map(|cl| cl as usize)
+                .unwrap_or_else(|| buffer.len().saturating_add(chunk.len()));
+            return Err(SsrfError::ResponseTooLarge {
+                max_bytes,
+                actual_bytes: actual,
+            });
+        }
+        buffer.extend_from_slice(&chunk);
+    }
+    Ok(buffer)
 }
 
 #[cfg(test)]
@@ -392,17 +456,13 @@ mod tests {
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(172, 31, 255, 255))));
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 168, 255, 255))));
-
-        // 172.32.0.1 is public
         assert!(!filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(172, 32, 0, 1))));
     }
 
     #[test]
     fn test_link_local_and_cloud_metadata() {
         let filter = SsrfFilter::new(false);
-        // 169.254.169.254
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))));
-        // 169.254.170.2
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(169, 254, 170, 2))));
     }
 
@@ -411,74 +471,54 @@ mod tests {
         let filter = SsrfFilter::new(false);
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))));
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(100, 127, 255, 254))));
-        // 100.63.255.255 is not CGNAT
         assert!(!filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(100, 63, 255, 255))));
     }
 
     #[test]
     fn test_documentation_and_benchmarking_ranges() {
         let filter = SsrfFilter::new(false);
-        // TEST-NET-1 192.0.2.1
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))));
-        // TEST-NET-2 198.51.100.1
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))));
-        // TEST-NET-3 203.0.113.1
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1))));
-        // Benchmarking 198.18.0.1
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(198, 18, 0, 1))));
-        // 6to4 Relay 192.88.99.1
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(192, 88, 99, 1))));
     }
 
     #[test]
     fn test_multicast_and_reserved_class_e() {
         let filter = SsrfFilter::new(false);
-        // 0.0.0.0
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))));
-        // 224.0.0.1 multicast
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(224, 0, 0, 1))));
-        // 240.0.0.1 Class E
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(240, 0, 0, 1))));
-        // 255.255.255.255
         assert!(filter.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255))));
     }
 
     #[test]
     fn test_ipv6_ranges() {
         let filter = SsrfFilter::new(false);
-        // Loopback
         assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::LOCALHOST)));
-        // Unspecified
         assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
-        // ULA fc00::/7
         assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 1))));
         assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xfd12, 0, 0, 0, 0, 0, 0, 1))));
-        // Link-Local fe80::/10
         assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1))));
-        // Documentation 2001:db8::/32
         assert!(
             filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1)))
         );
-        // Multicast ff02::1
         assert!(filter.is_ip_restricted(IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1))));
     }
 
     #[test]
     fn test_ipv4_mapped_ipv6() {
         let filter = SsrfFilter::new(false);
-        // ::ffff:127.0.0.1
         let mapped_loopback = IpAddr::V6(Ipv4Addr::new(127, 0, 0, 1).to_ipv6_mapped());
         assert!(filter.is_ip_restricted(mapped_loopback));
 
-        // ::ffff:169.254.169.254
         let mapped_metadata = IpAddr::V6(Ipv4Addr::new(169, 254, 169, 254).to_ipv6_mapped());
         assert!(filter.is_ip_restricted(mapped_metadata));
 
-        // ::ffff:10.0.0.1
         let mapped_private = IpAddr::V6(Ipv4Addr::new(10, 0, 0, 1).to_ipv6_mapped());
         assert!(filter.is_ip_restricted(mapped_private));
 
-        // ::ffff:8.8.8.8 (public)
         let mapped_public = IpAddr::V6(Ipv4Addr::new(8, 8, 8, 8).to_ipv6_mapped());
         assert!(!filter.is_ip_restricted(mapped_public));
     }
@@ -526,5 +566,47 @@ mod tests {
         assert!(local_filter
             .validate_url(&Url::parse("http://10.0.0.1:8080").unwrap())
             .is_err());
+    }
+
+    #[test]
+    fn test_test_mode_still_blocks_metadata_and_internal_hosts() {
+        let local_filter = SsrfFilter::new(true);
+        assert!(local_filter
+            .validate_url(&Url::parse("http://metadata.google.internal").unwrap())
+            .is_err());
+        assert!(local_filter
+            .validate_url(&Url::parse("https://instance-data").unwrap())
+            .is_err());
+        assert!(local_filter
+            .validate_url(&Url::parse("https://service.internal").unwrap())
+            .is_err());
+        assert!(local_filter
+            .validate_url(&Url::parse("https://169.254.169.254").unwrap())
+            .is_err());
+    }
+
+    #[test]
+    fn test_is_blocked_hostname_includes_bare_localhost() {
+        assert!(is_blocked_hostname("localhost"));
+        assert!(is_blocked_hostname("LOCALHOST"));
+        assert!(is_blocked_hostname("localhost."));
+    }
+
+    #[test]
+    fn test_6to4_embedded_ipv4_restriction() {
+        let v6 = Ipv6Addr::new(0x2002, 0x0a00, 0x0001, 0, 0, 0, 0, 1);
+        assert!(is_restricted_ipv6(&v6));
+
+        let public_6to4 = Ipv6Addr::new(0x2002, 0xc68c, 0x2174, 0, 0, 0, 0, 1);
+        assert!(!is_restricted_ipv6(&public_6to4));
+    }
+
+    #[test]
+    fn test_teredo_prefix_blocked() {
+        let teredo = Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0xf7f7, 0xf7f7);
+        assert!(is_restricted_ipv6(&teredo));
+
+        let teredo_plain = Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 0);
+        assert!(is_restricted_ipv6(&teredo_plain));
     }
 }

@@ -1,6 +1,6 @@
 # GitHub Copilot Code Review & Engineering Guidelines
 
-This repository (`atproto-oauth-rs`) is a production-grade, formally verified AT Protocol OAuth 2.1 client library written in 100% Safe Rust (`#![forbid(unsafe_code)]`). When reviewing Pull Requests or generating code suggestions, strictly adhere to the following architecture and resilience invariants:
+This repository (`skyauth`) is a production-grade, formally verified AT Protocol OAuth 2.1 client library written in 100% Safe Rust (`#![forbid(unsafe_code)]`). When reviewing Pull Requests or generating code suggestions, strictly adhere to the following architecture and resilience invariants:
 
 ---
 
@@ -29,7 +29,7 @@ This repository (`atproto-oauth-rs`) is a production-grade, formally verified AT
 - Automated retry loop on HTTP 400 `use_dpop_nonce` challenges must be transparent.
 
 ### 6. SSRF & Network Egress Defense
-- Validate all outbound URLs with `SsrfValidator`.
+- Validate all outbound URLs with `SsrfFilter`.
 - Block loopback (`127.0.0.1`, `::1`), private RFC 1918 networks (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local (`169.254.0.0/16`), and cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`).
 - Outbound HTTP clients must disable redirects (`reqwest::redirect::Policy::none()`).
 

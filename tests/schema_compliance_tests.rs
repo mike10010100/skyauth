@@ -29,7 +29,6 @@ use skyauth::dpop::DPoPProofClaims;
 use skyauth::identity::{DidDocument, DidService, VerificationMethod};
 use skyauth::par::ParResponse;
 
-// Static bundled schema includes for zero-IO fallback & compile-time inclusion
 const RFC8414_SCHEMA_STR: &str = include_str!("../schemas/rfc8414_authorization_server.json");
 const RFC9728_SCHEMA_STR: &str = include_str!("../schemas/rfc9728_protected_resource.json");
 const RFC9449_SCHEMA_STR: &str = include_str!("../schemas/rfc9449_dpop_proof.json");
@@ -49,7 +48,6 @@ fn lexicon_to_json_schema(val: &Value) -> Value {
             let mut new_map = serde_json::Map::new();
             for (k, v) in map {
                 if k == "type" && v == "unknown" {
-                    // In JSON Schema, unknown is represented by omitting type constraint
                     continue;
                 }
                 new_map.insert(k.clone(), lexicon_to_json_schema(v));
@@ -103,10 +101,6 @@ fn load_schema(rel_path: &str) -> Value {
     }
 }
 
-// =========================================================================
-// GROUP 1: RFC 8414 Authorization Server Metadata Schema Compliance
-// =========================================================================
-
 #[test]
 fn test_rfc8414_schema_compilation_and_valid_structure() {
     let schema = load_schema("schemas/rfc8414_authorization_server.json");
@@ -150,11 +144,15 @@ fn test_rfc8414_rust_struct_serialization_compliance() {
             "authorization_code".to_string(),
             "refresh_token".to_string(),
         ],
-        token_endpoint_auth_methods_supported: vec!["none".to_string()],
+        token_endpoint_auth_methods_supported: vec![
+            "none".to_string(),
+            "private_key_jwt".to_string(),
+        ],
         token_endpoint_auth_signing_alg_values_supported: vec!["ES256".to_string()],
         scopes_supported: vec!["atproto".to_string()],
         authorization_response_iss_parameter_supported: true,
         client_id_metadata_document_supported: true,
+        require_request_uri_registration: true,
     };
 
     let serialized = serde_json::to_value(&rust_metadata)
@@ -171,21 +169,18 @@ fn test_rfc8414_missing_required_fields_rejection() {
     let schema = load_schema("schemas/rfc8414_authorization_server.json");
     let validator = compile_validator(&schema);
 
-    // Missing issuer
     let missing_issuer = json!({
         "authorization_endpoint": "https://auth.example.com/oauth/authorize",
         "token_endpoint": "https://auth.example.com/oauth/token"
     });
     assert!(!validator.is_valid(&missing_issuer));
 
-    // Missing authorization_endpoint
     let missing_auth_ep = json!({
         "issuer": "https://auth.example.com",
         "token_endpoint": "https://auth.example.com/oauth/token"
     });
     assert!(!validator.is_valid(&missing_auth_ep));
 
-    // Missing token_endpoint
     let missing_token_ep = json!({
         "issuer": "https://auth.example.com",
         "authorization_endpoint": "https://auth.example.com/oauth/authorize"
@@ -198,7 +193,6 @@ fn test_rfc8414_invalid_field_types_rejection() {
     let schema = load_schema("schemas/rfc8414_authorization_server.json");
     let validator = compile_validator(&schema);
 
-    // issuer as integer
     let invalid_issuer_type = json!({
         "issuer": 12345,
         "authorization_endpoint": "https://auth.example.com/auth",
@@ -206,7 +200,6 @@ fn test_rfc8414_invalid_field_types_rejection() {
     });
     assert!(!validator.is_valid(&invalid_issuer_type));
 
-    // dpop_signing_alg_values_supported as string instead of array
     let invalid_dpop_type = json!({
         "issuer": "https://auth.example.com",
         "authorization_endpoint": "https://auth.example.com/auth",
@@ -215,7 +208,6 @@ fn test_rfc8414_invalid_field_types_rejection() {
     });
     assert!(!validator.is_valid(&invalid_dpop_type));
 
-    // require_pushed_authorization_requests as string instead of boolean
     let invalid_par_type = json!({
         "issuer": "https://auth.example.com",
         "authorization_endpoint": "https://auth.example.com/auth",
@@ -230,7 +222,6 @@ fn test_rfc8414_casing_mismatches_rejection() {
     let schema = load_schema("schemas/rfc8414_authorization_server.json");
     let validator = compile_validator(&schema);
 
-    // camelCase authorizationEndpoint instead of snake_case authorization_endpoint
     let camel_case = json!({
         "issuer": "https://auth.example.com",
         "authorizationEndpoint": "https://auth.example.com/auth",
@@ -241,10 +232,6 @@ fn test_rfc8414_casing_mismatches_rejection() {
         "camelCase fields must be rejected by snake_case RFC 8414 schema"
     );
 }
-
-// =========================================================================
-// GROUP 2: RFC 9728 Protected Resource Metadata Schema Compliance
-// =========================================================================
 
 #[test]
 fn test_rfc9728_schema_compilation_and_valid_structure() {
@@ -292,13 +279,11 @@ fn test_rfc9728_missing_required_fields_rejection() {
     let schema = load_schema("schemas/rfc9728_protected_resource.json");
     let validator = compile_validator(&schema);
 
-    // Missing resource
     let missing_resource = json!({
         "authorization_servers": ["https://auth.example.com"]
     });
     assert!(!validator.is_valid(&missing_resource));
 
-    // Missing authorization_servers
     let missing_auth_servers = json!({
         "resource": "https://pds.example.com"
     });
@@ -325,24 +310,18 @@ fn test_rfc9728_type_mismatches_rejection() {
     let schema = load_schema("schemas/rfc9728_protected_resource.json");
     let validator = compile_validator(&schema);
 
-    // authorization_servers as string instead of array
     let invalid_type = json!({
         "resource": "https://pds.example.com",
         "authorization_servers": "https://auth.example.com"
     });
     assert!(!validator.is_valid(&invalid_type));
 
-    // resource as boolean
     let bool_resource = json!({
         "resource": true,
         "authorization_servers": ["https://auth.example.com"]
     });
     assert!(!validator.is_valid(&bool_resource));
 }
-
-// =========================================================================
-// GROUP 3: RFC 9449 DPoP Proof Claims Schema Compliance
-// =========================================================================
 
 #[test]
 fn test_rfc9449_schema_compilation_and_valid_structure() {
@@ -425,7 +404,6 @@ fn test_rfc9449_negative_timestamps_and_invalid_types() {
     let schema = load_schema("schemas/rfc9449_dpop_proof.json");
     let validator = compile_validator(&schema);
 
-    // iat as string instead of integer
     let string_iat = json!({
         "jti": "jti_123",
         "htm": "POST",
@@ -434,7 +412,6 @@ fn test_rfc9449_negative_timestamps_and_invalid_types() {
     });
     assert!(!validator.is_valid(&string_iat));
 
-    // iat as negative number
     let negative_iat = json!({
         "jti": "jti_123",
         "htm": "POST",
@@ -443,10 +420,6 @@ fn test_rfc9449_negative_timestamps_and_invalid_types() {
     });
     assert!(!validator.is_valid(&negative_iat));
 }
-
-// =========================================================================
-// GROUP 4: ATProto OAuth Client Metadata Document Schema Compliance
-// =========================================================================
 
 #[test]
 fn test_client_metadata_schema_compilation_and_valid_structure() {
@@ -480,7 +453,6 @@ fn test_client_metadata_missing_mandatory_fields_rejection() {
     let schema = load_schema("schemas/atproto_client_metadata.json");
     let validator = compile_validator(&schema);
 
-    // Missing client_id
     let missing_client_id = json!({
         "client_name": "Example Client",
         "client_uri": "https://app.example.com",
@@ -493,7 +465,6 @@ fn test_client_metadata_missing_mandatory_fields_rejection() {
     });
     assert!(!validator.is_valid(&missing_client_id));
 
-    // Missing redirect_uris
     let missing_redirect_uris = json!({
         "client_id": "https://app.example.com/client.json",
         "client_name": "Example Client",
@@ -551,10 +522,6 @@ fn test_client_metadata_invalid_auth_method_enum_rejection() {
     );
 }
 
-// =========================================================================
-// GROUP 5: ATProto Canonical Lexicons Compliance
-// =========================================================================
-
 #[test]
 fn test_resolve_handle_lexicon_structure() {
     let lex = load_schema("lexicons/com/atproto/identity/resolveHandle.json");
@@ -562,12 +529,10 @@ fn test_resolve_handle_lexicon_structure() {
     assert_eq!(lex["id"], "com.atproto.identity.resolveHandle");
     assert_eq!(lex["defs"]["main"]["type"], "query");
 
-    // Extract parameters schema and validate runtime query params
     let params_def = &lex["defs"]["main"]["parameters"];
     let param_props = &params_def["properties"];
     assert!(param_props.get("handle").is_some());
 
-    // Extract output schema and validate runtime response
     let output_schema = &lex["defs"]["main"]["output"]["schema"];
     let validator = compile_validator(output_schema);
 
@@ -591,7 +556,6 @@ fn test_create_session_lexicon_structure() {
     assert_eq!(lex["id"], "com.atproto.server.createSession");
     assert_eq!(lex["defs"]["main"]["type"], "procedure");
 
-    // Validate Input Schema
     let input_schema = &lex["defs"]["main"]["input"]["schema"];
     let input_validator = compile_validator(input_schema);
 
@@ -604,7 +568,6 @@ fn test_create_session_lexicon_structure() {
     let invalid_input = json!({ "identifier": "alice.bsky.social" });
     assert!(!input_validator.is_valid(&invalid_input));
 
-    // Validate Output Schema
     let output_schema = &lex["defs"]["main"]["output"]["schema"];
     let output_validator = compile_validator(output_schema);
 
@@ -643,10 +606,6 @@ fn test_refresh_session_lexicon_structure() {
     });
     assert!(output_validator.is_valid(&valid_refresh));
 }
-
-// =========================================================================
-// GROUP 6: Extended Protocol Payloads & Model Integration
-// =========================================================================
 
 #[test]
 fn test_par_response_schema_compliance() {
@@ -769,10 +728,6 @@ fn test_did_document_schema_compliance() {
     assert!(validator.is_valid(&serialized));
 }
 
-// =========================================================================
-// GROUP 7: Performance, Batch Validation & Drift Script Verification
-// =========================================================================
-
 #[test]
 fn test_batch_schema_ast_validation_throughput() {
     let schema = load_schema("schemas/rfc8414_authorization_server.json");
@@ -877,10 +832,6 @@ fn test_all_bundled_files_integrity_and_checksum_manifest() {
     }
 }
 
-// =========================================================================
-// GROUP 8: Advanced Schema Edge Cases & Error Introspection
-// =========================================================================
-
 #[test]
 fn test_error_paths_and_introspectable_validation_errors() {
     let schema = load_schema("schemas/rfc8414_authorization_server.json");
@@ -888,7 +839,6 @@ fn test_error_paths_and_introspectable_validation_errors() {
 
     let invalid_instance = json!({
         "issuer": "https://auth.example.com"
-        // missing authorization_endpoint and token_endpoint
     });
 
     assert!(!validator.is_valid(&invalid_instance));
@@ -969,7 +919,6 @@ fn test_dpop_proof_claims_optional_field_permutations() {
     let schema = load_schema("schemas/rfc9449_dpop_proof.json");
     let validator = compile_validator(&schema);
 
-    // With ath only
     let with_ath = json!({
         "jti": "jti_1",
         "htm": "GET",
@@ -979,7 +928,6 @@ fn test_dpop_proof_claims_optional_field_permutations() {
     });
     assert!(validator.is_valid(&with_ath));
 
-    // With nonce only
     let with_nonce = json!({
         "jti": "jti_2",
         "htm": "POST",
@@ -989,7 +937,6 @@ fn test_dpop_proof_claims_optional_field_permutations() {
     });
     assert!(validator.is_valid(&with_nonce));
 
-    // With exp only
     let with_exp = json!({
         "jti": "jti_3",
         "htm": "POST",

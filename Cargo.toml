@@ -1,7 +1,8 @@
 [package]
 name = "skyauth"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+rust-version = "1.81"
 authors = ["Mike <mike@example.com>"]
 description = "High-assurance, formally verified OAuth 2.1 and RFC 9449 DPoP authentication engine for the AT Protocol (Bluesky)"
 license = "MIT OR Apache-2.0"
@@ -73,7 +74,7 @@ http-body-util = "0.1"
 unsafe_code = "forbid"
 missing_docs = "deny"
 rust_2018_idioms = { level = "deny", priority = -1 }
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(verus)', 'cfg(verus_keep_ghost)'] }
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }

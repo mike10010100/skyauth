@@ -1,4 +1,4 @@
-//! Tier 5: Adversarial Stress & Cryptographic Tampering Test Suite for `atproto-oauth`.
+//! Tier 5: Adversarial Stress & Cryptographic Tampering Test Suite for `skyauth`.
 //!
 //! Driven by empirical challengers to stress-test:
 //! 1. PKCE boundary conditions, ASCII character limits, and entropy bounds.
@@ -36,7 +36,6 @@ use skyauth::pkce::{derive_s256_challenge, validate_verifier, verify_pkce, PkceP
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// Helper to craft an arbitrary signed DPoP proof with exact claim overrides for adversarial testing.
 fn craft_custom_proof(
     key: &DPoPKey,
     htm: &str,
@@ -55,8 +54,9 @@ fn craft_custom_proof(
         "jwk": key.public_jwk()
     });
 
+    let jti = format!("custom-adversarial-jti-{}", rand::random::<u64>());
     let mut payload = serde_json::json!({
-        "jti": "custom-adversarial-jti-123",
+        "jti": jti,
         "htm": htm,
         "htu": htu,
         "iat": iat
@@ -88,7 +88,6 @@ fn craft_custom_proof(
     format!("{signing_input}.{}", base64url_encode(&sig))
 }
 
-/// Helper to sign an arbitrary JSON payload with a given key.
 fn sign_raw_json(key: &DPoPKey, header: &serde_json::Value, payload: &serde_json::Value) -> String {
     let pem = key.to_pkcs8_pem().unwrap();
     let signing_key = SigningKey::from_pkcs8_pem(&pem).unwrap();
@@ -100,13 +99,8 @@ fn sign_raw_json(key: &DPoPKey, header: &serde_json::Value, payload: &serde_json
     format!("{signing_input}.{}", base64url_encode(&sig))
 }
 
-// =========================================================================
-// 1. PKCE ADVERSARIAL CHALLENGES
-// =========================================================================
-
 #[test]
 fn test_pkce_length_boundaries_exhaustive() {
-    // 0 to 42 characters: ALL MUST FAIL
     for len in 0..=42 {
         let candidate = "a".repeat(len);
         let res = validate_verifier(&candidate);
@@ -116,15 +110,12 @@ fn test_pkce_length_boundaries_exhaustive() {
         );
     }
 
-    // 43 characters (exact minimum): MUST SUCCEED
     let min_candidate = "a".repeat(43);
     assert!(validate_verifier(&min_candidate).is_ok());
 
-    // 128 characters (exact maximum): MUST SUCCEED
     let max_candidate = "a".repeat(128);
     assert!(validate_verifier(&max_candidate).is_ok());
 
-    // 129 to 200 characters: ALL MUST FAIL
     for len in 129..=200 {
         let candidate = "a".repeat(len);
         let res = validate_verifier(&candidate);
@@ -134,7 +125,6 @@ fn test_pkce_length_boundaries_exhaustive() {
         );
     }
 
-    // Extreme lengths
     for extreme_len in [1_000, 10_000, 100_000] {
         let extreme_candidate = "a".repeat(extreme_len);
         let res = validate_verifier(&extreme_candidate);
@@ -146,15 +136,13 @@ fn test_pkce_length_boundaries_exhaustive() {
 
 #[test]
 fn test_pkce_all_256_byte_values_character_rejection() {
-    // RFC 7636 unreserved characters: [A-Za-z0-9-._~] (exactly 66 allowed ASCII chars)
     let is_allowed = |b: u8| -> bool {
         b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_' || b == b'~'
     };
 
     let allowed_count = (0u8..=255).filter(|&b| is_allowed(b)).count();
-    assert_eq!(allowed_count, 26 + 26 + 10 + 4); // 66 characters
+    assert_eq!(allowed_count, 26 + 26 + 10 + 4);
 
-    // Test every single byte value from 0 to 255 inserted into an otherwise valid 43-character verifier
     for byte_val in 0u8..=255 {
         let mut verifier_bytes = vec![b'a'; 43];
         verifier_bytes[20] = byte_val;
@@ -183,7 +171,6 @@ fn test_pkce_all_256_byte_values_character_rejection() {
 
 #[test]
 fn test_pkce_positional_illegal_characters() {
-    // Character at position 0 (beginning)
     let beginning_bad = format!("!{}", "a".repeat(42));
     assert!(matches!(
         validate_verifier(&beginning_bad),
@@ -193,7 +180,6 @@ fn test_pkce_positional_illegal_characters() {
         })
     ));
 
-    // Character at position 42 (end of 43-char verifier)
     let end_bad_43 = format!("{}!", "a".repeat(42));
     assert!(matches!(
         validate_verifier(&end_bad_43),
@@ -203,7 +189,6 @@ fn test_pkce_positional_illegal_characters() {
         })
     ));
 
-    // Character at position 127 (end of 128-char verifier)
     let end_bad_128 = format!("{}!", "a".repeat(127));
     assert!(matches!(
         validate_verifier(&end_bad_128),
@@ -235,7 +220,6 @@ fn test_pkce_multibyte_and_unicode_rejections() {
 
 #[test]
 fn test_pkce_entropy_sizes_bounds() {
-    // Sizes < 32 must fail
     for size in 0..32 {
         assert!(
             PkcePair::generate_with_entropy_size(size).is_err(),
@@ -243,7 +227,6 @@ fn test_pkce_entropy_sizes_bounds() {
         );
     }
 
-    // Sizes 32..=96 must succeed
     for size in 32..=96 {
         let pair = PkcePair::generate_with_entropy_size(size)
             .unwrap_or_else(|_| panic!("Entropy size {size} must succeed"));
@@ -251,7 +234,6 @@ fn test_pkce_entropy_sizes_bounds() {
         assert!(pair.verify(&pair.verifier).is_ok());
     }
 
-    // Sizes > 96 must fail
     for size in [97, 98, 128, 256, 1000] {
         assert!(
             PkcePair::generate_with_entropy_size(size).is_err(),
@@ -264,7 +246,6 @@ fn test_pkce_entropy_sizes_bounds() {
 fn test_pkce_challenge_mismatch_and_tampering() {
     let pair = PkcePair::generate();
 
-    // Invalid challenge lengths
     assert!(matches!(
         verify_pkce(&pair.verifier, ""),
         Err(PkceError::InvalidChallengeLength { len: 0 })
@@ -282,7 +263,6 @@ fn test_pkce_challenge_mismatch_and_tampering() {
         Err(PkceError::InvalidChallengeLength { len: 44 })
     ));
 
-    // Single-char mutation across all 43 positions in challenge
     let orig_challenge = pair.challenge.clone();
     for i in 0..43 {
         let mut chars: Vec<char> = orig_challenge.chars().collect();
@@ -298,24 +278,22 @@ fn test_pkce_challenge_mismatch_and_tampering() {
     }
 }
 
-// =========================================================================
-// 2. DPOP PROOF TAMPERING & CRYPTOGRAPHIC ADVERSARIAL CHALLENGES
-// =========================================================================
-
 #[test]
 fn test_dpop_header_typ_tampering() {
     let key = DPoPKey::generate();
     let verifier = DPoPVerifier::new();
 
-    // Valid case-insensitive variations
-    for valid_typ in ["dpop+jwt", "DPOP+JWT", "dPoP+jWt", "DPoP+jwt"] {
+    for (i, valid_typ) in ["dpop+jwt", "DPOP+JWT", "dPoP+jWt", "DPoP+jwt"]
+        .into_iter()
+        .enumerate()
+    {
         let header = serde_json::json!({
             "typ": valid_typ,
             "alg": "ES256",
             "jwk": key.public_jwk()
         });
         let payload = serde_json::json!({
-            "jti": "jti-1",
+            "jti": format!("jti-valid-typ-{i}"),
             "htm": "POST",
             "htu": "https://example.com/token",
             "iat": 1000
@@ -333,7 +311,6 @@ fn test_dpop_header_typ_tampering() {
         assert!(res.is_ok(), "Typ '{valid_typ}' should be accepted");
     }
 
-    // Invalid typ headers
     for invalid_typ in ["JWT", "dpop", "application/dpop+jwt", "at+jwt", "", "jwt"] {
         let header = serde_json::json!({
             "typ": invalid_typ,
@@ -359,7 +336,6 @@ fn test_dpop_header_typ_tampering() {
         assert!(matches!(res, Err(DPoPError::InvalidHeaderTyp(_))));
     }
 
-    // Missing typ header
     let header_no_typ = serde_json::json!({
         "alg": "ES256",
         "jwk": key.public_jwk()
@@ -421,7 +397,6 @@ fn test_dpop_header_jwk_tampering_and_private_key_leak() {
     let key = DPoPKey::generate();
     let verifier = DPoPVerifier::new();
 
-    // 1. Missing JWK
     let header_no_jwk = serde_json::json!({
         "typ": "dpop+jwt",
         "alg": "ES256"
@@ -443,7 +418,6 @@ fn test_dpop_header_jwk_tampering_and_private_key_leak() {
     );
     assert!(matches!(res, Err(DPoPError::MissingJwk)));
 
-    // 2. Private key 'd' in JWK
     let mut jwk_with_d = serde_json::to_value(key.public_jwk()).unwrap();
     jwk_with_d
         .as_object_mut()
@@ -465,7 +439,6 @@ fn test_dpop_header_jwk_tampering_and_private_key_leak() {
     );
     assert!(matches!(res, Err(DPoPError::PrivateKeyInJwk)));
 
-    // 3. Invalid JWK kty/crv
     for (kty, crv) in [
         ("RSA", "P-256"),
         ("OKP", "Ed25519"),
@@ -501,7 +474,6 @@ fn test_dpop_key_substitution_attack_fails() {
     let key_alice = DPoPKey::generate();
     let key_mallory = DPoPKey::generate();
 
-    // Mallory signs proof with Mallory's key, but puts Alice's public JWK in header
     let header = serde_json::json!({
         "typ": "dpop+jwt",
         "alg": "ES256",
@@ -517,7 +489,6 @@ fn test_dpop_key_substitution_attack_fails() {
     let p_b64 = base64url_encode(payload.to_string().as_bytes());
     let signing_input = format!("{h_b64}.{p_b64}");
 
-    // Mallory signs with Mallory's private key
     let mallory_pem = key_mallory.to_pkcs8_pem().unwrap();
     let mallory_signing_key = SigningKey::from_pkcs8_pem(&mallory_pem).unwrap();
     let sig_bytes = sign_p256_raw(&mallory_signing_key, signing_input.as_bytes()).unwrap();
@@ -551,10 +522,9 @@ fn test_dpop_signature_exhaustive_byte_mutations() {
 
     let verifier = DPoPVerifier::new();
 
-    // Mutate every single byte (all 64 bytes in IEEE P1363 signature)
     for byte_idx in 0..64 {
         let mut tampered_sig = sig_bytes.clone();
-        tampered_sig[byte_idx] ^= 0x55; // Flip bits
+        tampered_sig[byte_idx] ^= 0x55;
 
         let tampered_jwt = format!(
             "{}.{}.{}",
@@ -610,7 +580,6 @@ fn test_dpop_payload_jti_validation() {
     let key = DPoPKey::generate();
     let verifier = DPoPVerifier::new();
 
-    // 1. Missing jti claim in payload
     let header = serde_json::json!({ "typ": "dpop+jwt", "alg": "ES256", "jwk": key.public_jwk() });
     let payload_no_jti = serde_json::json!({
         "htm": "POST",
@@ -628,7 +597,6 @@ fn test_dpop_payload_jti_validation() {
     );
     assert!(matches!(res, Err(DPoPError::MalformedJwt(_))));
 
-    // 2. Empty string jti
     let payload_empty_jti = serde_json::json!({
         "jti": "",
         "htm": "POST",
@@ -646,7 +614,6 @@ fn test_dpop_payload_jti_validation() {
     );
     assert!(matches!(res_empty, Err(DPoPError::MissingClaim("jti"))));
 
-    // 3. Whitespace-only jti
     let payload_ws_jti = serde_json::json!({
         "jti": "   ",
         "htm": "POST",
@@ -702,7 +669,6 @@ fn test_dpop_htu_normalization_and_mismatch() {
     let key = DPoPKey::generate();
     let verifier = DPoPVerifier::new();
 
-    // 1. URL with query & fragment matches cleaned expected URL
     let proof = key
         .create_proof(
             "POST",
@@ -721,7 +687,6 @@ fn test_dpop_htu_normalization_and_mismatch() {
     );
     assert!(res.is_ok());
 
-    // 2. HTTP vs HTTPS mismatch
     let res_http = verifier.verify_proof(
         &proof,
         "POST",
@@ -732,7 +697,6 @@ fn test_dpop_htu_normalization_and_mismatch() {
     );
     assert!(matches!(res_http, Err(DPoPError::UriMismatch { .. })));
 
-    // 3. Port mismatch
     let res_port = verifier.verify_proof(
         &proof,
         "POST",
@@ -743,7 +707,6 @@ fn test_dpop_htu_normalization_and_mismatch() {
     );
     assert!(matches!(res_port, Err(DPoPError::UriMismatch { .. })));
 
-    // 4. Subpath mismatch
     let res_path = verifier.verify_proof(
         &proof,
         "POST",
@@ -772,7 +735,6 @@ fn test_dpop_nonce_and_ath_strict_validation() {
         )
         .unwrap();
 
-    // 1. Success with exact match
     let res = verifier.verify_proof(
         &proof,
         "POST",
@@ -783,7 +745,6 @@ fn test_dpop_nonce_and_ath_strict_validation() {
     );
     assert!(res.is_ok());
 
-    // 2. Nonce mismatch
     let res_bad_nonce = verifier.verify_proof(
         &proof,
         "POST",
@@ -797,7 +758,6 @@ fn test_dpop_nonce_and_ath_strict_validation() {
         Err(DPoPError::NonceMismatch { .. })
     ));
 
-    // 3. ATH mismatch
     let res_bad_ath = verifier.verify_proof(
         &proof,
         "POST",
@@ -808,7 +768,6 @@ fn test_dpop_nonce_and_ath_strict_validation() {
     );
     assert!(matches!(res_bad_ath, Err(DPoPError::AthMismatch { .. })));
 
-    // 4. Proof without nonce when server requires nonce
     let proof_no_nonce = key
         .create_proof(
             "POST",
@@ -827,7 +786,6 @@ fn test_dpop_nonce_and_ath_strict_validation() {
     );
     assert!(matches!(res_missing_nonce, Err(DPoPError::MissingNonce)));
 
-    // 5. Proof without ath when server requires ath
     let proof_no_ath = key
         .create_proof(
             "POST",
@@ -856,7 +814,6 @@ fn test_dpop_temporal_bounds_and_clock_skew() {
 
     let base_now = 1_000_000u64;
 
-    // 1. Proof iat in future within 60s skew (iat = base_now + 50) -> PASS
     let proof_fut_50 = craft_custom_proof(
         &key,
         "POST",
@@ -876,7 +833,6 @@ fn test_dpop_temporal_bounds_and_clock_skew() {
     );
     assert!(res.is_ok());
 
-    // 2. Proof iat in future exceeding 60s skew (iat = base_now + 61) -> FutureProof
     let proof_fut_61 = craft_custom_proof(
         &key,
         "POST",
@@ -896,7 +852,6 @@ fn test_dpop_temporal_bounds_and_clock_skew() {
     );
     assert!(matches!(res, Err(DPoPError::FutureProof { .. })));
 
-    // 3. Proof iat in past within 300s age (iat = base_now - 290) -> PASS
     let proof_past_290 = craft_custom_proof(
         &key,
         "POST",
@@ -916,7 +871,6 @@ fn test_dpop_temporal_bounds_and_clock_skew() {
     );
     assert!(res.is_ok());
 
-    // 4. Proof iat too old (iat = base_now - 301) -> ProofTooOld
     let proof_past_301 = craft_custom_proof(
         &key,
         "POST",
@@ -936,7 +890,6 @@ fn test_dpop_temporal_bounds_and_clock_skew() {
     );
     assert!(matches!(res, Err(DPoPError::ProofTooOld { .. })));
 
-    // 5. Exp claim handling
     let proof_exp_valid = craft_custom_proof(
         &key,
         "POST",
@@ -956,7 +909,6 @@ fn test_dpop_temporal_bounds_and_clock_skew() {
     );
     assert!(res_exp.is_ok());
 
-    // Expired exp claim
     let proof_exp_expired = craft_custom_proof(
         &key,
         "POST",
@@ -977,10 +929,6 @@ fn test_dpop_temporal_bounds_and_clock_skew() {
     assert!(matches!(res_expired, Err(DPoPError::ExpiredProof { .. })));
 }
 
-// =========================================================================
-// 3. CONCURRENCY STRESS ON DPOP NONCE CACHE
-// =========================================================================
-
 #[test]
 fn test_dpop_nonce_cache_high_concurrency_stress() {
     let cache = DPoPNonceCache::new();
@@ -999,14 +947,11 @@ fn test_dpop_nonce_cache_high_concurrency_stress() {
                     let origin = format!("https://pds{origin_idx}.bsky.social/xrpc");
                     let nonce = format!("nonce-t{tid}-i{iter}");
 
-                    // Set nonce
                     cache_clone.set_nonce(&origin, nonce.clone());
                     counter_clone.fetch_add(1, Ordering::Relaxed);
 
-                    // Get nonce (should never panic)
                     let _ = cache_clone.get_nonce(&origin);
 
-                    // Read other origins with varied casing
                     let upper_origin = format!("HTTPS://PDS{origin_idx}.BSKY.SOCIAL/XRPC");
                     let _ = cache_clone.get_nonce(&upper_origin);
 
@@ -1053,10 +998,6 @@ fn test_dpop_nonce_cache_case_and_whitespace_invariance() {
     );
 }
 
-// =========================================================================
-// 4. PROPTEST FUZZING HARNESSES
-// =========================================================================
-
 proptest! {
     #[test]
     fn prop_fuzz_pkce_random_strings(s in "\\PC{1,150}") {
@@ -1089,7 +1030,6 @@ fn test_dpop_proof_creation_and_verification_latency() {
     let token = "sample_bearer_access_token_value_for_benchmarking";
     let ath = compute_access_token_hash(token);
 
-    // Warm-up
     for _ in 0..10 {
         let proof = key
             .create_proof("GET", uri, Some(nonce), Some(&ath))
@@ -1141,30 +1081,20 @@ fn test_dpop_proof_creation_and_verification_latency() {
     );
 }
 
-// =========================================================================
-// 5. CHALLENGER 2: RFC 7638 JWK THUMBPRINT EMPIRICAL STRESS TESTS
-// =========================================================================
-
 #[test]
 fn test_adv_jwk_field_ordering_canonicalization() {
-    // RFC 7638 § 3.1 mandates strict lexicographical sorting: "crv", "kty", "x", "y".
-    // When JSON is parsed from varied member ordering, JwkEc::thumbprint() MUST produce
-    // the canonical SHA-256 thumbprint matching RFC 9449 Figure 8 / Figure 11.
     let x = "l8tFrhx-34tV3hRICRDY9zCkDlpBhF42UQUfWVAWBFs";
     let y = "9VE4jf_Ok_o64zbTTlcuNJajHmt6v9TDVrU0CdvGRDA";
     let expected_jkt = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I";
 
-    // 1. Permutation: {y, x, kty, crv}
     let json_perm1 = format!(r#"{{"y":"{y}","x":"{x}","kty":"EC","crv":"P-256"}}"#);
     let jwk1: JwkEc = serde_json::from_str(&json_perm1).expect("parse perm1");
     assert_eq!(jwk1.thumbprint(), expected_jkt);
 
-    // 2. Permutation: {kty, crv, y, x}
     let json_perm2 = format!(r#"{{"kty":"EC","crv":"P-256","y":"{y}","x":"{x}"}}"#);
     let jwk2: JwkEc = serde_json::from_str(&json_perm2).expect("parse perm2");
     assert_eq!(jwk2.thumbprint(), expected_jkt);
 
-    // 3. Direct function call
     assert_eq!(jwk_thumbprint_ec_p256(x, y), expected_jkt);
 }
 
@@ -1174,7 +1104,6 @@ fn test_adv_jwk_whitespace_and_formatting_immunity() {
     let y = "9VE4jf_Ok_o64zbTTlcuNJajHmt6v9TDVrU0CdvGRDA";
     let expected_jkt = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I";
 
-    // Formats with extensive whitespace, tabs, newlines, pretty printing
     let pretty_json = format!(
         "{{\n  \"crv\": \"P-256\",\n  \"kty\": \"EC\",\n  \"x\": \"{x}\",\n  \"y\": \"{y}\"\n}}"
     );
@@ -1190,8 +1119,6 @@ fn test_adv_jwk_whitespace_and_formatting_immunity() {
 
 #[test]
 fn test_adv_jwk_extra_fields_omitted_from_thumbprint() {
-    // RFC 7638 § 3.2: Non-required fields such as `kid`, `use`, `alg`, `key_ops`
-    // MUST NOT be included in the thumbprint computation.
     let x = "l8tFrhx-34tV3hRICRDY9zCkDlpBhF42UQUfWVAWBFs";
     let y = "9VE4jf_Ok_o64zbTTlcuNJajHmt6v9TDVrU0CdvGRDA";
     let expected_jkt = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I";
@@ -1206,7 +1133,6 @@ fn test_adv_jwk_extra_fields_omitted_from_thumbprint() {
 
 #[test]
 fn test_adv_jwk_rsa_thumbprint_rfc7638_vector() {
-    // RFC 7638 Section 3.1 Test Vector
     let n = "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw";
     let e = "AQAB";
     let jkt = jwk_thumbprint_rsa(e, n);
@@ -1220,7 +1146,6 @@ fn test_adv_jwk_rsa_thumbprint_rfc7638_vector() {
 
 #[test]
 fn test_adv_jwk_malformed_coordinates_reconstruction_rejection() {
-    // 1. Invalid base64 characters
     let bad_jwk_b64 = JwkEc {
         kty: "EC".to_string(),
         crv: "P-256".to_string(),
@@ -1232,7 +1157,6 @@ fn test_adv_jwk_malformed_coordinates_reconstruction_rejection() {
         Err(CryptoError::Base64Decode(_))
     ));
 
-    // 2. Truncated coordinate (less than 32 bytes)
     let bad_jwk_short = JwkEc {
         kty: "EC".to_string(),
         crv: "P-256".to_string(),
@@ -1244,7 +1168,6 @@ fn test_adv_jwk_malformed_coordinates_reconstruction_rejection() {
         Err(CryptoError::Base64Decode(_))
     ));
 
-    // 3. Oversized coordinate (more than 32 bytes)
     let bad_jwk_long = JwkEc {
         kty: "EC".to_string(),
         crv: "P-256".to_string(),
@@ -1261,7 +1184,6 @@ fn test_adv_jwk_malformed_coordinates_reconstruction_rejection() {
 fn test_adv_jwk_unsupported_key_types_in_dpop_verifier() {
     let verifier = DPoPVerifier::new();
 
-    // 1. RSA key in JWK
     let header_rsa = serde_json::json!({
         "typ": "dpop+jwt",
         "alg": "ES256",
@@ -1294,7 +1216,6 @@ fn test_adv_jwk_unsupported_key_types_in_dpop_verifier() {
         Err(DPoPError::InvalidJwk(_))
     ));
 
-    // 2. Unsupported curve P-384
     let header_p384 = serde_json::json!({
         "typ": "dpop+jwt",
         "alg": "ES256",
@@ -1322,7 +1243,6 @@ fn test_adv_jwk_unsupported_key_types_in_dpop_verifier() {
         Err(DPoPError::InvalidJwk(_))
     ));
 
-    // 3. Unsupported alg HS256
     let header_hs256 = serde_json::json!({
         "typ": "dpop+jwt",
         "alg": "HS256",
@@ -1351,13 +1271,8 @@ fn test_adv_jwk_unsupported_key_types_in_dpop_verifier() {
     ));
 }
 
-// =========================================================================
-// 6. CHALLENGER 2: NIST P-256 SEC1 POINT DECODING ROBUSTNESS
-// =========================================================================
-
 #[test]
 fn test_adv_sec1_generator_point_success() {
-    // NIST P-256 Generator Point G
     let gx_hex = "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296";
     let gy_hex = "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5";
 
@@ -1374,7 +1289,6 @@ fn test_adv_sec1_generator_point_success() {
 
 #[test]
 fn test_adv_sec1_negated_generator_point_success() {
-    // -G point on NIST P-256 curve
     let neg_g = -p256::AffinePoint::GENERATOR;
     let encoded = neg_g.to_encoded_point(false);
     let neg_gx = encoded.x().unwrap();
@@ -1393,14 +1307,12 @@ fn test_adv_sec1_negated_generator_point_success() {
 
 #[test]
 fn test_adv_sec1_off_curve_point_rejection() {
-    // 1. (0, 0) is not on y^2 = x^3 - 3x + b
     let zero = [0u8; 32];
     assert!(matches!(
         verifying_key_from_coordinates(&zero, &zero),
         Err(CryptoError::InvalidPoint(_))
     ));
 
-    // 2. (1, 1) is not on the curve
     let mut one = [0u8; 32];
     one[31] = 1;
     assert!(matches!(
@@ -1408,7 +1320,6 @@ fn test_adv_sec1_off_curve_point_rejection() {
         Err(CryptoError::InvalidPoint(_))
     ));
 
-    // 3. Valid Gx with corrupted Gy (Gy XOR 1)
     let gx_hex = "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296";
     let gy_hex = "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5";
     let mut gx = [0u8; 32];
@@ -1416,7 +1327,7 @@ fn test_adv_sec1_off_curve_point_rejection() {
     hex::decode_to_slice(gx_hex, &mut gx).unwrap();
     hex::decode_to_slice(gy_hex, &mut gy).unwrap();
 
-    gy[31] ^= 0x01; // Corrupt y coordinate
+    gy[31] ^= 0x01;
     assert!(matches!(
         verifying_key_from_coordinates(&gx, &gy),
         Err(CryptoError::InvalidPoint(_))
@@ -1425,9 +1336,7 @@ fn test_adv_sec1_off_curve_point_rejection() {
 
 #[test]
 fn test_adv_sec1_coordinate_exceeding_modulus_rejection() {
-    // P-256 field modulus p = 2^256 - 2^224 + 2^192 + 2^96 - 1
-    // Any coordinate >= p is invalid.
-    let all_ff = [0xffu8; 32]; // 2^256 - 1 >= p
+    let all_ff = [0xffu8; 32];
     let valid_y = [0x01u8; 32];
 
     assert!(matches!(
@@ -1454,12 +1363,10 @@ fn test_adv_sec1_fuzz_random_coordinate_flips() {
         let vkey = key.verifying_key();
         let (mut x, y) = verifying_key_to_coordinates(vkey);
 
-        // Flip a random bit in x
         let byte_pos = (rng.next_u32() as usize) % 32;
         let bit_mask = 1u8 << ((rng.next_u32() as usize) % 8);
         x[byte_pos] ^= bit_mask;
 
-        // Flipped point almost certainly off curve; must gracefully return Err and never panic
         let res = verifying_key_from_coordinates(&x, &y);
         if let Err(e) = res {
             assert!(matches!(e, CryptoError::InvalidPoint(_)));
@@ -1467,52 +1374,41 @@ fn test_adv_sec1_fuzz_random_coordinate_flips() {
     }
 }
 
-// =========================================================================
-// 7. CHALLENGER 2: IEEE P1363 64-BYTE RAW SIGNATURE PARSING & VERIFICATION
-// =========================================================================
-
 #[test]
 fn test_adv_ieee_p1363_length_enforcement() {
     let key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
     let vkey = key.verifying_key();
     let message = b"IEEE P1363 Length Boundary Test";
 
-    // 1. Length 0
     assert!(matches!(
         verify_p256_raw(vkey, message, &[]),
         Err(CryptoError::EcdsaVerify(_))
     ));
 
-    // 2. Length 32 (only R)
     let sig_32 = [0x01u8; 32];
     assert!(matches!(
         verify_p256_raw(vkey, message, &sig_32),
         Err(CryptoError::EcdsaVerify(_))
     ));
 
-    // 3. Length 63 (1 byte too short)
     let sig_63 = [0x01u8; 63];
     assert!(matches!(
         verify_p256_raw(vkey, message, &sig_63),
         Err(CryptoError::EcdsaVerify(_))
     ));
 
-    // 4. Length 65 (1 byte too long)
     let sig_65 = [0x01u8; 65];
     assert!(matches!(
         verify_p256_raw(vkey, message, &sig_65),
         Err(CryptoError::EcdsaVerify(_))
     ));
 
-    // 5. ASN.1 DER encoded signature (70-72 bytes) MUST be rejected by raw verifier
     let der_sig = [
-        0x30, 0x44, 0x02, 0x20, // SEQUENCE, 68 bytes; INTEGER, 32 bytes
-        0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x30, 0x44, 0x02, 0x20, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-        0xff, 0xff, 0x02, 0x20, // INTEGER, 32 bytes
-        0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02, 0x20, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-        0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     ];
     assert!(matches!(
         verify_p256_raw(vkey, message, &der_sig),
@@ -1526,15 +1422,12 @@ fn test_adv_ieee_p1363_scalar_out_of_range_rejection() {
     let vkey = key.verifying_key();
     let message = b"Scalar Range Test";
 
-    // Valid ECDSA scalars require r, s in [1, n-1] where n is curve order.
-    // 1. r = 0, s = 0
     let all_zero = [0x00u8; 64];
     assert!(matches!(
         verify_p256_raw(vkey, message, &all_zero),
         Err(CryptoError::EcdsaVerify(_))
     ));
 
-    // 2. r = 0, s = valid
     let mut r_zero = [0x01u8; 64];
     r_zero[..32].fill(0);
     assert!(matches!(
@@ -1542,7 +1435,6 @@ fn test_adv_ieee_p1363_scalar_out_of_range_rejection() {
         Err(CryptoError::EcdsaVerify(_))
     ));
 
-    // 3. r = valid, s = 0
     let mut s_zero = [0x01u8; 64];
     s_zero[32..].fill(0);
     assert!(matches!(
@@ -1550,7 +1442,6 @@ fn test_adv_ieee_p1363_scalar_out_of_range_rejection() {
         Err(CryptoError::EcdsaVerify(_))
     ));
 
-    // 4. r >= n or s >= n (all 0xFF bytes exceeds n)
     let all_ff = [0xffu8; 64];
     assert!(matches!(
         verify_p256_raw(vkey, message, &all_ff),
@@ -1568,10 +1459,9 @@ fn test_adv_ieee_p1363_exhaustive_bit_flip_tamper_rejection() {
     assert_eq!(signature.len(), 64);
     assert!(verify_p256_raw(vkey, message, &signature).is_ok());
 
-    // Systematically flip each of the 64 bytes in the signature
     for byte_idx in 0..64 {
         let mut tampered_sig = signature;
-        tampered_sig[byte_idx] ^= 0x80; // Flip MSB of byte
+        tampered_sig[byte_idx] ^= 0x80;
         let result = verify_p256_raw(vkey, message, &tampered_sig);
         assert!(
             result.is_err(),
@@ -1590,13 +1480,10 @@ fn test_adv_ieee_p1363_cross_message_and_key_isolation() {
 
     let sig_a = sign_p256_raw(&key_a, msg_a).expect("sign msg_a");
 
-    // 1. Valid key, wrong message
     assert!(verify_p256_raw(key_a.verifying_key(), msg_b, &sig_a).is_err());
 
-    // 2. Wrong key, correct message
     assert!(verify_p256_raw(key_b.verifying_key(), msg_a, &sig_a).is_err());
 
-    // 3. Wrong key, wrong message
     assert!(verify_p256_raw(key_b.verifying_key(), msg_b, &sig_a).is_err());
 }
 
@@ -1605,12 +1492,10 @@ fn test_adv_ieee_p1363_empty_and_large_message_handling() {
     let key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
     let vkey = key.verifying_key();
 
-    // 1. Empty message
     let empty_msg = b"";
     let sig_empty = sign_p256_raw(&key, empty_msg).expect("sign empty");
     assert!(verify_p256_raw(vkey, empty_msg, &sig_empty).is_ok());
 
-    // 2. 1 MB large message
     let large_msg = vec![0x42u8; 1024 * 1024];
     let sig_large = sign_p256_raw(&key, &large_msg).expect("sign large");
     assert!(verify_p256_raw(vkey, &large_msg, &sig_large).is_ok());
@@ -1627,13 +1512,11 @@ fn test_adv_dpop_inbound_proof_with_malformed_signatures() {
 
     let verifier = DPoPVerifier::new();
 
-    // 1. Signature replaced by DER encoded signature (not raw 64-byte)
     let der_sig_b64 = base64url_encode(&[0x30, 0x44, 0x02, 0x20, 0xaa, 0xbb]);
     let proof_der = format!("{}.{}.{}", parts[0], parts[1], der_sig_b64);
     let res_der = verifier.verify_proof(&proof_der, "GET", uri, None, None, None);
     assert!(res_der.is_err());
 
-    // 2. All zero signature bytes
     let zero_sig_b64 = base64url_encode(&[0x00u8; 64]);
     let proof_zero = format!("{}.{}.{}", parts[0], parts[1], zero_sig_b64);
     let res_zero = verifier.verify_proof(&proof_zero, "GET", uri, None, None, None);
@@ -1642,16 +1525,11 @@ fn test_adv_dpop_inbound_proof_with_malformed_signatures() {
         Err(DPoPError::SignatureVerificationFailed) | Err(DPoPError::Crypto(_))
     ));
 
-    // 3. Truncated signature in JWT
     let trunc_sig_b64 = base64url_encode(&[0x01u8; 32]);
     let proof_trunc = format!("{}.{}.{}", parts[0], parts[1], trunc_sig_b64);
     let res_trunc = verifier.verify_proof(&proof_trunc, "GET", uri, None, None, None);
     assert!(res_trunc.is_err());
 }
-
-// =========================================================================
-// 8. CHALLENGER 2: PROPERTY-BASED STRESS HARNESSES (proptest)
-// =========================================================================
 
 proptest! {
     #[test]
@@ -1711,23 +1589,16 @@ proptest! {
         let signature = sign_p256_raw(&key, &message).expect("sign message");
         prop_assert_eq!(signature.len(), 64);
 
-        // Verification of untampered signature must pass
         prop_assert!(verify_p256_raw(vkey, &message, &signature).is_ok());
 
-        // Verification of mutated signature must fail
         let mut tampered = signature;
         tampered[tamper_idx] ^= tamper_val;
         prop_assert!(verify_p256_raw(vkey, &message, &tampered).is_err());
     }
 }
 
-// =========================================================================
-// 9. CHALLENGER 2 (M2): ADVERSARIAL HANDLE SYNTAX FUZZING & BOUNDARY TESTS
-// =========================================================================
-
 #[test]
 fn test_adv_handle_label_length_exhaustive_boundary_1_to_100() {
-    // Labels 1 to 63 characters must SUCCEED
     for len in 1..=63 {
         let label = "a".repeat(len);
         let handle = format!("{label}.com");
@@ -1740,7 +1611,6 @@ fn test_adv_handle_label_length_exhaustive_boundary_1_to_100() {
         assert_eq!(res.unwrap(), handle);
     }
 
-    // Labels 64 to 100 characters must FAIL with InvalidHandleSyntax
     for len in 64..=100 {
         let label = "a".repeat(len);
         let handle = format!("{label}.com");
@@ -1752,7 +1622,6 @@ fn test_adv_handle_label_length_exhaustive_boundary_1_to_100() {
         );
     }
 
-    // Multi-segment label boundary checks
     let len_63 = "b".repeat(63);
     let len_64 = "b".repeat(64);
     assert!(normalize_handle(&format!("alice.{len_63}.com")).is_ok());
@@ -1769,10 +1638,6 @@ fn test_adv_handle_label_length_exhaustive_boundary_1_to_100() {
 
 #[test]
 fn test_adv_handle_total_length_exact_244_vs_245_boundary() {
-    // Construct exact total length handle using 4 labels:
-    // l1 (60) + '.' + l2 (60) + '.' + l3 (60) + '.' + l4 (x) + '.' + "com" (3)
-    // base prefix length = 60 + 1 + 60 + 1 + 60 + 1 + 1 + 3 = 187
-    // for total length 244: l4 len = 244 - 187 = 57.
     let l1 = "a".repeat(60);
     let l2 = "b".repeat(60);
     let l3 = "c".repeat(60);
@@ -1784,7 +1649,6 @@ fn test_adv_handle_total_length_exact_244_vs_245_boundary() {
         "Handle of exact length 244 must succeed"
     );
 
-    // for total length 245: l4 len = 245 - 187 = 58 (<= 63 chars per label)
     let l4_58 = "d".repeat(58);
     let handle_245 = format!("{l1}.{l2}.{l3}.{l4_58}.com");
     assert_eq!(handle_245.len(), 245);
@@ -1795,7 +1659,6 @@ fn test_adv_handle_total_length_exact_244_vs_245_boundary() {
         res_245
     );
 
-    // Extremes: 243, 246, 300, 1000
     let l4_56 = "d".repeat(56);
     let handle_243 = format!("{l1}.{l2}.{l3}.{l4_56}.com");
     assert_eq!(handle_243.len(), 243);
@@ -1830,7 +1693,6 @@ fn test_adv_handle_disallowed_tlds_exhaustive_and_case_variants() {
     ];
 
     for tld in disallowed {
-        // Lowercase
         let h_lower = format!("user.{tld}");
         assert!(
             matches!(
@@ -1840,7 +1702,6 @@ fn test_adv_handle_disallowed_tlds_exhaustive_and_case_variants() {
             "Disallowed TLD '{tld}' in lowercase should be rejected"
         );
 
-        // Uppercase
         let h_upper = format!("USER.{}", tld.to_uppercase());
         assert!(
             matches!(
@@ -1850,7 +1711,6 @@ fn test_adv_handle_disallowed_tlds_exhaustive_and_case_variants() {
             "Disallowed TLD '{tld}' in uppercase should be rejected"
         );
 
-        // Mixed case
         let mixed_tld = tld
             .chars()
             .enumerate()
@@ -1871,7 +1731,6 @@ fn test_adv_handle_disallowed_tlds_exhaustive_and_case_variants() {
             "Disallowed TLD '{tld}' in mixed case should be rejected"
         );
 
-        // Multi-level nested subdomains
         let h_nested = format!("sub.domain.deep.user.{tld}");
         assert!(
             matches!(
@@ -1881,7 +1740,6 @@ fn test_adv_handle_disallowed_tlds_exhaustive_and_case_variants() {
             "Disallowed TLD '{tld}' in nested subdomain should be rejected"
         );
 
-        // Disallowed TLD as a subdomain with a valid TLD must be ACCEPTED
         let h_valid = format!("{tld}.com");
         assert_eq!(
             normalize_handle(&h_valid).unwrap(),
@@ -1896,7 +1754,6 @@ fn test_adv_handle_disallowed_tlds_exhaustive_and_case_variants() {
         );
     }
 
-    // Full handle.invalid rejection
     assert!(matches!(
         normalize_handle("handle.invalid"),
         Err(IdentityError::DisallowedHandleTld(ref t)) if t == "handle.invalid" || t == "invalid"
@@ -1913,7 +1770,6 @@ fn test_adv_handle_disallowed_tlds_exhaustive_and_case_variants() {
 
 #[test]
 fn test_adv_handle_punycode_and_homoglyph_attacks() {
-    // Valid Punycode (IDNA ASCII labels)
     let valid_punycode = [
         "xn--bcher-kva.com",           // bücher.com
         "xn--fiqs8s.cn",               // 中国.cn
@@ -1932,7 +1788,6 @@ fn test_adv_handle_punycode_and_homoglyph_attacks() {
         );
     }
 
-    // Malformed Punycode labels
     let malformed_punycode = [
         "xn--.com",      // ends with hyphen
         "-xn--abc.com",  // starts with hyphen
@@ -1950,7 +1805,6 @@ fn test_adv_handle_punycode_and_homoglyph_attacks() {
         );
     }
 
-    // Homoglyph & Non-ASCII Unicode attacks (U-labels directly passed)
     let unicode_attacks = [
         "bücher.com",                  // German umlaut
         "аlice.com",                   // Cyrillic 'а'
@@ -1979,7 +1833,6 @@ fn test_adv_handle_punycode_and_homoglyph_attacks() {
 
 #[test]
 fn test_adv_handle_hyphen_placement_permutations() {
-    // Leading/trailing hyphens in any label position
     let bad_hyphen_placements = [
         "-alice.bsky.social",
         "alice-.bsky.social",
@@ -2008,7 +1861,6 @@ fn test_adv_handle_hyphen_placement_permutations() {
         );
     }
 
-    // Valid internal hyphens
     let valid_internal_hyphens = [
         "a-b.c-d.com",
         "my--handle--name.bsky.social",
@@ -2030,7 +1882,6 @@ fn test_adv_handle_hyphen_placement_permutations() {
 
 #[test]
 fn test_adv_handle_ip_address_and_formatting_edge_cases() {
-    // Raw IPv4 addresses
     let ipv4_cases = [
         "127.0.0.1",
         "10.0.0.1",
@@ -2050,7 +1901,6 @@ fn test_adv_handle_ip_address_and_formatting_edge_cases() {
         );
     }
 
-    // Raw IPv6 addresses
     let ipv6_cases = [
         "::1",
         "fe80::1",
@@ -2069,12 +1919,10 @@ fn test_adv_handle_ip_address_and_formatting_edge_cases() {
         );
     }
 
-    // Subdomains starting with numbers (valid as long as TLD is valid alpha)
     assert!(normalize_handle("123.456.com").is_ok());
     assert!(normalize_handle("1.2.3.4.com").is_ok());
     assert!(normalize_handle("0.0.0.0.org").is_ok());
 
-    // Single label handles
     assert!(matches!(
         normalize_handle("localhost"),
         Err(IdentityError::InvalidHandleSyntax(_))
@@ -2088,7 +1936,6 @@ fn test_adv_handle_ip_address_and_formatting_edge_cases() {
         Err(IdentityError::InvalidHandleSyntax(_))
     ));
 
-    // Empty / whitespace
     assert!(matches!(
         normalize_handle(""),
         Err(IdentityError::InvalidHandleSyntax(_))
@@ -2106,7 +1953,6 @@ fn test_adv_handle_ip_address_and_formatting_edge_cases() {
         Err(IdentityError::InvalidHandleSyntax(_))
     ));
 
-    // Consecutive dots / empty labels
     assert!(matches!(
         normalize_handle("alice..com"),
         Err(IdentityError::InvalidHandleSyntax(_))
@@ -2124,7 +1970,6 @@ fn test_adv_handle_ip_address_and_formatting_edge_cases() {
         Err(IdentityError::InvalidHandleSyntax(_))
     ));
 
-    // Multiple '@' prefixes stripped cleanly
     assert_eq!(
         normalize_handle("@alice.bsky.social").unwrap(),
         "alice.bsky.social"
@@ -2139,13 +1984,8 @@ fn test_adv_handle_ip_address_and_formatting_edge_cases() {
     );
 }
 
-// =========================================================================
-// 10. CHALLENGER 2 (M2): ADVERSARIAL DID SPOOFING & VERIFICATION TESTS
-// =========================================================================
-
 #[test]
 fn test_adv_did_document_missing_also_known_as_forgery() {
-    // 1. Explicit empty alsoKnownAs list
     let doc_empty = DidDocument {
         id: "did:plc:alice111111111111111111".to_string(),
         also_known_as: vec![],
@@ -2162,7 +2002,6 @@ fn test_adv_did_document_missing_also_known_as_forgery() {
         Err(IdentityError::HandleDidMismatch(ref h)) if h == "alice.bsky.social"
     ));
 
-    // 2. Deserialization from JSON missing alsoKnownAs key
     let json_missing_aka = serde_json::json!({
         "id": "did:plc:alice111111111111111111",
         "service": [{
@@ -2181,7 +2020,6 @@ fn test_adv_did_document_missing_also_known_as_forgery() {
 
 #[test]
 fn test_adv_did_document_conflicting_handle_backlinks() {
-    // 1. Pointing to victim handle when attacker requests resolution
     let doc_imposter = DidDocument {
         id: "did:plc:attacker111111111111111".to_string(),
         also_known_as: vec!["at://victim.com".to_string()],
@@ -2193,7 +2031,6 @@ fn test_adv_did_document_conflicting_handle_backlinks() {
         Err(IdentityError::HandleDidMismatch(ref h)) if h == "attacker.com"
     ));
 
-    // 2. Multiple handles in alsoKnownAs where none match queried handle
     let doc_multi_unmatched = DidDocument {
         id: "did:plc:alice111111111111111111".to_string(),
         also_known_as: vec![
@@ -2208,7 +2045,6 @@ fn test_adv_did_document_conflicting_handle_backlinks() {
         Err(IdentityError::HandleDidMismatch(_))
     ));
 
-    // 3. Non-at:// URI schemes in alsoKnownAs
     let doc_non_at_uri = DidDocument {
         id: "did:plc:alice111111111111111111".to_string(),
         also_known_as: vec![
@@ -2224,7 +2060,6 @@ fn test_adv_did_document_conflicting_handle_backlinks() {
         Err(IdentityError::HandleDidMismatch(_))
     ));
 
-    // 4. Multiple handles where one matches
     let doc_multi_matched = DidDocument {
         id: "did:plc:alice111111111111111111".to_string(),
         also_known_as: vec![
@@ -2238,7 +2073,6 @@ fn test_adv_did_document_conflicting_handle_backlinks() {
         .verify_handle_bidirectional("alice.bsky.social")
         .is_ok());
 
-    // 5. Case-insensitivity in both handle query and alsoKnownAs entry
     let doc_uppercase_aka = DidDocument {
         id: "did:plc:alice111111111111111111".to_string(),
         also_known_as: vec!["at://ALICE.BSKY.SOCIAL".to_string()],
@@ -2265,7 +2099,6 @@ fn test_adv_did_document_id_mismatch_and_method_substitution() {
         service: vec![],
     };
 
-    // Mismatched plc DID
     let res = doc.validate_id("did:plc:alice111111111111111111");
     assert!(matches!(
         res,
@@ -2273,10 +2106,8 @@ fn test_adv_did_document_id_mismatch_and_method_substitution() {
             if expected == "did:plc:alice111111111111111111" && actual == "did:plc:imposter222222222222222"
     ));
 
-    // Matching DID must succeed
     assert!(doc.validate_id("did:plc:imposter222222222222222").is_ok());
 
-    // Mismatched web DID
     let doc_web = DidDocument {
         id: "did:web:attacker.com".to_string(),
         also_known_as: vec![],
@@ -2288,7 +2119,6 @@ fn test_adv_did_document_id_mismatch_and_method_substitution() {
         Err(IdentityError::DidDocumentIdMismatch { .. })
     ));
 
-    // Empty ID
     let doc_empty_id = DidDocument {
         id: String::new(),
         also_known_as: vec![],
@@ -2303,7 +2133,6 @@ fn test_adv_did_document_id_mismatch_and_method_substitution() {
 
 #[test]
 fn test_adv_did_service_endpoint_tampering() {
-    // 1. Missing service list
     let doc_no_service = DidDocument {
         id: "did:plc:alice12345678".to_string(),
         also_known_as: vec![],
@@ -2315,7 +2144,6 @@ fn test_adv_did_service_endpoint_tampering() {
         Err(IdentityError::MissingPdsEndpoint(_))
     ));
 
-    // 2. Service with incorrect ID (not #atproto_pds)
     let doc_wrong_id = DidDocument {
         id: "did:plc:alice12345678".to_string(),
         also_known_as: vec![],
@@ -2331,7 +2159,6 @@ fn test_adv_did_service_endpoint_tampering() {
         Err(IdentityError::MissingPdsEndpoint(_))
     ));
 
-    // 3. Service with incorrect type (missing 'Atproto')
     let doc_wrong_type = DidDocument {
         id: "did:plc:alice12345678".to_string(),
         also_known_as: vec![],
@@ -2347,7 +2174,6 @@ fn test_adv_did_service_endpoint_tampering() {
         Err(IdentityError::MissingPdsEndpoint(_))
     ));
 
-    // 4. Service with disallowed / dangerous schemes
     let bad_schemes = [
         "ftp://pds.example.com",
         "javascript:alert(1)",
@@ -2375,7 +2201,6 @@ fn test_adv_did_service_endpoint_tampering() {
         );
     }
 
-    // 5. Service with malformed URL string
     let doc_malformed_url = DidDocument {
         id: "did:plc:alice12345678".to_string(),
         also_known_as: vec![],
@@ -2391,7 +2216,6 @@ fn test_adv_did_service_endpoint_tampering() {
         Err(IdentityError::InvalidPdsEndpoint(_))
     ));
 
-    // 6. Trailing slashes stripped cleanly
     let doc_slashes = DidDocument {
         id: "did:plc:alice12345678".to_string(),
         also_known_as: vec![],
@@ -2407,7 +2231,6 @@ fn test_adv_did_service_endpoint_tampering() {
         "https://pds.example.com"
     );
 
-    // 7. Full URI fragment id (did:plc:...#atproto_pds)
     let doc_full_fragment = DidDocument {
         id: "did:plc:alice12345678".to_string(),
         also_known_as: vec![],
@@ -2433,7 +2256,6 @@ fn test_adv_did_service_endpoint_tampering() {
 
 #[test]
 fn test_adv_did_syntax_fuzzing() {
-    // Malformed DID prefix
     let not_dids = [
         "",
         "   ",
@@ -2455,7 +2277,6 @@ fn test_adv_did_syntax_fuzzing() {
         );
     }
 
-    // Unsupported DID methods
     let unsupported_methods = [
         "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
         "did:ion:EiD35fQ4...",
@@ -2474,7 +2295,6 @@ fn test_adv_did_syntax_fuzzing() {
         );
     }
 
-    // did:plc hash lengths
     assert!(matches!(
         validate_did_syntax("did:plc:1234567"), // 7 chars (< 8)
         Err(IdentityError::InvalidDidSyntax(_))
@@ -2488,7 +2308,6 @@ fn test_adv_did_syntax_fuzzing() {
         DidMethod::Plc
     );
 
-    // did:web domains
     assert!(matches!(
         validate_did_syntax("did:web:"),
         Err(IdentityError::InvalidDidSyntax(_))
@@ -2517,7 +2336,6 @@ async fn test_adv_identity_resolver_mock_server_spoofing_scenarios() {
         .plc_directory_url(&base_uri)
         .build();
 
-    // 1. Scenario 1: PLC Directory returns 404
     Mock::given(method("GET"))
         .and(path("/did:plc:nonexistent123"))
         .respond_with(ResponseTemplate::new(404))
@@ -2529,7 +2347,6 @@ async fn test_adv_identity_resolver_mock_server_spoofing_scenarios() {
         matches!(res_404, Err(IdentityError::DidNotFound(ref d)) if d == "did:plc:nonexistent123")
     );
 
-    // 2. Scenario 2: PLC Directory returns malformed JSON
     Mock::given(method("GET"))
         .and(path("/did:plc:malformed123"))
         .respond_with(ResponseTemplate::new(200).set_body_string("<html>Server Error</html>"))
@@ -2542,7 +2359,6 @@ async fn test_adv_identity_resolver_mock_server_spoofing_scenarios() {
         Err(IdentityError::MalformedDidDocument(_))
     ));
 
-    // 3. Scenario 3: PLC Directory returns DID Document with mismatched ID (Poisoned Directory)
     let mismatched_doc = DidDocument {
         id: "did:plc:evilimposter999".to_string(),
         also_known_as: vec!["at://victim.com".to_string()],
@@ -2571,17 +2387,11 @@ async fn test_adv_identity_resolver_mock_server_spoofing_scenarios() {
     ));
 }
 
-// =========================================================================
-// 11. CHALLENGER 2 (M2): PROPERTY-BASED IDENTITY RESOLUTION HARNESSES (proptest)
-// =========================================================================
-
 proptest! {
     #[test]
     fn prop_fuzz_handle_arbitrary_strings(s in "\\PC{0,300}") {
-        // Must never panic on arbitrary input
         let res = normalize_handle(&s);
         if let Ok(handle) = res {
-            // Invariants for any successfully normalized handle:
             prop_assert!(!handle.is_empty(), "Handle must not be empty");
             prop_assert!(handle.len() <= 244, "Handle length {} must be <= 244", handle.len());
             prop_assert!(handle.is_ascii(), "Handle must be ASCII");
@@ -2606,7 +2416,6 @@ proptest! {
 
     #[test]
     fn prop_fuzz_did_syntax_arbitrary_strings(s in "\\PC{0,200}") {
-        // Must never panic on arbitrary input
         let res = validate_did_syntax(&s);
         if let Ok(method) = res {
             prop_assert!(s.trim().starts_with("did:"), "DID must start with did:");
@@ -2643,14 +2452,11 @@ proptest! {
             }],
         };
 
-        // Self-validation must succeed
         prop_assert!(doc.validate_id(&expected_did).is_ok());
 
-        // Mismatched DID must fail
         let mismatched_did = format!("did:plc:{did_hash}different");
         prop_assert!(doc.validate_id(&mismatched_did).is_err());
 
-        // Bidirectional handle match
         prop_assert!(doc.matches_handle(&handle_name));
         let at_handle = format!("@{handle_name}");
         prop_assert!(doc.matches_handle(&at_handle));
@@ -2662,17 +2468,12 @@ proptest! {
             prop_assert!(doc.verify_handle_bidirectional(&other_name).is_err());
         }
 
-        // PDS endpoint extraction
         prop_assert_eq!(
             doc.extract_pds_endpoint().unwrap(),
             "https://pds.example.com"
         );
     }
 }
-
-// =========================================================================
-// 12. CHALLENGER 1 (M7): FINAL ACCEPTANCE & ADVERSARIAL HARDENING SUITE
-// =========================================================================
 
 use skyauth::client::StoredStateEntry;
 use skyauth::discovery::{
@@ -2696,7 +2497,6 @@ fn test_m7_adv_ssrf_exhaustive_ip_and_hostname_boundaries() {
     let filter_strict = SsrfFilter::new(false);
     let filter_allow_local = SsrfFilter::new(true);
 
-    // 1. IPv4 Loopback (127.0.0.0/8)
     let loopbacks = [
         Ipv4Addr::new(127, 0, 0, 1),
         Ipv4Addr::new(127, 0, 0, 255),
@@ -2709,7 +2509,6 @@ fn test_m7_adv_ssrf_exhaustive_ip_and_hostname_boundaries() {
         assert!(!filter_allow_local.is_ip_restricted(IpAddr::V4(*ip)));
     }
 
-    // 2. IPv4 RFC 1918 Private ranges
     let rfc1918 = [
         Ipv4Addr::new(10, 0, 0, 1),
         Ipv4Addr::new(10, 255, 255, 255),
@@ -2724,7 +2523,6 @@ fn test_m7_adv_ssrf_exhaustive_ip_and_hostname_boundaries() {
         assert!(filter_allow_local.is_ip_restricted(IpAddr::V4(*ip)));
     }
 
-    // RFC 1918 boundary: 172.15.255.255 and 172.32.0.0 are public (unrestricted)
     let rfc1918_public_neighbors = [
         Ipv4Addr::new(172, 15, 255, 255),
         Ipv4Addr::new(172, 32, 0, 1),
@@ -2741,10 +2539,9 @@ fn test_m7_adv_ssrf_exhaustive_ip_and_hostname_boundaries() {
         assert!(!filter_strict.is_ip_restricted(IpAddr::V4(*ip)));
     }
 
-    // 3. Link-Local & Cloud Metadata (169.254.0.0/16)
     let link_locals = [
-        Ipv4Addr::new(169, 254, 169, 254), // AWS/GCP/Azure IMDS
-        Ipv4Addr::new(169, 254, 170, 2),   // ECS container metadata
+        Ipv4Addr::new(169, 254, 169, 254),
+        Ipv4Addr::new(169, 254, 170, 2),
         Ipv4Addr::new(169, 254, 0, 1),
         Ipv4Addr::new(169, 254, 255, 255),
     ];
@@ -2753,7 +2550,6 @@ fn test_m7_adv_ssrf_exhaustive_ip_and_hostname_boundaries() {
         assert!(filter_strict.is_ip_restricted(IpAddr::V4(*ip)));
     }
 
-    // 4. CGNAT (100.64.0.0/10: 100.64.0.0 - 100.127.255.255)
     let cgnat = [
         Ipv4Addr::new(100, 64, 0, 1),
         Ipv4Addr::new(100, 100, 50, 1),
@@ -2773,39 +2569,36 @@ fn test_m7_adv_ssrf_exhaustive_ip_and_hostname_boundaries() {
         );
     }
 
-    // 5. Special IPv4 Ranges: 0.0.0.0/8, Class E / Multicast, Documentation
     assert!(is_restricted_ipv4(&Ipv4Addr::new(0, 0, 0, 0)));
     assert!(is_restricted_ipv4(&Ipv4Addr::new(0, 1, 2, 3)));
-    assert!(is_restricted_ipv4(&Ipv4Addr::new(224, 0, 0, 1))); // Multicast
-    assert!(is_restricted_ipv4(&Ipv4Addr::new(240, 0, 0, 1))); // Class E
-    assert!(is_restricted_ipv4(&Ipv4Addr::new(255, 255, 255, 255))); // Broadcast
-    assert!(is_restricted_ipv4(&Ipv4Addr::new(192, 0, 2, 1))); // TEST-NET-1
-    assert!(is_restricted_ipv4(&Ipv4Addr::new(198, 51, 100, 1))); // TEST-NET-2
-    assert!(is_restricted_ipv4(&Ipv4Addr::new(203, 0, 113, 1))); // TEST-NET-3
+    assert!(is_restricted_ipv4(&Ipv4Addr::new(224, 0, 0, 1)));
+    assert!(is_restricted_ipv4(&Ipv4Addr::new(240, 0, 0, 1)));
+    assert!(is_restricted_ipv4(&Ipv4Addr::new(255, 255, 255, 255)));
+    assert!(is_restricted_ipv4(&Ipv4Addr::new(192, 0, 2, 1)));
+    assert!(is_restricted_ipv4(&Ipv4Addr::new(198, 51, 100, 1)));
+    assert!(is_restricted_ipv4(&Ipv4Addr::new(203, 0, 113, 1)));
 
-    // 6. IPv6 Restricted Ranges
-    assert!(is_restricted_ipv6(&Ipv6Addr::UNSPECIFIED)); // ::
-    assert!(is_restricted_ipv6(&Ipv6Addr::LOCALHOST)); // ::1
+    assert!(is_restricted_ipv6(&Ipv6Addr::UNSPECIFIED));
+    assert!(is_restricted_ipv6(&Ipv6Addr::LOCALHOST));
     assert!(is_restricted_ipv6(&Ipv6Addr::new(
         0xfc00, 0, 0, 0, 0, 0, 0, 1
-    ))); // ULA
+    )));
     assert!(is_restricted_ipv6(&Ipv6Addr::new(
         0xfd12, 0x3456, 0, 0, 0, 0, 0, 1
-    ))); // ULA
+    )));
     assert!(is_restricted_ipv6(&Ipv6Addr::new(
         0xfe80, 0, 0, 0, 0, 0, 0, 1
-    ))); // Link-Local
+    )));
     assert!(is_restricted_ipv6(&Ipv6Addr::new(
         0xff02, 0, 0, 0, 0, 0, 0, 1
-    ))); // Multicast
+    )));
     assert!(is_restricted_ipv6(&Ipv6Addr::new(
         0x2001, 0x0db8, 0, 0, 0, 0, 0, 1
-    ))); // Doc
+    )));
     assert!(is_restricted_ipv6(&Ipv6Addr::new(
         0x0064, 0xff9b, 0, 0, 0, 0, 0, 1
-    ))); // Well-known 64:ff9b::
+    )));
 
-    // IPv4-mapped IPv6 unpacked evaluation
     let mapped_loopback: Ipv6Addr = Ipv4Addr::new(127, 0, 0, 1).to_ipv6_mapped();
     let mapped_metadata: Ipv6Addr = Ipv4Addr::new(169, 254, 169, 254).to_ipv6_mapped();
     let mapped_public: Ipv6Addr = Ipv4Addr::new(8, 8, 8, 8).to_ipv6_mapped();
@@ -2813,7 +2606,6 @@ fn test_m7_adv_ssrf_exhaustive_ip_and_hostname_boundaries() {
     assert!(is_restricted_ipv6(&mapped_metadata));
     assert!(!is_restricted_ipv6(&mapped_public));
 
-    // 7. Hostname filtering
     assert!(is_blocked_hostname("metadata.google.internal"));
     assert!(is_blocked_hostname("instance-data"));
     assert!(is_blocked_hostname("metadata.internal"));
@@ -2829,7 +2621,6 @@ fn test_m7_adv_ssrf_exhaustive_ip_and_hostname_boundaries() {
 fn test_m7_adv_dpop_htu_exhaustive_normalization() {
     use skyauth::dpop::normalize_htu;
 
-    // 1. Default port removal
     assert_eq!(
         normalize_htu("http://example.com:80/oauth/token").unwrap(),
         "http://example.com/oauth/token"
@@ -2839,7 +2630,6 @@ fn test_m7_adv_dpop_htu_exhaustive_normalization() {
         "https://example.com/oauth/token"
     );
 
-    // 2. Non-default ports preserved
     assert_eq!(
         normalize_htu("http://example.com:8080/oauth/token").unwrap(),
         "http://example.com:8080/oauth/token"
@@ -2849,25 +2639,21 @@ fn test_m7_adv_dpop_htu_exhaustive_normalization() {
         "https://example.com:8443/oauth/token"
     );
 
-    // 3. Scheme and host lowercasing
     assert_eq!(
         normalize_htu("HTTPS://AUTH.EXAMPLE.COM/Oauth/Token").unwrap(),
         "https://auth.example.com/Oauth/Token"
     );
 
-    // 4. Query string and fragment stripping
     assert_eq!(
         normalize_htu("https://example.com/oauth/token?client_id=123&scope=atproto#frag1").unwrap(),
         "https://example.com/oauth/token"
     );
 
-    // 5. Empty path normalized to /
     assert_eq!(
         normalize_htu("https://example.com").unwrap(),
         "https://example.com/"
     );
 
-    // 6. Rejection of non-HTTP schemes and invalid URIs
     assert!(normalize_htu("ftp://example.com/resource").is_err());
     assert!(normalize_htu("javascript:alert(1)").is_err());
     assert!(normalize_htu("file:///etc/passwd").is_err());
@@ -2878,14 +2664,12 @@ fn test_m7_adv_dpop_htu_exhaustive_normalization() {
 
 #[test]
 fn test_m7_adv_pkce_custom_entropy_and_constant_time() {
-    // 1. Valid entropy sizes (32..=96 bytes -> 43..=128 characters)
     for entropy_len in [32, 40, 48, 64, 80, 96] {
         let pair = PkcePair::generate_with_entropy_size(entropy_len).unwrap();
         assert!(pair.verifier.len() >= 43 && pair.verifier.len() <= 128);
         assert_eq!(pair.challenge.len(), 43);
         assert!(pair.verify(&pair.verifier).is_ok());
 
-        // Tampered verifier must fail in constant time
         let mut tampered = pair.verifier.clone();
         let last_char = if tampered.ends_with('a') { 'b' } else { 'a' };
         tampered.pop();
@@ -2893,7 +2677,6 @@ fn test_m7_adv_pkce_custom_entropy_and_constant_time() {
         assert!(pair.verify(&tampered).is_err());
     }
 
-    // 2. Out-of-bounds entropy sizes rejected cleanly
     for bad_size in [0, 1, 16, 31, 97, 128, 256] {
         let err = PkcePair::generate_with_entropy_size(bad_size);
         assert!(matches!(err, Err(PkceError::InvalidVerifierLength { .. })));
@@ -2904,7 +2687,6 @@ fn test_m7_adv_pkce_custom_entropy_and_constant_time() {
 fn test_m7_adv_oauth_session_rotation_and_auth_header() {
     let key = DPoPKey::generate();
 
-    // 1. Session creation with case-insensitive token type "DPoP"
     for valid_type in ["DPoP", "dpop", "DPOP", "dPoP"] {
         let session = OAuthSession::new(
             "did:plc:alice123",
@@ -2928,7 +2710,6 @@ fn test_m7_adv_oauth_session_rotation_and_auth_header() {
         assert!(!session.is_expired());
     }
 
-    // 2. Rejection of invalid token type (e.g. Bearer)
     let bearer_err = OAuthSession::new(
         "did:plc:alice123",
         "tok_123",
@@ -2946,7 +2727,6 @@ fn test_m7_adv_oauth_session_rotation_and_auth_header() {
         Err(AtprotoOAuthError::Token(TokenError::InvalidTokenType(_)))
     ));
 
-    // 3. Token rotation
     let mut session = OAuthSession::new(
         "did:plc:alice123",
         "old_access_token",
@@ -2971,7 +2751,6 @@ fn test_m7_adv_oauth_session_rotation_and_auth_header() {
     assert_eq!(session.dpop_auth_header(), "DPoP new_access_token_999");
     assert!(!session.is_expired());
 
-    // 4. DPoP Proof creation from session with bound access token hash (ath)
     let proof = session
         .create_dpop_proof(
             "POST",
@@ -3001,7 +2780,6 @@ fn test_m7_adv_oauth_session_rotation_and_auth_header() {
 async fn test_m7_adv_sharded_store_100_tasks_50_keys_race() {
     let store = Arc::new(OAuthStateStore::new(Duration::from_secs(60)));
 
-    // Pre-insert exactly 50 distinct keys
     for k in 0..50 {
         let key = format!("state_key_{k}");
         let entry = StoredStateEntry {
@@ -3027,7 +2805,6 @@ async fn test_m7_adv_sharded_store_100_tasks_50_keys_race() {
 
     let mut handles = Vec::new();
 
-    // 100 concurrent async tasks racing to consume the 50 keys (2 racers per key)
     for task_id in 0..100 {
         let store_clone = Arc::clone(&store);
         let handle = tokio::spawn(async move {
@@ -3048,7 +2825,6 @@ async fn test_m7_adv_sharded_store_100_tasks_50_keys_race() {
         }
     }
 
-    // Exactly 50 takes must succeed and exactly 50 must miss under atomic single-use semantics
     assert_eq!(
         total_takes, 50,
         "Exactly 50 state takes must succeed, got {total_takes}"
@@ -3061,7 +2837,6 @@ async fn test_m7_adv_sharded_store_100_tasks_50_keys_race() {
 
 #[test]
 fn test_m7_adv_formal_anti_vacuity_and_kani_proofs() {
-    // Execute all 5 formal proof models with reachability assertions
     proof_single_use_state_consumption();
     proof_ssrf_restricted_ip_rejection();
     proof_pkce_s256_verifier_bounds();
@@ -3070,14 +2845,12 @@ fn test_m7_adv_formal_anti_vacuity_and_kani_proofs() {
 
     let coverage = global_coverage();
     let required_tags = [
-        // 1. Single-use state
         "uninitialized_state_rejected",
         "state_inserted",
         "first_take_success",
         "second_take_rejected",
         "expired_state_rejected",
         "concurrent_race_single_winner",
-        // 2. SSRF
         "rfc1918_10_blocked",
         "rfc1918_172_blocked",
         "rfc1918_192_blocked",
@@ -3088,7 +2861,6 @@ fn test_m7_adv_formal_anti_vacuity_and_kani_proofs() {
         "ipv6_link_local_fe80_blocked",
         "ipv4_mapped_ipv6_blocked",
         "public_ip_allowed",
-        // 3. PKCE
         "valid_min_length_43_verifier",
         "valid_max_length_128_verifier",
         "valid_mid_length_verifier",
@@ -3096,14 +2868,12 @@ fn test_m7_adv_formal_anti_vacuity_and_kani_proofs() {
         "invalid_long_length_rejected",
         "invalid_character_rejected",
         "challenge_length_is_43",
-        // 4. Constant time
         "equal_non_empty_slices_true",
         "differing_first_byte_false",
         "differing_last_byte_false",
         "differing_middle_byte_false",
         "mismatched_length_false",
         "empty_slices_true",
-        // 5. DPoP HTU
         "query_stripped_success",
         "fragment_stripped_success",
         "port_443_stripped_success",
@@ -3123,7 +2893,6 @@ async fn test_m7_adv_wiremock_discovery_and_par_scenarios() {
     let base_uri = mock_server.uri();
     let ssrf_filter = SsrfFilter::new(true);
 
-    // 1. Scenario 1: Protected Resource Metadata returns empty authorization_servers
     let empty_as_meta = ProtectedResourceMetadata {
         resource: base_uri.clone(),
         authorization_servers: vec![],
@@ -3148,7 +2917,6 @@ async fn test_m7_adv_wiremock_discovery_and_par_scenarios() {
         Err(DiscoveryError::MissingAuthorizationServers(_))
     ));
 
-    // 2. Scenario 2: AS discovery falls back from /oauth-authorization-server (404) to /openid-configuration (200)
     let mock_server2 = MockServer::start().await;
     let base_uri2 = mock_server2.uri();
 
@@ -3171,11 +2939,15 @@ async fn test_m7_adv_wiremock_discovery_and_par_scenarios() {
             "authorization_code".to_string(),
             "refresh_token".to_string(),
         ],
-        token_endpoint_auth_methods_supported: vec!["none".to_string()],
-        token_endpoint_auth_signing_alg_values_supported: vec![],
+        token_endpoint_auth_methods_supported: vec![
+            "none".to_string(),
+            "private_key_jwt".to_string(),
+        ],
+        token_endpoint_auth_signing_alg_values_supported: vec!["ES256".to_string()],
         scopes_supported: vec!["atproto".to_string()],
         authorization_response_iss_parameter_supported: true,
         client_id_metadata_document_supported: true,
+        require_request_uri_registration: true,
     };
 
     Mock::given(method("GET"))
@@ -3193,12 +2965,10 @@ async fn test_m7_adv_wiremock_discovery_and_par_scenarios() {
     let as_meta = fallback_res.unwrap();
     assert_eq!(as_meta.issuer, base_uri2);
 
-    // 3. Scenario 3: PAR execution with 1-hop use_dpop_nonce auto-retry
     let mock_server3 = MockServer::start().await;
     let base_uri3 = mock_server3.uri();
     let par_endpoint = format!("{base_uri3}/oauth/par");
 
-    // First PAR request returns 400 with use_dpop_nonce and DPoP-Nonce header
     Mock::given(method("POST"))
         .and(path("/oauth/par"))
         .respond_with(
@@ -3213,7 +2983,6 @@ async fn test_m7_adv_wiremock_discovery_and_par_scenarios() {
         .mount(&mock_server3)
         .await;
 
-    // Second PAR request with fresh nonce returns 201 Created
     Mock::given(method("POST"))
         .and(path("/oauth/par"))
         .respond_with(
@@ -3252,7 +3021,6 @@ async fn test_m7_adv_wiremock_discovery_and_par_scenarios() {
         "urn:ietf:params:oauth:request_uri:req12345678"
     );
     assert_eq!(par_data.expires_in, 90);
-    // Nonces are cached per RFC 9449 server origin
     let server_origin = url::Url::parse(&par_endpoint)
         .unwrap()
         .origin()
@@ -3265,7 +3033,6 @@ async fn test_m7_adv_wiremock_discovery_and_par_scenarios() {
 
 #[test]
 fn test_m7_adv_authorization_url_query_preservation_and_form_encoding() {
-    // 1. Authorization URL building with existing query parameters
     let auth_endpoint = "https://auth.example.com/oauth/authorize?prompt=consent&ui_locales=en";
     let client_id = "https://app.example.com/client-metadata.json";
     let request_uri = "urn:ietf:params:oauth:request_uri:test_req_uri_123";
@@ -3290,7 +3057,6 @@ fn test_m7_adv_authorization_url_query_preservation_and_form_encoding() {
         Some(request_uri)
     );
 
-    // 2. ParParameters form-urlencoding with optional login_hint and client_assertion
     let params = ParParameters::new(
         client_id,
         "https://app.example.com/callback",

@@ -6,10 +6,7 @@ use skyauth::pkce::{derive_s256_challenge, validate_verifier, verify_pkce, PkceM
 
 #[test]
 fn test_rfc7636_appendix_b_official_test_vector() {
-    // Official test vector from RFC 7636 Appendix B:
-    // Code Verifier: dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk
-    // Code Challenge: E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM
-    // Method: S256
+    // RFC 7636 Appendix B official vector
     let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     let expected_challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 
@@ -29,18 +26,15 @@ fn test_rfc7636_appendix_b_official_test_vector() {
 
 #[test]
 fn test_pkce_generation_and_entropy_sizes() {
-    // Default 32 bytes entropy -> 43 base64url chars
     let pair = PkcePair::generate();
     assert_eq!(pair.verifier.len(), 43);
     assert_eq!(pair.challenge.len(), 43);
     assert!(pair.verify(&pair.verifier).is_ok());
 
-    // 48 bytes entropy -> 64 chars
     let pair48 = PkcePair::generate_with_entropy_size(48).expect("valid 48 bytes entropy");
     assert_eq!(pair48.verifier.len(), 64);
     assert!(pair48.verify(&pair48.verifier).is_ok());
 
-    // 96 bytes entropy -> 128 chars (max permitted length)
     let pair96 = PkcePair::generate_with_entropy_size(96).expect("valid 96 bytes entropy");
     assert_eq!(pair96.verifier.len(), 128);
     assert!(pair96.verify(&pair96.verifier).is_ok());
@@ -52,7 +46,6 @@ fn test_pkce_generation_and_entropy_sizes() {
 
 #[test]
 fn test_verifier_length_boundaries() {
-    // 42 characters (too short)
     let short = "a".repeat(42);
     assert!(matches!(
         validate_verifier(&short),
@@ -63,15 +56,12 @@ fn test_verifier_length_boundaries() {
         })
     ));
 
-    // 43 characters (valid minimum)
     let min_valid = "a".repeat(43);
     assert!(validate_verifier(&min_valid).is_ok());
 
-    // 128 characters (valid maximum)
     let max_valid = "a".repeat(128);
     assert!(validate_verifier(&max_valid).is_ok());
 
-    // 129 characters (too long)
     let long = "a".repeat(129);
     assert!(matches!(
         validate_verifier(&long),
@@ -85,12 +75,10 @@ fn test_verifier_length_boundaries() {
 
 #[test]
 fn test_verifier_unreserved_characters() {
-    // Valid unreserved characters: ALPHA / DIGIT / "-" / "." / "_" / "~"
     let all_allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~";
     assert!(all_allowed.len() >= 43);
     assert!(validate_verifier(all_allowed).is_ok());
 
-    // Invalid characters
     for forbidden in [
         ' ', '+', '/', '=', '@', ':', '?', '#', '[', ']', '!', '$', '&', '\'', '(', ')', '*', ',',
         ';', '%', 'ä', '🦀',

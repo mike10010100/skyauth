@@ -4,4 +4,4 @@
 #
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
-cc d0a5f857e58a2989526c958ad9e85f3c5b0acaacfb8e1db6a661a9ae493d615e # shrinks to res_host = "0a0.example.com", as_hosts = ["0a0.auth.com"], scopes = []
+cc a9d440ecc56177a90557fb132daae5bab2c887f384f253ae79431ee5d177fc65 # shrinks to verifier = "0-0-~Aaa0~~00A_-a0AaA_-a__0AA-~-A~_a~0~Aa~A", mutate_idx = 0

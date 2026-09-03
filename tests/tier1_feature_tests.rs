@@ -1,4 +1,4 @@
-//! Tier 1: Comprehensive Feature Coverage Test Suite for `atproto-oauth`.
+//! Tier 1: Comprehensive Feature Coverage Test Suite for `skyauth`.
 //!
 //! Covers all 25 features defined in `PROJECT.md` with >= 5 distinct test cases per feature (125+ tests total).
 //! Derived purely from RFC 9449, RFC 9126, RFC 7636, RFC 8414, RFC 9728, and ATProto OAuth specifications.
@@ -35,10 +35,6 @@ use skyauth::dpop::{
 };
 use skyauth::error::{DPoPError, PkceError};
 use skyauth::pkce::{derive_s256_challenge, validate_verifier, verify_pkce, PkcePair};
-
-// =========================================================================
-// FEATURE 1: Pure-Rust Cryptographic Primitives (5 Tests)
-// =========================================================================
 
 #[test]
 fn test_f1_01_p256_signature_raw_64_bytes() {
@@ -97,10 +93,6 @@ fn test_f1_05_constant_time_comparison() {
     assert!(constant_time_eq(b"", b""));
 }
 
-// =========================================================================
-// FEATURE 2: RFC 7638 JWK Thumbprints (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_f2_01_ec_p256_jwk_thumbprint_rfc9449_vector() {
     let jkt = jwk_thumbprint_ec_p256(RFC9449_JWK_X, RFC9449_JWK_Y);
@@ -139,10 +131,6 @@ fn test_f2_05_distinct_keys_produce_distinct_thumbprints() {
     let key2 = DPoPKey::generate();
     assert_ne!(key1.jwk_thumbprint(), key2.jwk_thumbprint());
 }
-
-// =========================================================================
-// FEATURE 3: RFC 7636 PKCE S256 (5 Tests)
-// =========================================================================
 
 #[test]
 fn test_f3_01_pkce_rfc7636_appendix_b_vector() {
@@ -191,10 +179,6 @@ fn test_f3_05_pkce_invalid_verifier_rejection() {
         Err(PkceError::InvalidVerifierCharacter { .. })
     ));
 }
-
-// =========================================================================
-// FEATURE 4: RFC 9449 DPoP Proof Engine (5 Tests)
-// =========================================================================
 
 #[test]
 fn test_f4_01_dpop_proof_generation_and_headers() {
@@ -271,10 +255,6 @@ fn test_f4_05_dpop_pkcs8_pem_key_roundtrip() {
     assert_eq!(original_key.jwk_thumbprint(), imported_key.jwk_thumbprint());
 }
 
-// =========================================================================
-// FEATURE 5: DPoP Verification & Nonce Cache (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_f5_01_dpop_verifier_valid_proof() {
     let key = DPoPKey::generate();
@@ -344,10 +324,6 @@ fn test_f5_05_extract_dpop_nonce_header() {
     assert_eq!(extract_dpop_nonce(None), None);
 }
 
-// =========================================================================
-// FEATURE 6: Handle Resolution Engine (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_f6_01_dns_txt_handle_resolution() {
     let dns = MockDnsResolver::new();
@@ -411,10 +387,6 @@ fn test_f6_05_dns_nxdomain_returns_none_for_https_fallback() {
         "NXDOMAIN must return None to allow HTTPS fallback"
     );
 }
-
-// =========================================================================
-// FEATURE 7: DID Resolution Engine (5 Tests)
-// =========================================================================
 
 #[tokio::test]
 async fn test_f7_01_did_plc_mock_resolution() {
@@ -482,10 +454,6 @@ fn test_f7_05_did_syntax_validation() {
     assert!(valid_web.starts_with("did:web:"));
     assert!(!invalid_prefix.starts_with("did:plc:") && !invalid_prefix.starts_with("did:web:"));
 }
-
-// =========================================================================
-// FEATURE 8: Service Endpoint Extraction (5 Tests)
-// =========================================================================
 
 #[test]
 fn test_f8_01_extract_atproto_pds_service() {
@@ -575,10 +543,6 @@ fn test_f8_05_service_endpoint_url_validation() {
     assert!(invalid_url.is_err());
 }
 
-// =========================================================================
-// FEATURE 9: OAuth Metadata Discovery (5 Tests)
-// =========================================================================
-
 #[tokio::test]
 async fn test_f9_01_rfc9728_protected_resource_metadata() {
     let env = MockOAuthEnvironment::start_default().await;
@@ -653,31 +617,27 @@ fn test_f9_05_require_pushed_authorization_requests_flag() {
     );
 }
 
-// =========================================================================
-// FEATURE 10: Strict SSRF & DNS Rebinding Filter (5 Tests)
-// =========================================================================
-
 fn is_restricted_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
-            v4.is_loopback()                           // 127.0.0.0/8
-            || v4.is_private()                         // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
-            || v4.is_link_local()                       // 169.254.0.0/16 (includes 169.254.169.254)
-            || v4.is_broadcast()                       // 255.255.255.255
-            || v4.is_unspecified()                     // 0.0.0.0
-            || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64) // CGNAT 100.64.0.0/10
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_unspecified()
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)
         }
         IpAddr::V6(v6) => {
-            v6.is_loopback()                           // ::1
-            || v6.is_unspecified()                     // ::
-            || ((v6.segments()[0] & 0xfe00) == 0xfc00) // ULA fc00::/7
-            || ((v6.segments()[0] & 0xffc0) == 0xfe80) // Link-local fe80::/10
-            || v6.is_multicast()                       // ff00::/8
-            || if let Some(mapped) = v6.to_ipv4_mapped() {
-                is_restricted_ip(IpAddr::V4(mapped))
-            } else {
-                false
-            }
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || ((v6.segments()[0] & 0xfe00) == 0xfc00)
+                || ((v6.segments()[0] & 0xffc0) == 0xfe80)
+                || v6.is_multicast()
+                || if let Some(mapped) = v6.to_ipv4_mapped() {
+                    is_restricted_ip(IpAddr::V4(mapped))
+                } else {
+                    false
+                }
         }
     }
 }
@@ -720,10 +680,6 @@ fn test_f10_05_ssrf_allows_public_ips() {
     assert!(!is_restricted_ip(cloudflare));
     assert!(!is_restricted_ip(google));
 }
-
-// =========================================================================
-// FEATURE 11: RFC 9126 PAR Flow (5 Tests)
-// =========================================================================
 
 #[tokio::test]
 async fn test_f11_01_par_success_roundtrip() {
@@ -797,10 +753,6 @@ fn test_f11_05_par_response_deserialization() {
     assert_eq!(val["expires_in"], 60);
 }
 
-// =========================================================================
-// FEATURE 12: Auth URL Generation (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_f12_01_construct_authorization_url() {
     let auth_endpoint = "https://auth.example.com/oauth/authorize";
@@ -854,10 +806,6 @@ fn test_f12_05_missing_request_uri_prevention() {
     let has_request_uri = params.iter().any(|(k, _)| *k == "request_uri");
     assert!(!has_request_uri);
 }
-
-// =========================================================================
-// FEATURE 13: Code Exchange & Token Rotation (5 Tests)
-// =========================================================================
 
 #[tokio::test]
 async fn test_f13_01_token_code_exchange_success() {
@@ -960,10 +908,6 @@ fn test_f13_05_dpop_ath_matching_during_resource_call() {
     assert_eq!(claims.ath, Some(expected_ath));
 }
 
-// =========================================================================
-// FEATURE 14: Transparent Auto-Nonce Loop (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_f14_01_nonce_cache_update_and_lookup() {
     let cache = DPoPNonceCache::new();
@@ -1053,10 +997,6 @@ fn test_f14_05_dpop_proof_regenerated_with_fresh_nonce() {
         .unwrap();
     assert_eq!(claims_2.nonce, Some("fresh_nonce_123".to_string()));
 }
-
-// =========================================================================
-// FEATURE 15: 64-Shard Partitioned State Store (5 Tests)
-// =========================================================================
 
 struct MockShardStateStore {
     shards: Vec<parking_lot::RwLock<HashMap<String, String>>>,
@@ -1155,10 +1095,6 @@ fn test_f15_05_store_independent_shard_locking() {
     );
 }
 
-// =========================================================================
-// FEATURE 16: Atomic Single-Use State Consumption (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_f16_01_single_use_first_call_returns_some() {
     let store = MockShardStateStore::new();
@@ -1218,10 +1154,6 @@ fn test_f16_05_state_consumption_leaves_store_empty() {
         assert!(shard.read().is_empty());
     }
 }
-
-// =========================================================================
-// FEATURE 17: Drift-Free TTL Pruning (5 Tests)
-// =========================================================================
 
 struct TimedEntry {
     data: String,
@@ -1312,10 +1244,6 @@ fn test_f17_05_zero_ttl_immediate_expiry() {
     assert!(entry.is_expired(1000));
 }
 
-// =========================================================================
-// FEATURE 18: Framework Adapters & Query Extraction (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_f18_01_parse_callback_query_string() {
     let query =
@@ -1376,10 +1304,6 @@ fn test_f18_05_authenticated_user_session_model() {
     assert_eq!(session["did"], TEST_ALICE_DID);
     assert_eq!(session["handle"], TEST_ALICE_HANDLE);
 }
-
-// =========================================================================
-// FEATURE 19: Bundled Lexicons & RFC Schemas (5 Tests)
-// =========================================================================
 
 #[test]
 fn test_f19_01_rfc8414_schema_structure() {
@@ -1471,10 +1395,6 @@ fn test_f19_05_lexicon_resolve_handle_schema() {
     });
     assert_eq!(lex["id"], "com.atproto.identity.resolveHandle");
 }
-
-// =========================================================================
-// FEATURE 20: Dynamic Runtime AST Schema Validation (5 Tests)
-// =========================================================================
 
 #[test]
 fn test_f20_01_rfc8414_runtime_ast_validation() {
@@ -1584,10 +1504,6 @@ fn test_f20_05_casing_mismatch_detected_by_ast_schema() {
     );
 }
 
-// =========================================================================
-// FEATURE 21: Upstream Spec Drift Verification (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_f21_01_spec_hash_stability() {
     let sample_spec = b"ATProto OAuth Spec v1";
@@ -1636,10 +1552,6 @@ fn test_f21_05_schema_diff_detector() {
     assert_ne!(upstream, local, "Diff detector must identify drift");
 }
 
-// =========================================================================
-// FEATURE 22: Verus Deductive Verification Contracts (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_f22_01_deductive_single_use_model() {
     let mut map = HashMap::new();
@@ -1683,10 +1595,6 @@ fn test_f22_05_deductive_ssrf_model() {
     let loopback = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
     assert!(is_restricted_ip(loopback));
 }
-
-// =========================================================================
-// FEATURE 23: Kani Anti-Vacuity Model Checking (5 Tests)
-// =========================================================================
 
 #[test]
 fn test_f23_01_anti_vacuity_cover_pkce_length_bounds() {
@@ -1755,15 +1663,10 @@ fn test_f23_05_anti_vacuity_cover_error_branch_reachability() {
     assert!(reached_err, "Error branch cover predicate reached");
 }
 
-// =========================================================================
-// FEATURE 24: E2E Opaque-Box Acceptance Suite (5 Tests)
-// =========================================================================
-
 #[tokio::test]
 async fn test_f24_01_e2e_full_discovery_chain() {
     let env = MockOAuthEnvironment::start_default().await;
 
-    // 1. Resolve Handle -> DID via DNS
     let did = env
         .dns
         .resolve_handle_txt(TEST_ALICE_HANDLE)
@@ -1771,7 +1674,6 @@ async fn test_f24_01_e2e_full_discovery_chain() {
         .unwrap();
     assert_eq!(did, TEST_ALICE_DID);
 
-    // 2. Fetch DID document -> PDS URL
     let client = reqwest::Client::new();
     let did_resp = client
         .get(format!("{}/{}", env.plc.uri(), did))
@@ -1784,7 +1686,6 @@ async fn test_f24_01_e2e_full_discovery_chain() {
         env.pds.uri()
     );
 
-    // 3. Fetch PDS metadata -> Auth Server URL
     let pds_resp = client
         .get(format!(
             "{}/.well-known/oauth-protected-resource",
@@ -1799,7 +1700,6 @@ async fn test_f24_01_e2e_full_discovery_chain() {
         env.auth_server.uri()
     );
 
-    // 4. Fetch Auth Server metadata -> PAR & Token URLs
     let as_resp = client
         .get(format!(
             "{}/.well-known/oauth-authorization-server",
@@ -1883,7 +1783,6 @@ async fn test_f24_03_e2e_protected_resource_call_with_dpop() {
 #[tokio::test]
 async fn test_f24_04_e2e_https_did_fallback_flow() {
     let env = MockOAuthEnvironment::start_default().await;
-    // DNS has no record for this handle
     let client = reqwest::Client::new();
     let resp = client
         .get(format!("{}/.well-known/atproto-did", env.pds.uri()))
@@ -1911,10 +1810,6 @@ fn test_f24_05_e2e_multi_session_isolation() {
     assert_eq!(store.take("session_user_alice"), None);
 }
 
-// =========================================================================
-// FEATURE 25: Adversarial Coverage Hardening (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_f25_01_adversarial_malformed_jwt_header_injection() {
     let verifier = DPoPVerifier::new();
@@ -1938,7 +1833,7 @@ fn test_f25_02_adversarial_tampered_signature_detection() {
 
     let mut parts: Vec<String> = proof.split('.').map(|s| s.to_string()).collect();
     let mut sig_bytes = base64url_decode(&parts[2]).unwrap();
-    sig_bytes[0] ^= 0xff; // Flip bits
+    sig_bytes[0] ^= 0xff;
     parts[2] = base64url_encode(&sig_bytes);
     let tampered_proof = parts.join(".");
 
@@ -1949,7 +1844,6 @@ fn test_f25_02_adversarial_tampered_signature_detection() {
 
 #[test]
 fn test_f25_03_adversarial_ssrf_bypass_payloads() {
-    // 0.0.0.0, 127.127.127.127, 169.254.169.254
     assert!(is_restricted_ip(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))));
     assert!(is_restricted_ip(IpAddr::V4(Ipv4Addr::new(
         127, 127, 127, 127
@@ -1964,11 +1858,9 @@ fn test_f25_04_adversarial_replay_attack_prevention() {
     let store = MockShardStateStore::new();
     store.insert("replay_state_123".to_string(), "valid_session".to_string());
 
-    // First use succeeds
     let first_use = store.take("replay_state_123");
     assert!(first_use.is_some());
 
-    // Replay attempt fails
     let replay_attempt = store.take("replay_state_123");
     assert!(replay_attempt.is_none());
 }
@@ -1980,7 +1872,6 @@ fn test_f25_05_adversarial_clock_skew_extreme_manipulation() {
     let proof = key.create_proof("POST", uri, None, None).unwrap();
 
     let verifier = DPoPVerifier::new();
-    // Verification with current time far in the past (clock skew > 1 hour)
     let past_time = SystemTime::now() - Duration::from_secs(3600);
     let res = verifier.verify_proof(&proof, "POST", uri, None, None, Some(past_time));
     assert!(matches!(res, Err(DPoPError::FutureProof { .. })));

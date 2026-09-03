@@ -191,7 +191,7 @@ pub fn verifying_key_from_coordinates(
     y_bytes: &[u8; 32],
 ) -> Result<VerifyingKey, CryptoError> {
     let mut sec1 = [0u8; 65];
-    sec1[0] = 0x04; // Uncompressed indicator
+    sec1[0] = 0x04;
     sec1[1..33].copy_from_slice(x_bytes);
     sec1[33..65].copy_from_slice(y_bytes);
 
@@ -334,10 +334,8 @@ mod tests {
 
         assert!(verify_p256_raw(verifying_key, message, &signature).is_ok());
 
-        // Tampered message must fail
         assert!(verify_p256_raw(verifying_key, b"Tampered message", &signature).is_err());
 
-        // Tampered signature must fail
         let mut tampered_sig = signature;
         tampered_sig[0] ^= 0xff;
         assert!(verify_p256_raw(verifying_key, message, &tampered_sig).is_err());

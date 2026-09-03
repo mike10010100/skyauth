@@ -75,44 +75,46 @@ Rust developers building high-performance ATProto services (feed generators, fir
 ### 4.1 Crate Architecture
 
 ```
-atproto-oauth/
+skyauth/
 ├── src/
 │   ├── lib.rs              # Crate root with #![forbid(unsafe_code)] and strict lints
 │   ├── client.rs           # High-level AtprotoOAuthClient interface
-│   ├── dpop.rs             # DPoPKey, JWK serialization, & RFC 9449 proof generator
+│   ├── crypto.rs           # P-256 signing/verification, SHA-256, HMAC, JWK thumbprints, constant_time_eq
+│   ├── dpop.rs             # DPoPKey, DPoPVerifier, JWK serialization, & RFC 9449 proof engine
+│   ├── discovery.rs        # RFC 8414 / RFC 9728 metadata discovery & AS capability enforcement
+│   ├── identity.rs         # Handle/DID resolution (DNS TXT, PLC, did:web) & bidirectional verification
+│   ├── par.rs              # RFC 9126 PAR execution & authorization-URL generation
 │   ├── pkce.rs             # PKCE code_verifier and S256 challenge helpers
-│   ├── resolver.rs         # DID, PDS, & RFC 8414/9728 metadata resolver
-│   ├── store.rs            # Sharded in-memory and pluggable OAuthStateStore traits
-│   ├── session.rs          # HMAC-SHA256 session signing & validation
-│   ├── security.rs         # SSRF validation, restricted IP filtering, constant_time_eq
-│   ├── types.rs            # Strongly-typed request, response, and metadata models
+│   ├── session.rs          # OAuthSession with token rotation & zeroization
+│   ├── ssrf.rs             # SsrfFilter: restricted IP/hostname filtering, DNS pinning, bounded bodies
+│   ├── store.rs            # 64-shard OAuthStateStore & pluggable OAuthStore trait
+│   ├── verification/       # Verus contracts, Kani harnesses, executable formal models
+│   ├── integrations/       # axum / actix / tower middleware, AccessTokenValidator implementations
 │   └── error.rs            # Strongly-typed AtprotoOAuthError enum
 ├── lexicons/               # Bundled official ATProto Lexicon schemas
 │   └── com/atproto/
 │       ├── identity/resolveHandle.json
-│       └── server/createSession.json
+│       └── server/{createSession,refreshSession}.json
 ├── schemas/                # Bundled official IETF RFC OAuth schemas
 │   ├── rfc8414_authorization_server.json
 │   ├── rfc9728_protected_resource.json
+│   ├── rfc9449_dpop_proof.json
 │   └── atproto_client_metadata.json
 ├── scripts/
-│   └── sync_specs.sh       # Automated upstream spec synchronization & drift verification
-├── tests/
-│   ├── dpop_rfc9449_vectors.rs
-│   ├── pkce_rfc7636_vectors.rs
-│   ├── discovery_tests.rs
-│   ├── token_exchange_tests.rs
-│   ├── schema_compliance_tests.rs # Dynamic runtime schema AST validation
-│   ├── kani_harnesses.rs          # Bounded model checking with anti-vacuity checks
-│   ├── verus_proofs.rs            # Deductive verification contracts
-│   └── adversarial_hardening_tests.rs
+│   ├── sync_specs.sh       # Automated upstream spec synchronization & drift verification
+│   └── run_verus.sh        # Pinned-release Verus deductive verification runner
+├── tests/                  # 25 test binaries: RFC vectors, tier suites, challenger stress suites
+│                           # (see TEST_READY.md for the exact inventory)
+├── .github/workflows/      # ci.yml, codeql.yml, mutation.yml (CI-only mutation sweep)
 ├── Cargo.toml
 ├── LICENSE-MIT
 ├── LICENSE-APACHE
 └── README.md
 ```
 
-### 4.2 Core API Signatures (Mockup)
+### 4.2 Core API Signatures (Original Mockup — superseded; see `README.md` and `src/lib.rs` for the shipped API)
+
+> **Note**: The signatures below are the pre-implementation design mockup. The shipped API differs (e.g. `AtprotoOAuthClient::builder()` with `.state_store()`/`.state_ttl()`, `authorize()` → `handle_callback()`), but the overall flow is preserved.
 
 ```rust
 use skyauth::{AtprotoOAuthClient, OAuthClientMetadata, OAuthStateStore};
@@ -155,9 +157,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 2. **Authorization Code Interception (RFC 7636)**:
    - S256 PKCE challenges ensure that only the entity possessing the original code verifier can complete the code exchange.
 3. **State Poisoning & CSRF**:
-   - OAuth state tokens are generated with 256 bits of cryptographic entropy, stored in a 64-shard partitioned memory store, and consumed atomically via `take` (single-use).
+   - OAuth state tokens are generated with 256 bits of cryptographic entropy, stored in a 64-shard partitioned memory store, and consumed atomically via `take_state` (single-use).
 4. **Server-Side Request Forgery (SSRF)**:
-   - All outbound network calls to PDS or authorization servers strictly pass through `validate_outbound_url` and `is_restricted_ip`, preventing loopback (`127.0.0.1`), private RFC 1918 egress, and cloud metadata (`169.254.169.254`) exfiltration.
+   - All outbound network calls to PDS or authorization servers strictly pass through `SsrfFilter::validate_url` / `validate_url_and_dns` and `is_restricted_ip`, preventing loopback (`127.0.0.1`), private RFC 1918 egress, and cloud metadata (`169.254.169.254`) exfiltration.
 5. **Timing Side-Channels**:
    - Signature checks and token verifications utilize constant-time slice comparison (`constant_time_eq`).
 
@@ -170,9 +172,9 @@ To provide mathematical certainty of security invariants without falling into LL
 ```mermaid
 graph TD
     A[Unit & Edge Tests - cargo test] --> B[Property Testing - proptest]
-    B --> C[Mutation Testing - cargo mutants]
-    C --> D[Deductive Verification - Verus]
-    C --> E[Bounded Model Checking - Kani with Cover Anti-Vacuity]
+    B --> D[Deductive Verification - Verus]
+    B --> E[Bounded Model Checking - Kani with Cover Anti-Vacuity]
+    B --> F[Mutation Testing - cargo-mutants, CI-only]
 ```
 
 #### Layer 1 (Primary): Verus Deductive Verification (`verus!`)
@@ -201,11 +203,16 @@ We leverage [**Verus**](https://github.com/verus-lang/verus) (Microsoft Research
 - **Contract 4: SSRF Restricted IP Rejection Invariant**:
   Prove that `is_restricted_ip(ip)` returns `true` for all loopback (`127.0.0.0/8`, `::1`), private RFC 1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local (`169.254.0.0/16`), and carrier-grade NAT ranges.
 
-#### Layer 2 (Complementary): Kani Bounded Model Checking with Anti-Vacuity Gates (`tests/kani_harnesses.rs`)
+#### Layer 2 (Complementary): Kani Bounded Model Checking with Anti-Vacuity Gates (`src/verification/kani_harnesses.rs`)
 For bit-level transformations and low-level byte packing:
 - All Kani harnesses (`#[kani::proof]`) **must enforce strict anti-vacuity**:
   1. Mandatory `kani::cover!()` reachability statements ensuring execution paths are actually exercised.
-  2. Proof validation via `cargo mutants` to prove that synthetic bug injection causes harnesses to fail.
+  2. Proof validation via `cargo-mutants` — enforced **exclusively through the weekly CI
+     sharded job** (`.github/workflows/mutation.yml`, 70% kill-rate floor per shard, with
+     formal-verification module sources excluded as they are the specification, not subject).
+     Do not run cargo-mutants locally: each mutant requires a full workspace copy
+     (~3 GB with build cache) in system temp space, and a parallel sweep peaked at ~60 GB,
+     filling a 927 GB disk. CI runners get an isolated copy that is destroyed at job end.
 
 ---
 
@@ -227,34 +234,64 @@ To prevent subtle schema divergence, naming errors, or casing bugs (e.g. `camelC
 
 ## 6. Implementation Milestones
 
-- [ ] **Milestone 1: Cryptographic & Token Primitives**
+- [x] **Milestone 1: Cryptographic & Token Primitives**
   - Extract `DPoPKey`, `PKCE`, `HMAC-SHA256`, and constant-time comparison into isolated modules.
   - Implement full RFC test vectors for RFC 7636 and RFC 9449.
-- [ ] **Milestone 2: Identity & Metadata Resolver**
+- [x] **Milestone 2: Identity & Metadata Resolver**
   - Implement handle resolution, `did:plc`, `did:web`, RFC 9728 protected resource discovery, and RFC 8414 metadata discovery.
   - Implement SSRF and restricted IP egress filters.
-- [ ] **Milestone 3: PAR & Token Exchange Pipeline**
+- [x] **Milestone 3: PAR & Token Exchange Pipeline**
   - Implement Pushed Authorization Requests (`/oauth/par`) with DPoP headers.
   - Implement `/oauth/token` exchange with automatic `DPoP-Nonce` replay-retry loop.
-- [ ] **Milestone 4: Storage & Web Framework Integrations**
+- [x] **Milestone 4: Storage & Web Framework Integrations**
   - Implement 64-shard `OAuthStateStore` with TTL pruning.
   - Provide Axum, Actix, and Tower middleware/handlers examples.
-- [ ] **Milestone 5: Dynamic Schema Compliance & Upstream Drift CI**
+- [x] **Milestone 5: Dynamic Schema Compliance & Upstream Drift CI**
   - Bundle official Lexicon and RFC schemas in `lexicons/` and `schemas/`.
   - Implement `tests/schema_compliance_tests.rs` with runtime AST validation.
   - Add `scripts/sync_specs.sh` and CI schema drift verification.
-- [ ] **Milestone 6: Verus & Kani Formal Verification Suite**
+- [x] **Milestone 6: Verus & Kani Formal Verification Suite**
   - Implement Verus specifications for `OAuthStateStore`, PKCE `S256` verification, and SSRF boundary filters.
-  - Implement `tests/kani_harnesses.rs` with mandatory `kani::cover!()` anti-vacuity reachability checks.
+  - Implement `src/verification/kani_harnesses.rs` with mandatory `kani::cover!()` anti-vacuity reachability checks.
   - Integrate formal verification checks into continuous integration pipeline.
-- [ ] **Milestone 7: Documentation, Benchmarks & Crates.io Publication**
+- [ ] **Milestone 7: Documentation, Benchmarks & Crates.io Publication** *(docs complete; latency benchmarks & crates.io publication pending → see §7.1 trade-off notes and release checklist)*
   - 100% rustdoc documentation coverage (`missing_docs` denied).
   - Latency benchmarks asserting $< 1.0\text{ms}$ proof generation.
-  - Publish `v0.1.0` to crates.io and GitHub.
+  - Publish `v0.2.0` to crates.io and GitHub. *(v0.1.0 published 2026-08-29; v0.2.0 hardening release in progress.)*
 
 ---
 
-## 7. Success Metrics & Performance SLAs
+## 7. Future Advancements & Accepted Trade-offs
+
+This section records deliberate engineering trade-offs made during 0.2.0 development, with the conditions under which each should be revisited.
+
+### 7.1 Per-Origin Pinned Client Pooling (Performance)
+
+**Current state**: `SsrfFilter::build_pinned_client` constructs a fresh `reqwest::Client` for every outbound request (and again per DPoP nonce retry), discarding connection pooling and TLS session reuse. A login flow pays 2-3 full TCP + TLS handshakes where a pooled client would pay one.
+
+**Why it is the right trade-off today**:
+- Skyauth's outbound traffic is low-volume, security-critical control flow (identity resolution, discovery, PAR, token exchange), not per-request fanout.
+- A shared client's connection pool outlives DNS re-validation: a pooled connection routed to a previously-approved IP silently bypasses the per-request `resolve()` pinning that defeats DNS rebinding. Simple, obviously-correct per-request pinning was preferred over pool-lifetime reasoning.
+- Costs are dominated by the same-path DPoP signing and state-store checks (all sub-millisecond), so handshake overhead only matters in already-fast network conditions.
+
+**Upgrade path (candidate for 0.3.0)**: implement a `PinnedClientCache` in `SsrfFilter`:
+- Keyed by origin, storing the verified `SocketAddr` alongside the pooled client.
+- TTL-based re-validation of resolved IPs on reuse, plus an explicit `invalidate(host)` hook.
+- Formal invariant to re-prove: pinned-IP stability across pool reuse (Kani/Verus property test that a cached client's socket address is re-validated, never stale).
+
+Opt-in via a builder knob; keep the current per-request behavior as the default until deployment profiling shows pooling matters more than audit simplicity.
+
+### 7.2 Shared Replay-Cache Backend (Horizontal Scale)
+
+**Current state**: `DPoPReplayCache` is per-process (`Arc`-sharded in-memory). Multi-replica deployments behind a load balancer have a wider replay exposure than the single-process guarantee implies — RFC 9449 § 11.1 bounds the exposure by the proof acceptance window, but strict multi-replica anti-replay needs a shared store (e.g. Redis) behind the `OAuthStore` trait's existing abstraction seam.
+
+### 7.3 Confidential-Client `private_key_jwt`
+
+Client metadata advertises `private_key_jwt` support (per the ATProto profile), and `ParParameters::with_client_assertion` carries the assertion fields, but the client never mints/attaches a signed client-assertion JWT automatically for confidential clients beyond `client_secret_post`. Auto-assertion generation (ES256-signed `client_assertion` bound to a registered JWKS) is a candidate for a 0.3.0 milestone.
+
+---
+
+## 8. Success Metrics & Performance SLAs
 
 - **Safety & Verification**: 100% `#![forbid(unsafe_code)]`, zero production panics, 100% passing Verus deductive contracts, and 100% passing Kani reachability proofs (`kani::cover`).
 - **Schema Conformity**: 100% pass rate on dynamic AST Lexicon & RFC schema validation tests with 0 schema drift in CI.

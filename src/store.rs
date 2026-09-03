@@ -130,6 +130,15 @@ pub struct OAuthStateStore {
     default_ttl: Duration,
 }
 
+impl std::fmt::Debug for OAuthStateStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthStateStore")
+            .field("num_shards", &NUM_SHARDS)
+            .field("default_ttl", &self.default_ttl)
+            .finish()
+    }
+}
+
 impl Default for OAuthStateStore {
     fn default() -> Self {
         Self::new(DEFAULT_STATE_TTL)
@@ -140,8 +149,6 @@ impl OAuthStateStore {
     /// Creates a new `OAuthStateStore` with the specified default TTL.
     #[must_use]
     pub fn new(default_ttl: Duration) -> Self {
-        // Construct array of 64 independent RwLock<HashMap>
-        // Utilizing a closure-based array initialization
         let shards = std::array::from_fn(|_| RwLock::new(HashMap::new()));
         Self {
             shards,
@@ -208,7 +215,6 @@ impl OAuthStateStore {
             if !record.is_expired(now) {
                 Some(record.entry)
             } else {
-                // Expired entry dropped immediately
                 None
             }
         } else {
@@ -376,14 +382,12 @@ mod tests {
         assert!(store.contains_state_sync(state));
         assert_eq!(store.total_entries(), 1);
 
-        // First take succeeds
         let consumed = store.take_state_sync(state);
         assert!(consumed.is_some());
         let consumed = consumed.unwrap();
         assert_eq!(consumed.state, state);
         assert_eq!(consumed.client_id, entry.client_id);
 
-        // Second take returns None
         let second_take = store.take_state_sync(state);
         assert!(second_take.is_none());
         assert!(!store.contains_state_sync(state));
@@ -400,7 +404,6 @@ mod tests {
             hit_shards.insert(store.shard_index(&key));
         }
 
-        // With 1000 random keys, we expect >= 58 shards out of 64 to be hit
         assert!(
             hit_shards.len() >= 55,
             "Shard distribution too sparse: hit {} shards out of 64",
@@ -461,7 +464,6 @@ mod tests {
                 Duration::from_secs(60),
             )
             .unwrap();
-        // Insert with 0 TTL to simulate expired
         store
             .insert_state_sync(
                 state_expired.to_string(),
@@ -474,10 +476,8 @@ mod tests {
         assert!(store.contains_state_sync(state_active));
         assert!(!store.contains_state_sync(state_expired));
 
-        // take_state on expired returns None and cleans up
         assert!(store.take_state_sync(state_expired).is_none());
 
-        // Re-insert expired to test prune_expired_sync
         store
             .insert_state_sync(
                 state_expired.to_string(),
@@ -534,11 +534,9 @@ mod tests {
 
         let handle = store.spawn_pruning_task(Duration::from_millis(20), cancel_token.clone());
 
-        // Wait for pruner to run at least once
         tokio::time::sleep(Duration::from_millis(60)).await;
         assert_eq!(store.total_entries(), 0);
 
-        // Cancel and await join
         cancel_token.cancel();
         let res = handle.await;
         assert!(res.is_ok());

@@ -1,4 +1,4 @@
-//! Adversarial Stress and Challenge Tests for Milestone 3 (atproto-oauth-rs).
+//! Adversarial Stress and Challenge Tests for Milestone 3 (skyauth).
 //!
 //! Focus areas:
 //! 1. Refresh token rotation: single-use enforcement, multi-hop invalidation, replay detection, concurrent rotation races.
@@ -37,13 +37,6 @@ use skyauth::ssrf::SsrfFilter;
 use e2e_harness::fixtures::*;
 use e2e_harness::MockOAuthEnvironment;
 
-// ============================================================================
-// Custom WireMock Responders for Stateful Protocol Emulation
-// ============================================================================
-
-/// Stateful responder tracking single-use refresh token rotation.
-///
-/// Ensures each refresh token can only be consumed once. Replay attempts receive HTTP 400 invalid_grant.
 struct StatefulRefreshTokenResponder {
     active_token: Mutex<String>,
     generation: AtomicUsize,
@@ -103,7 +96,6 @@ impl Respond for StatefulRefreshTokenResponder {
                         "sub": self.sub_did
                     }))
             } else {
-                // Stale / Replayed refresh token
                 ResponseTemplate::new(400)
                     .insert_header("content-type", "application/json")
                     .set_body_json(json!({
@@ -122,7 +114,6 @@ impl Respond for StatefulRefreshTokenResponder {
     }
 }
 
-/// Stateful responder ensuring authorization code single-use.
 struct SingleUseCodeResponder {
     valid_code: String,
     consumed: Mutex<bool>,
@@ -155,7 +146,6 @@ impl Respond for SingleUseCodeResponder {
         if let Some(code) = provided_code {
             if code == self.valid_code {
                 if *lock {
-                    // Already consumed!
                     ResponseTemplate::new(400)
                         .insert_header("content-type", "application/json")
                         .set_body_json(json!({
@@ -194,10 +184,6 @@ impl Respond for SingleUseCodeResponder {
     }
 }
 
-// ============================================================================
-// 1. REFRESH TOKEN ROTATION CHALLENGE TESTS
-// ============================================================================
-
 #[tokio::test]
 async fn test_refresh_token_rotation_single_use_and_replay_detection() {
     let auth_server = MockServer::start().await;
@@ -232,13 +218,11 @@ async fn test_refresh_token_rotation_single_use_and_replay_detection() {
         .build()
         .unwrap();
 
-    // 1. First rotation: rt_initial -> rt_gen_1
     client.refresh_session(&mut session).await.unwrap();
     let rt_gen_1 = session.refresh_token().unwrap().to_string();
     assert_ne!(rt_gen_1, initial_rt);
     assert!(session.access_token().starts_with("at_gen_1_"));
 
-    // 2. Attacker attempts to replay initial_rt: must be rejected with invalid_grant!
     let mut stale_session = OAuthSession::new(
         TEST_ALICE_DID,
         "at_stale",
@@ -266,13 +250,11 @@ async fn test_refresh_token_rotation_single_use_and_replay_detection() {
         "Expected invalid_grant on replay, got: {replay_res:?}"
     );
 
-    // 3. Legitimate user refreshes with rt_gen_1: succeeds and advances to rt_gen_2
     client.refresh_session(&mut session).await.unwrap();
     let rt_gen_2 = session.refresh_token().unwrap().to_string();
     assert_ne!(rt_gen_2, rt_gen_1);
     assert!(session.access_token().starts_with("at_gen_2_"));
 
-    // 4. Replaying rt_gen_1 now fails
     let mut stale_session_2 = OAuthSession::new(
         TEST_ALICE_DID,
         "at_stale",
@@ -333,7 +315,6 @@ async fn test_refresh_token_rotation_multi_hop_chain() {
 
     let mut past_tokens = vec![initial_rt.to_string()];
 
-    // Execute 10 consecutive rotations
     for hop in 1..=10 {
         client.refresh_session(&mut session).await.unwrap();
         let current_rt = session.refresh_token().unwrap().to_string();
@@ -343,7 +324,6 @@ async fn test_refresh_token_rotation_multi_hop_chain() {
         past_tokens.push(current_rt);
     }
 
-    // Verify all 10 previous tokens are dead
     for stale_rt in &past_tokens[..10] {
         let mut stale_session = OAuthSession::new(
             TEST_ALICE_DID,
@@ -456,7 +436,6 @@ async fn test_refresh_token_rotation_concurrent_race() {
 async fn test_refresh_token_omitted_by_server_sets_none() {
     let auth_server = MockServer::start().await;
 
-    // Server returns access_token without a new refresh_token
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
         .respond_with(
@@ -499,17 +478,12 @@ async fn test_refresh_token_omitted_by_server_sets_none() {
     assert_eq!(session.access_token(), "at_new_without_rt");
     assert_eq!(session.refresh_token(), None);
 
-    // Subsequent refresh attempts must immediately fail locally with MissingRefreshToken
     let next_err = client.refresh_session(&mut session).await;
     assert!(matches!(
         next_err,
         Err(AtprotoOAuthError::Token(TokenError::MissingRefreshToken))
     ));
 }
-
-// ============================================================================
-// 2. CONCURRENT TOKEN EXCHANGE & STATE PARAMETER TESTS
-// ============================================================================
 
 #[tokio::test]
 async fn test_concurrent_independent_logins_20_actors() {
@@ -553,13 +527,11 @@ async fn test_concurrent_independent_logins_20_actors() {
         assert_eq!(auth_req.state, stored_state.state);
         assert_eq!(stored_state.did.as_deref(), Some(TEST_ALICE_DID));
 
-        // State tokens must have 256-bit entropy and zero collisions
         assert!(
             state_tokens.insert(auth_req.state),
             "Detected state token collision!"
         );
 
-        // Ephemeral DPoP keypairs must be unique per session
         let jkt = stored_state.dpop_key.jwk_thumbprint();
         assert!(
             dpop_thumbprints.insert(jkt),
@@ -690,13 +662,14 @@ async fn test_callback_state_swapping_under_concurrency() {
         stored_states.push(entry);
     }
 
-    // Attempt callbacks where state parameter is mismatched/swapped with a different user
     for i in 0..user_count {
         let other_idx = (i + 1) % user_count;
         let swapped_cb = CallbackParams::new("auth_code_123", &stored_states[other_idx].state)
             .with_iss("https://auth.example.com");
 
-        let err = client.handle_callback(&swapped_cb, &stored_states[i]).await;
+        let err = client
+            .handle_callback_with_entry(&swapped_cb, &stored_states[i])
+            .await;
         assert!(
             matches!(
                 err,
@@ -743,7 +716,7 @@ async fn test_callback_issuer_tampering_variants() {
 
     for bad_iss in invalid_issuers {
         let cb = CallbackParams::new("code_123", "valid_state_123").with_iss(bad_iss);
-        let err = client.handle_callback(&cb, &state_entry).await;
+        let err = client.handle_callback_with_entry(&cb, &state_entry).await;
         assert!(
             matches!(
                 err,
@@ -753,12 +726,22 @@ async fn test_callback_issuer_tampering_variants() {
         );
     }
 
-    // Trailing slash normalization: https://auth.bsky.social/ vs https://auth.bsky.social
-    // (Both normalize to the same authority/path)
+    let missing_iss_cb = CallbackParams::new("code_123", "valid_state_123");
+    let err_missing_iss = client
+        .handle_callback_with_entry(&missing_iss_cb, &state_entry)
+        .await;
+    assert!(
+        matches!(
+            err_missing_iss,
+            Err(AtprotoOAuthError::Token(TokenError::MissingCallbackIssuer))
+        ),
+        "Missing callback iss must fail with MissingCallbackIssuer"
+    );
+
     let trailing_slash_cb =
         CallbackParams::new("code_123", "valid_state_123").with_iss("https://auth.bsky.social/");
     let res = client
-        .handle_callback(&trailing_slash_cb, &state_entry)
+        .handle_callback_with_entry(&trailing_slash_cb, &state_entry)
         .await;
     assert!(
         !matches!(
@@ -768,10 +751,6 @@ async fn test_callback_issuer_tampering_variants() {
         "Trailing slash in issuer should be normalized and pass issuer check"
     );
 }
-
-// ============================================================================
-// 3. TOKEN RESPONSE TAMPERING CHALLENGE TESTS
-// ============================================================================
 
 #[tokio::test]
 async fn test_token_response_sub_mismatch_and_empty_did_variants() {
@@ -852,7 +831,6 @@ async fn test_token_response_sub_mismatch_and_empty_did_variants() {
 async fn test_token_response_sub_tampering_during_refresh() {
     let auth_server = MockServer::start().await;
 
-    // Refresh response tries to swap Alice's session with Bob's DID
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
         .respond_with(
@@ -1079,7 +1057,50 @@ async fn test_token_response_missing_atproto_scope_variants() {
         );
     }
 
-    // Valid scopes containing "atproto" as distinct whitespace token
+    auth_server.reset().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({
+                    "access_token": "at_missing_scope",
+                    "token_type": "DPoP",
+                    "expires_in": 3600,
+                    "refresh_token": "rt_missing_scope",
+                    "sub": TEST_ALICE_DID
+                })),
+        )
+        .mount(&auth_server)
+        .await;
+
+    let state_entry_no_scope = StoredStateEntry {
+        state: "state_123".to_string(),
+        client_id: TEST_CLIENT_ID.to_string(),
+        code_verifier: "verifier_123".to_string(),
+        dpop_key: DPoPKey::generate(),
+        issuer: auth_server.uri(),
+        did: Some(TEST_ALICE_DID.to_string()),
+        handle: Some(TEST_ALICE_HANDLE.to_string()),
+        redirect_uri: TEST_REDIRECT_URI.to_string(),
+        pds_endpoint: "https://pds.example.com".to_string(),
+        token_endpoint: format!("{}/oauth/token", auth_server.uri()),
+        scopes: "atproto".to_string(),
+        created_at: SystemTime::now(),
+        expires_in_secs: 300,
+    };
+
+    let err_no_scope = client
+        .exchange_code("code_123", &state_entry_no_scope)
+        .await;
+    assert!(
+        matches!(
+            err_no_scope,
+            Err(AtprotoOAuthError::Token(TokenError::MissingScope))
+        ),
+        "Omitted scope must fail with MissingScope"
+    );
+
     let valid_scopes = vec![
         "atproto",
         "atproto transition:generic",
@@ -1266,18 +1287,18 @@ async fn test_token_response_http_error_codes_mapping() {
 async fn test_token_endpoint_ssrf_filtering() {
     let client = AtprotoOAuthClient::builder()
         .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
-        .allow_insecure_localhost(false) // Strict SSRF on
+        .allow_insecure_localhost(false)
         .build()
         .unwrap();
 
     let ssrf_endpoints = vec![
-        "http://169.254.169.254/latest/meta-data", // Cloud metadata
-        "http://127.0.0.1:8080/oauth/token",       // Loopback IPv4
-        "http://[::1]:8080/oauth/token",           // Loopback IPv6
-        "http://10.0.0.1/oauth/token",             // RFC 1918 Private
-        "http://192.168.1.1/oauth/token",          // RFC 1918 Private
-        "http://172.16.0.1/oauth/token",           // RFC 1918 Private
-        "http://100.64.0.1/oauth/token",           // CGNAT
+        "http://169.254.169.254/latest/meta-data",
+        "http://127.0.0.1:8080/oauth/token",
+        "http://[::1]:8080/oauth/token",
+        "http://10.0.0.1/oauth/token",
+        "http://192.168.1.1/oauth/token",
+        "http://172.16.0.1/oauth/token",
+        "http://100.64.0.1/oauth/token",
     ];
 
     for ssrf_url in ssrf_endpoints {

@@ -1,4 +1,4 @@
-//! Strongly-typed error definitions for `atproto-oauth`.
+//! Strongly-typed error definitions for `skyauth`.
 //!
 //! This module provides the central [`AtprotoOAuthError`] hierarchy along with
 //! specialized error types for cryptography, DPoP (RFC 9449), PKCE (RFC 7636),
@@ -6,7 +6,7 @@
 
 use thiserror::Error;
 
-/// Root error type encompassing all failure modes across the `atproto-oauth` library.
+/// Root error type encompassing all failure modes across the `skyauth` library.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum AtprotoOAuthError {
     /// Low-level cryptographic primitive failure.
@@ -215,6 +215,24 @@ pub enum DPoPError {
     #[error("DPoP nonce retry limit exceeded")]
     NonceRetryLimitExceeded,
 
+    /// The DPoP replay cache has reached capacity with live (unexpired) proofs.
+    ///
+    /// This is a server-side resource-exhaustion condition, not a defective client
+    /// proof; callers should map it to an HTTP 503-class response, not 401.
+    #[error(
+        "DPoP replay cache capacity saturated with active proofs (server-side resource exhaustion)"
+    )]
+    ReplayCacheSaturated,
+
+    /// The DPoP server-nonce cache has reached capacity with live (unexpired) nonces.
+    ///
+    /// Like [`DPoPError::ReplayCacheSaturated`], this is a server-side resource-
+    /// exhaustion condition; callers should map it to an HTTP 503-class response.
+    #[error(
+        "DPoP nonce cache capacity saturated with active nonces (server-side resource exhaustion)"
+    )]
+    NonceCacheSaturated,
+
     /// JSON or byte serialization failed.
     #[error("Serialization error: {0}")]
     Serialization(String),
@@ -327,6 +345,29 @@ pub enum TokenError {
     #[error("Invalid token signature")]
     InvalidSignature,
 
+    /// The access token is missing the required confirmation (`cnf.jkt`) claim.
+    #[error("Missing cnf.jkt confirmation claim in access token")]
+    MissingCnf,
+
+    /// The access token `cnf.jkt` binding does not match the presented DPoP key thumbprint.
+    #[error(
+        "DPoP key thumbprint mismatch: token cnf.jkt '{expected_jkt}' does not match proof jkt '{actual_jkt}'"
+    )]
+    CnfThumbprintMismatch {
+        /// Expected JWK thumbprint declared in token `cnf.jkt`.
+        expected_jkt: String,
+        /// Actual JWK thumbprint computed from the DPoP proof public key.
+        actual_jkt: String,
+    },
+
+    /// The access token is missing a required audience (`aud`) claim.
+    #[error("Missing required audience (aud) claim in access token")]
+    MissingAudience,
+
+    /// The access token is missing a required issuer (`iss`) claim.
+    #[error("Missing required issuer (iss) claim in access token")]
+    MissingIssuer,
+
     /// The token is missing the required Decentralized Identifier (`did`) subject.
     #[error("Missing or invalid subject/issuer DID")]
     MissingDid,
@@ -341,6 +382,18 @@ pub enum TokenError {
     /// The token format or claims payload is malformed.
     #[error("Malformed token: {0}")]
     MalformedToken(String),
+
+    /// The XRPC NSID fails ATProto NSID grammar validation.
+    #[error(
+        "Invalid NSID '{0}': must be a reverse-DNS, dot-separated identifier of at least three segments (total <=317 chars, each segment <=63 chars, ASCII alphanumerics and internal hyphens only, no leading/trailing hyphens, first segment starting with a letter, final name segment letters and digits only with no leading digit)"
+    )]
+    InvalidNsid(String),
+
+    /// The configured authorization state TTL is not a whole number of seconds.
+    #[error(
+        "Invalid state TTL {0:?}: must be a whole number of seconds (sub-second TTLs cannot be represented in StoredStateEntry)"
+    )]
+    InvalidStateTtl(std::time::Duration),
 
     /// Invalid token_type (must be case-insensitively "DPoP").
     #[error("Invalid token_type: expected 'DPoP', got '{0}'")]
@@ -385,6 +438,14 @@ pub enum TokenError {
     /// The OAuth state entry has expired.
     #[error("OAuth state entry has expired")]
     StateExpired,
+
+    /// The callback query is missing the mandatory RFC 9207 `iss` issuer parameter.
+    #[error("Callback query is missing mandatory RFC 9207 'iss' issuer parameter")]
+    MissingCallbackIssuer,
+
+    /// The token response is missing the mandatory `scope` field.
+    #[error("Token response is missing mandatory 'scope' field")]
+    MissingScope,
 
     /// HTTP error during token exchange or refresh.
     #[error("HTTP error during token operation: {0}")]
@@ -591,6 +652,27 @@ pub enum DiscoveryError {
     #[error("No authorization servers listed in protected resource metadata for PDS '{0}'")]
     MissingAuthorizationServers(String),
 
+    /// Protected Resource Metadata listed multiple authorization servers (ATProto requires exactly one).
+    #[error(
+        "Protected resource metadata declared {0} authorization servers; ATProto requires exactly one"
+    )]
+    MultipleAuthorizationServers(usize),
+
+    /// Authorization server URL in Protected Resource Metadata is not a valid origin.
+    #[error("Authorization server URL '{0}' is not a valid origin")]
+    InvalidAuthorizationServerUrl(String),
+
+    /// Protected Resource Metadata `resource` does not match the queried PDS origin.
+    #[error(
+        "Protected resource metadata resource '{actual}' does not match expected PDS origin '{expected}'"
+    )]
+    ResourceMismatch {
+        /// Expected PDS endpoint/origin.
+        expected: String,
+        /// Actual resource declared in metadata.
+        actual: String,
+    },
+
     /// Authorization Server Metadata discovery failed (RFC 8414).
     #[error("Authorization server metadata discovery failed: {0}")]
     AuthServerDiscoveryFailed(String),
@@ -617,6 +699,63 @@ pub enum DiscoveryError {
         "Authorization server '{0}' is missing required pushed_authorization_request_endpoint"
     )]
     MissingParEndpoint(String),
+
+    /// Authorization server metadata does not mandate pushed authorization requests (`require_pushed_authorization_requests` must be true).
+    #[error(
+        "Authorization server '{0}' does not mandate pushed authorization requests (require_pushed_authorization_requests must be true)"
+    )]
+    ParNotRequired(String),
+
+    /// Authorization server explicitly disabled RFC 9126 request_uri registration (`require_request_uri_registration` must not be false).
+    #[error(
+        "Authorization server '{0}' explicitly disabled require_request_uri_registration; the ATProto OAuth profile mandates it"
+    )]
+    MissingRequestUriRegistration(String),
+
+    /// Authorization server metadata is missing the required 'code' response type.
+    #[error("Authorization server '{0}' is missing required 'code' response type support")]
+    MissingResponseType(String),
+
+    /// Authorization server metadata is missing a required grant type (`authorization_code` or `refresh_token`).
+    #[error("Authorization server '{auth_server}' is missing required '{missing}' grant type")]
+    MissingGrantType {
+        /// Authorization server URL.
+        auth_server: String,
+        /// Missing grant type name.
+        missing: String,
+    },
+
+    /// Authorization server metadata is missing required token endpoint authentication methods (`none` AND `private_key_jwt`).
+    #[error(
+        "Authorization server '{0}' must advertise both required token endpoint authentication methods ('none' and 'private_key_jwt')"
+    )]
+    MissingTokenAuthMethod(String),
+
+    /// Authorization server is missing required `ES256` token endpoint authentication signing algorithm support.
+    #[error(
+        "Authorization server '{0}' is missing required ES256 in token_endpoint_auth_signing_alg_values_supported"
+    )]
+    MissingTokenAuthSigningAlg(String),
+
+    /// Authorization server advertised forbidden 'none' in token_endpoint_auth_signing_alg_values_supported.
+    #[error(
+        "Authorization server '{0}' advertised forbidden 'none' in token_endpoint_auth_signing_alg_values_supported"
+    )]
+    InvalidTokenAuthSigningAlg(String),
+
+    /// Authorization server metadata is missing required `atproto` scope in `scopes_supported`.
+    #[error("Authorization server '{0}' is missing required 'atproto' scope in scopes_supported")]
+    MissingAtprotoScope(String),
+
+    /// Authorization server metadata does not support RFC 9207 `iss` response parameter (`authorization_response_iss_parameter_supported` must be true).
+    #[error(
+        "Authorization server '{0}' does not support RFC 9207 authorization_response_iss_parameter_supported"
+    )]
+    MissingIssParameterSupport(String),
+
+    /// Authorization server metadata does not support client metadata document resolution (`client_id_metadata_document_supported` must be true).
+    #[error("Authorization server '{0}' does not support client_id_metadata_document_supported")]
+    MissingClientMetadataSupport(String),
 
     /// Authorization server metadata is missing the required token endpoint.
     #[error("Authorization server '{0}' is missing required token_endpoint")]

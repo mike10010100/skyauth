@@ -1,4 +1,4 @@
-//! Comprehensive E2E mock testing harness for `atproto-oauth`.
+//! Comprehensive E2E mock testing harness for `skyauth`.
 //!
 //! Provides opaque-box mock network servers (DNS, PLC Directory, PDS, Authorization Server)
 //! with fault injection, RFC test vectors, and standard ATProto test scenarios.
@@ -76,19 +76,15 @@ impl MockOAuthEnvironment {
         let handle = fixtures::TEST_ALICE_HANDLE;
         let did = fixtures::TEST_ALICE_DID;
 
-        // Configure DNS TXT record
         dns.register_handle_did(handle, did);
 
-        // Configure PLC Directory DID Document
         plc.mount_did_document(did, handle, &pds.uri()).await;
 
-        // Configure PDS endpoints
         pds.mount_https_did_fallback(did).await;
         pds.mount_protected_resource_metadata(&auth_server.uri())
             .await;
         pds.mount_xrpc_get_profile(did, handle).await;
 
-        // Configure Auth Server endpoints
         auth_server.mount_authorization_server_metadata().await;
         auth_server.mount_jwks().await;
 

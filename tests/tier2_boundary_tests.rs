@@ -1,4 +1,4 @@
-//! Tier 2: Boundary and Corner Case Test Suite for `atproto-oauth`.
+//! Tier 2: Boundary and Corner Case Test Suite for `skyauth`.
 //!
 //! Tests edge cases, extreme inputs, boundary conditions, and error paths across all 25 features.
 //! Covers >= 5 distinct boundary test cases per feature (125+ tests total).
@@ -24,6 +24,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use skyauth::client::StoredStateEntry;
 use skyauth::crypto::{
     base64url_decode, base64url_encode, constant_time_eq, hmac_sha256, jwk_thumbprint_ec_p256,
     sha256_digest, sign_p256_raw, verify_p256_raw,
@@ -34,10 +35,25 @@ use skyauth::dpop::{
 };
 use skyauth::error::{DPoPError, PkceError};
 use skyauth::pkce::{derive_s256_challenge, validate_verifier, verify_pkce, PkcePair};
+use skyauth::store::OAuthStateStore;
 
-// =========================================================================
-// FEATURE 1 (Boundary): Pure-Rust Crypto Primitives (5 Tests)
-// =========================================================================
+fn mock_state_entry(state: &str) -> StoredStateEntry {
+    StoredStateEntry {
+        state: state.to_string(),
+        client_id: "https://app.example.com/client.json".to_string(),
+        code_verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk".to_string(),
+        dpop_key: DPoPKey::generate(),
+        issuer: "https://auth.example.com".to_string(),
+        did: Some("did:plc:tier2test".to_string()),
+        handle: Some("alice.bsky.social".to_string()),
+        redirect_uri: "https://app.example.com/oauth/callback".to_string(),
+        pds_endpoint: "https://pds.example.com".to_string(),
+        token_endpoint: "https://auth.example.com/oauth/token".to_string(),
+        scopes: "atproto".to_string(),
+        created_at: SystemTime::now(),
+        expires_in_secs: 300,
+    }
+}
 
 #[test]
 fn test_b1_01_sha256_empty_input() {
@@ -76,13 +92,8 @@ fn test_b1_05_constant_time_comparison_empty_slices() {
     assert!(!constant_time_eq(b"a", b""));
 }
 
-// =========================================================================
-// FEATURE 2 (Boundary): RFC 7638 JWK Thumbprints (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_b2_01_jwk_thumbprint_exact_coordinate_sizes() {
-    // 32-byte coordinates encoded in Base64URL without padding
     let x_bytes = [0x01u8; 32];
     let y_bytes = [0x02u8; 32];
     let x_b64 = base64url_encode(&x_bytes);
@@ -99,7 +110,7 @@ fn test_b2_01_jwk_thumbprint_exact_coordinate_sizes() {
 #[test]
 fn test_b2_02_jwk_thumbprint_leading_zero_byte_coordinates() {
     let mut x_bytes = [0xAAu8; 32];
-    x_bytes[0] = 0x00; // Leading zero byte
+    x_bytes[0] = 0x00;
     let y_bytes = [0xBBu8; 32];
 
     let x_b64 = base64url_encode(&x_bytes);
@@ -134,10 +145,6 @@ fn test_b2_05_jwk_ec_to_verifying_key_roundtrip() {
     assert_eq!(jwk.thumbprint(), key.jwk_thumbprint());
     assert_eq!(vkey, key.public_jwk().to_verifying_key().unwrap());
 }
-
-// =========================================================================
-// FEATURE 3 (Boundary): RFC 7636 PKCE S256 (5 Tests)
-// =========================================================================
 
 #[test]
 fn test_b3_01_pkce_exact_min_length_43_chars() {
@@ -183,15 +190,10 @@ fn test_b3_04_pkce_boundary_rejection_129_chars() {
 
 #[test]
 fn test_b3_05_pkce_all_unreserved_characters() {
-    // Unreserved: A-Z, a-z, 0-9, '-', '.', '_', '~'
     let unreserved = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
     assert!(validate_verifier(unreserved).is_ok());
     assert!(PkcePair::from_verifier(unreserved.to_string()).is_ok());
 }
-
-// =========================================================================
-// FEATURE 4 (Boundary): RFC 9449 DPoP Proof Engine (5 Tests)
-// =========================================================================
 
 #[test]
 fn test_b4_01_htu_custom_port_preserved() {
@@ -233,10 +235,6 @@ fn test_b4_05_htu_query_and_fragment_stripped() {
     );
 }
 
-// =========================================================================
-// FEATURE 5 (Boundary): DPoP Verification & Nonce Cache (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_b5_01_clock_skew_within_positive_tolerance() {
     let key = DPoPKey::generate();
@@ -244,7 +242,6 @@ fn test_b5_01_clock_skew_within_positive_tolerance() {
     let proof = key.create_proof("POST", uri, None, None).unwrap();
 
     let verifier = DPoPVerifier::new();
-    // 59 seconds in past (within default 60s leeway)
     let past_time = SystemTime::now() - Duration::from_secs(59);
     assert!(verifier
         .verify_proof(&proof, "POST", uri, None, None, Some(past_time))
@@ -258,7 +255,6 @@ fn test_b5_02_clock_skew_exceeding_positive_tolerance() {
     let proof = key.create_proof("POST", uri, None, None).unwrap();
 
     let verifier = DPoPVerifier::new();
-    // 65 seconds in past (exceeds default 60s leeway)
     let past_time = SystemTime::now() - Duration::from_secs(65);
     assert!(matches!(
         verifier.verify_proof(&proof, "POST", uri, None, None, Some(past_time)),
@@ -273,7 +269,6 @@ fn test_b5_03_proof_age_within_limit() {
     let proof = key.create_proof("POST", uri, None, None).unwrap();
 
     let verifier = DPoPVerifier::new();
-    // 290 seconds in future (within 300s max proof age)
     let future_time = SystemTime::now() + Duration::from_secs(290);
     assert!(verifier
         .verify_proof(&proof, "POST", uri, None, None, Some(future_time))
@@ -287,7 +282,6 @@ fn test_b5_04_proof_age_exceeding_limit() {
     let proof = key.create_proof("POST", uri, None, None).unwrap();
 
     let verifier = DPoPVerifier::new();
-    // 305 seconds in future (exceeds 300s max proof age)
     let future_time = SystemTime::now() + Duration::from_secs(305);
     assert!(matches!(
         verifier.verify_proof(&proof, "POST", uri, None, None, Some(future_time)),
@@ -306,10 +300,6 @@ fn test_b5_05_dpop_header_case_insensitive_typ() {
         .verify_proof(&proof, "POST", uri, None, None, None)
         .is_ok());
 }
-
-// =========================================================================
-// FEATURE 6 (Boundary): Handle Resolution Engine (5 Tests)
-// =========================================================================
 
 #[test]
 fn test_b6_01_max_handle_length_244_chars() {
@@ -347,10 +337,6 @@ fn test_b6_05_disallowed_tlds() {
     }
 }
 
-// =========================================================================
-// FEATURE 7 (Boundary): DID Resolution Engine (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_b7_01_did_plc_minimum_length() {
     let did = "did:plc:1234567890abcdef12345678";
@@ -382,10 +368,6 @@ fn test_b7_05_unsupported_did_method_rejected() {
     let did_key = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH";
     assert!(!did_key.starts_with("did:plc:") && !did_key.starts_with("did:web:"));
 }
-
-// =========================================================================
-// FEATURE 8 (Boundary): Service Endpoint Extraction (5 Tests)
-// =========================================================================
 
 #[test]
 fn test_b8_01_empty_service_array() {
@@ -433,10 +415,6 @@ fn test_b8_05_relative_url_in_service_endpoint() {
     assert!(parsed.is_err());
 }
 
-// =========================================================================
-// FEATURE 9 (Boundary): OAuth Metadata Discovery (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_b9_01_metadata_missing_issuer() {
     let meta = json!({ "token_endpoint": "https://auth.com/token" });
@@ -469,10 +447,6 @@ fn test_b9_05_empty_authorization_servers_array() {
     let servers = pds_meta["authorization_servers"].as_array().unwrap();
     assert!(servers.is_empty());
 }
-
-// =========================================================================
-// FEATURE 10 (Boundary): Strict SSRF & DNS Rebinding Filter (5 Tests)
-// =========================================================================
 
 fn is_restricted_ip_b(ip: IpAddr) -> bool {
     match ip {
@@ -530,10 +504,6 @@ fn test_b10_05_ssrf_ipv6_unspecified_rejected() {
     assert!(is_restricted_ip_b(IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
 }
 
-// =========================================================================
-// FEATURE 11 (Boundary): RFC 9126 PAR Flow (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_b11_01_par_with_expired_dpop_proof_rejected() {
     let key = DPoPKey::generate();
@@ -589,10 +559,6 @@ fn test_b11_05_par_empty_client_id() {
     assert_eq!(encoded, "client_id=");
 }
 
-// =========================================================================
-// FEATURE 12 (Boundary): Auth URL Generation (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_b12_01_auth_url_special_characters_encoded() {
     let client_id = "https://app.com/oauth/client.json?v=1&x=2";
@@ -627,10 +593,6 @@ fn test_b12_05_auth_url_scheme_validation() {
     assert_eq!(url.scheme(), "https");
 }
 
-// =========================================================================
-// FEATURE 13 (Boundary): Code Exchange & Token Rotation (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_b13_01_code_exchange_empty_verifier() {
     assert!(validate_verifier("").is_err());
@@ -664,10 +626,6 @@ fn test_b13_05_token_expires_in_zero() {
     let resp = json!({ "expires_in": 0 });
     assert_eq!(resp["expires_in"], 0);
 }
-
-// =========================================================================
-// FEATURE 14 (Boundary): Transparent Auto-Nonce Loop (5 Tests)
-// =========================================================================
 
 #[test]
 fn test_b14_01_single_retry_loop_strictly_terminates() {
@@ -710,10 +668,6 @@ fn test_b14_05_nonce_trimmed() {
         Some("nonce-padded".to_string())
     );
 }
-
-// =========================================================================
-// FEATURE 15 (Boundary): 64-Shard Partitioned State Store (5 Tests)
-// =========================================================================
 
 #[test]
 fn test_b15_01_key_collisions_in_same_shard() {
@@ -767,10 +721,6 @@ fn test_b15_05_empty_string_key() {
     assert_eq!(map.remove(""), Some("empty_val"));
 }
 
-// =========================================================================
-// FEATURE 16 (Boundary): Atomic Single-Use State Consumption (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_b16_01_rapid_double_take() {
     let mut map = HashMap::new();
@@ -783,10 +733,20 @@ fn test_b16_01_rapid_double_take() {
 
 #[test]
 fn test_b16_02_single_use_after_expiry() {
-    let mut map = HashMap::new();
-    map.insert("k", "v");
-    map.clear(); // expired and pruned
-    assert_eq!(map.remove("k"), None);
+    let store = OAuthStateStore::new(Duration::from_millis(1));
+    store
+        .insert_state_sync(
+            "expired_state".to_string(),
+            mock_state_entry("expired_state"),
+            Duration::from_millis(1),
+        )
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    assert_eq!(store.contains_state_sync("expired_state"), false);
+    assert!(
+        store.take_state_sync("expired_state").is_none(),
+        "an expired state must never be consumable (single-use after expiry)"
+    );
 }
 
 #[test]
@@ -817,16 +777,38 @@ fn test_b16_05_zero_memory_leakage_after_consumption() {
     assert_eq!(map.len(), 0);
 }
 
-// =========================================================================
-// FEATURE 17 (Boundary): Drift-Free TTL Pruning (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_b17_01_clock_warp_backwards_saturation() {
-    let created_at: u64 = 5000;
-    let now: u64 = 1000; // Monotonic clock jumped backward
-    let elapsed = now.saturating_sub(created_at);
-    assert_eq!(elapsed, 0, "Saturating subtraction must evaluate to 0");
+    // Fail-closed invariant: a StoredStateEntry whose created_at lies in the
+    // future (clock stepped backward past creation) must report expired.
+    let mut entry = mock_state_entry("warp_state");
+    entry.created_at = std::time::SystemTime::now() + Duration::from_secs(3600);
+    entry.expires_in_secs = 300;
+    assert!(
+        entry.is_expired(),
+        "entry created in the future must fail closed as expired"
+    );
+
+    // The DPoP verifier mirrors the invariant via saturating math: a proof
+    // timestamped in the future beyond clock-skew leeway is rejected.
+    let verifier = DPoPVerifier::new().with_max_clock_skew(Duration::from_secs(1));
+    let key = DPoPKey::generate();
+    let proof = key
+        .create_proof("GET", "https://pds.example.com/xrpc/test", None, None)
+        .unwrap();
+    let now = std::time::SystemTime::now() - Duration::from_secs(10_000);
+    let err = verifier.verify_proof(
+        &proof,
+        "GET",
+        "https://pds.example.com/xrpc/test",
+        None,
+        None,
+        Some(now),
+    );
+    assert!(
+        matches!(err, Err(DPoPError::FutureProof { .. })),
+        "proof dated far in the future must be rejected as FutureProof, got {err:?}"
+    );
 }
 
 #[test]
@@ -863,10 +845,6 @@ fn test_b17_05_exact_timestamp_boundary() {
     assert!(1000 >= expires_at);
     assert!(999 < expires_at);
 }
-
-// =========================================================================
-// FEATURE 18 (Boundary): Framework Adapters (5 Tests)
-// =========================================================================
 
 #[test]
 fn test_b18_01_callback_extra_parameters_ignored() {
@@ -915,10 +893,6 @@ fn test_b18_05_empty_query_string() {
         .collect();
     assert!(parsed.is_empty());
 }
-
-// =========================================================================
-// FEATURE 19 (Boundary): Bundled Lexicons & RFC Schemas (5 Tests)
-// =========================================================================
 
 #[test]
 fn test_b19_01_schema_type_strictness() {
@@ -976,10 +950,6 @@ fn test_b19_05_schema_nested_object_validation() {
     assert!(!validator.is_valid(&json!({ "jwk": { "kty": "EC" } })));
 }
 
-// =========================================================================
-// FEATURE 20 (Boundary): Dynamic Runtime AST Schema Validation (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_b20_01_ast_validation_empty_object_on_required_schema() {
     let schema = json!({ "required": ["client_id"] });
@@ -1022,10 +992,6 @@ fn test_b20_05_ast_batch_validation_performance() {
     }
 }
 
-// =========================================================================
-// FEATURE 21 (Boundary): Upstream Spec Drift Verification (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_b21_01_identical_spec_diff_is_empty() {
     let spec1 = json!({ "k": "v" });
@@ -1060,10 +1026,6 @@ fn test_b21_05_array_items_change_diff() {
     let updated = json!({ "algorithms": ["ES256", "RS256"] });
     assert_ne!(original, updated);
 }
-
-// =========================================================================
-// FEATURE 22 (Boundary): Verus Deductive Verification Contracts (5 Tests)
-// =========================================================================
 
 #[test]
 fn test_b22_01_state_machine_valid_transition() {
@@ -1119,10 +1081,6 @@ fn test_b22_05_termination_guarantee_model() {
     assert_eq!(countdown, 0);
 }
 
-// =========================================================================
-// FEATURE 23 (Boundary): Kani Anti-Vacuity Model Checking (5 Tests)
-// =========================================================================
-
 #[test]
 fn test_b23_01_kani_cover_min_length_43() {
     let verifier = "a".repeat(43);
@@ -1157,10 +1115,6 @@ fn test_b23_05_kani_cover_shard_index_in_bounds() {
         assert!(idx < 64);
     }
 }
-
-// =========================================================================
-// FEATURE 24 (Boundary): E2E Opaque-Box Acceptance Suite (5 Tests)
-// =========================================================================
 
 #[tokio::test]
 async fn test_b24_01_pds_404_on_unknown_profile() {
@@ -1223,7 +1177,6 @@ fn test_b24_04_session_timeout_calculation() {
 
 #[test]
 fn test_b24_05_mock_environment_cleanup() {
-    // Verifies that instances terminate and clean up their resources
     let dns = MockDnsResolver::new();
     dns.register_handle_did("temp.user", "did:plc:temp");
     assert_eq!(
@@ -1231,10 +1184,6 @@ fn test_b24_05_mock_environment_cleanup() {
         Some("did:plc:temp".to_string())
     );
 }
-
-// =========================================================================
-// FEATURE 25 (Boundary): Adversarial Coverage Hardening (5 Tests)
-// =========================================================================
 
 #[test]
 fn test_b25_01_null_byte_in_handle_invalid() {
@@ -1256,7 +1205,6 @@ fn test_b25_03_jwt_alg_none_rejected() {
 
 #[test]
 fn test_b25_04_asn1_der_signature_length_rejection() {
-    // DER signatures for P-256 are 70-72 bytes, IEEE P1363 must be exactly 64 bytes
     let der_sig_len = 71;
     assert_ne!(der_sig_len, 64);
 }

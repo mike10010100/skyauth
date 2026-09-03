@@ -55,11 +55,6 @@ use skyauth::store::{OAuthStateStore, OAuthStore, DEFAULT_STATE_TTL, NUM_SHARDS}
 use e2e_harness::fixtures::*;
 use e2e_harness::MockOAuthEnvironment;
 
-// =========================================================================
-// SECTION 1: END-TO-END MULTI-HOP NONCE NEGOTIATION CHALLENGES & FUZZING
-// =========================================================================
-
-/// Helper to create a StoredStateEntry for testing
 fn create_test_state_entry(
     state: &str,
     token_endpoint: &str,
@@ -84,13 +79,11 @@ fn create_test_state_entry(
     }
 }
 
-/// 1.1: Multi-hop PAR auto-nonce retry sequence
 #[tokio::test]
 async fn test_adv_par_auto_nonce_retry_success() {
     let mock_server = MockServer::start().await;
     let par_url = format!("{}/oauth/par", mock_server.uri());
 
-    // Step 1: First attempt returns 400 use_dpop_nonce with fresh nonce
     Mock::given(method("POST"))
         .and(path("/oauth/par"))
         .respond_with(
@@ -106,7 +99,6 @@ async fn test_adv_par_auto_nonce_retry_success() {
         .mount(&mock_server)
         .await;
 
-    // Step 2: Retry with fresh nonce succeeds
     Mock::given(method("POST"))
         .and(path("/oauth/par"))
         .and(header_exists("dpop"))
@@ -146,7 +138,6 @@ async fn test_adv_par_auto_nonce_retry_success() {
     );
     assert_eq!(res.expires_in, 90);
 
-    // Verify cache updated with subsequent nonce
     let origin = url::Url::parse(&par_url)
         .unwrap()
         .origin()
@@ -157,13 +148,11 @@ async fn test_adv_par_auto_nonce_retry_success() {
     );
 }
 
-/// 1.2: Token endpoint auto-nonce retry during code exchange
 #[tokio::test]
 async fn test_adv_token_exchange_auto_nonce_retry() {
     let mock_server = MockServer::start().await;
     let token_endpoint = format!("{}/oauth/token", mock_server.uri());
 
-    // 1. First POST /oauth/token returns 400 use_dpop_nonce
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
         .respond_with(
@@ -179,7 +168,6 @@ async fn test_adv_token_exchange_auto_nonce_retry() {
         .mount(&mock_server)
         .await;
 
-    // 2. Second POST succeeds with fresh access & refresh tokens
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
         .respond_with(
@@ -223,13 +211,11 @@ async fn test_adv_token_exchange_auto_nonce_retry() {
     assert_eq!(session.refresh_token(), Some("rt-fresh-refresh-token-456"));
 }
 
-/// 1.3: Token refresh auto-nonce retry during session rotation
 #[tokio::test]
 async fn test_adv_token_refresh_auto_nonce_retry() {
     let mock_server = MockServer::start().await;
     let token_endpoint = format!("{}/oauth/token", mock_server.uri());
 
-    // 1. First refresh returns 401 use_dpop_nonce
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
         .respond_with(
@@ -245,7 +231,6 @@ async fn test_adv_token_refresh_auto_nonce_retry() {
         .mount(&mock_server)
         .await;
 
-    // 2. Second refresh returns rotated access & refresh tokens
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
         .respond_with(
@@ -295,13 +280,11 @@ async fn test_adv_token_refresh_auto_nonce_retry() {
     assert!(session.expires_at().is_some());
 }
 
-/// 1.4: Infinite nonce loop defense: Server persistently challenges with use_dpop_nonce
 #[tokio::test]
 async fn test_adv_infinite_nonce_loop_defense_bounded_retry() {
     let mock_server = MockServer::start().await;
     let par_url = format!("{}/oauth/par", mock_server.uri());
 
-    // Server always responds with 400 use_dpop_nonce
     Mock::given(method("POST"))
         .and(path("/oauth/par"))
         .respond_with(
@@ -330,7 +313,6 @@ async fn test_adv_infinite_nonce_loop_defense_bounded_retry() {
         &pkce.challenge,
     );
 
-    // Must return an error rather than hanging or looping indefinitely
     let res = execute_par_request(&ssrf_filter, &par_url, &params, &dpop_key, &nonce_cache).await;
     assert!(
         res.is_err(),
@@ -338,13 +320,11 @@ async fn test_adv_infinite_nonce_loop_defense_bounded_retry() {
     );
 }
 
-/// 1.5: Missing DPoP-Nonce header on use_dpop_nonce error challenge
 #[tokio::test]
 async fn test_adv_missing_dpop_nonce_header_on_challenge() {
     let mock_server = MockServer::start().await;
     let par_url = format!("{}/oauth/par", mock_server.uri());
 
-    // 400 use_dpop_nonce without dpop-nonce header
     Mock::given(method("POST"))
         .and(path("/oauth/par"))
         .respond_with(
@@ -379,28 +359,21 @@ async fn test_adv_missing_dpop_nonce_header_on_challenge() {
     );
 }
 
-/// 1.6: Nonce header fuzzing (empty, whitespace, unicode, oversized)
 #[test]
 fn test_adv_nonce_header_fuzzing_extraction() {
-    // Empty header
     assert_eq!(extract_dpop_nonce(Some("")), None);
-    // Whitespace only
     assert_eq!(extract_dpop_nonce(Some("   \t  \r\n ")), None);
-    // Valid trimmed
     assert_eq!(
         extract_dpop_nonce(Some("  valid_nonce_abc  ")),
         Some("valid_nonce_abc".to_string())
     );
-    // Unicode/emojis in header
     let unicode_res = extract_dpop_nonce(Some("nonce-🔐-secure-🚀"));
     assert_eq!(unicode_res, Some("nonce-🔐-secure-🚀".to_string()));
-    // Oversized 8KB nonce
     let giant_nonce = "A".repeat(8192);
     let giant_res = extract_dpop_nonce(Some(&giant_nonce));
     assert_eq!(giant_res, Some(giant_nonce));
 }
 
-/// 1.7: High-concurrency DPoP nonce cache oscillation stress
 #[tokio::test]
 async fn test_adv_rapid_nonce_oscillation_concurrency() {
     let cache = Arc::new(DPoPNonceCache::new());
@@ -428,11 +401,6 @@ async fn test_adv_rapid_nonce_oscillation_concurrency() {
     }
 }
 
-// =========================================================================
-// SECTION 2: CONCURRENT CODE EXCHANGE RACES & ANTI-REPLAY STRESS
-// =========================================================================
-
-/// 2.1: 50 concurrent tasks racing the exact same code and state in OAuthStateStore
 #[tokio::test]
 async fn test_adv_concurrent_50_tasks_racing_exact_same_code_and_state() {
     let mock_server = MockServer::start().await;
@@ -460,10 +428,10 @@ async fn test_adv_concurrent_50_tasks_racing_exact_same_code_and_state() {
         AtprotoOAuthClient::builder()
             .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
             .allow_insecure_localhost(true)
+            .state_store(Arc::clone(&store))
             .build()
             .unwrap(),
     );
-
     let state_key = "race-state-token-single-use-12345";
     let dpop_key = DPoPKey::generate();
     let state_entry = create_test_state_entry(
@@ -474,38 +442,41 @@ async fn test_adv_concurrent_50_tasks_racing_exact_same_code_and_state() {
         dpop_key,
     );
 
-    // Insert state entry once
     store
         .insert_state(state_key.to_string(), state_entry, Duration::from_secs(300))
         .await
         .unwrap();
 
     let concurrency = 50;
+    let issuer = mock_server.uri();
     let success_count = Arc::new(AtomicUsize::new(0));
-    let state_consumed_miss_count = Arc::new(AtomicUsize::new(0));
+    let invalid_state_count = Arc::new(AtomicUsize::new(0));
 
     let mut handles = Vec::with_capacity(concurrency);
     for _ in 0..concurrency {
         let store_clone = Arc::clone(&store);
         let client_clone = Arc::clone(&client);
         let success_clone = Arc::clone(&success_count);
-        let miss_clone = Arc::clone(&state_consumed_miss_count);
+        let invalid_clone = Arc::clone(&invalid_state_count);
+        let state_key_owned = state_key.to_string();
+        let issuer_owned = issuer.clone();
 
         handles.push(tokio::spawn(async move {
-            // Atomic single-use state consumption
-            let entry_opt = store_clone.take_state(state_key).await.unwrap();
-            match entry_opt {
-                Some(entry) => {
-                    let callback_params = CallbackParams::new("authz-code-race-1", state_key);
-                    let res = client_clone.handle_callback(&callback_params, &entry).await;
-                    if res.is_ok() {
-                        success_clone.fetch_add(1, Ordering::SeqCst);
-                    }
+            let callback_params =
+                CallbackParams::new("authz-code-race-1", state_key_owned).with_iss(issuer_owned);
+            let res = client_clone.handle_callback(&callback_params).await;
+            match res {
+                Ok(_) => {
+                    success_clone.fetch_add(1, Ordering::SeqCst);
                 }
-                None => {
-                    miss_clone.fetch_add(1, Ordering::SeqCst);
+                Err(skyauth::error::AtprotoOAuthError::Token(TokenError::InvalidState(_))) => {
+                    invalid_clone.fetch_add(1, Ordering::SeqCst);
+                }
+                Err(other) => {
+                    panic!("unexpected error in callback race: {other:?}");
                 }
             }
+            let _ = store_clone; // keep Arc alive for the task lifetime
         }));
     }
 
@@ -513,20 +484,18 @@ async fn test_adv_concurrent_50_tasks_racing_exact_same_code_and_state() {
         h.await.unwrap();
     }
 
-    // Strict single-use guarantee: Exactly 1 succeeds, 49 get None
     assert_eq!(
         success_count.load(Ordering::SeqCst),
         1,
-        "Exactly 1 concurrent task must successfully consume state and exchange code"
+        "Exactly 1 concurrent task must win the take_state race and complete the code exchange"
     );
     assert_eq!(
-        state_consumed_miss_count.load(Ordering::SeqCst),
+        invalid_state_count.load(Ordering::SeqCst),
         concurrency - 1,
-        "All other 49 concurrent tasks must observe state already consumed"
+        "All other 49 tasks must be rejected by atomic single-use state consumption"
     );
 }
 
-/// 2.2: 100 concurrent tasks racing with corrupted state parameters
 #[tokio::test]
 async fn test_adv_concurrent_100_tasks_racing_with_corrupted_states() {
     let client = AtprotoOAuthClient::builder()
@@ -552,8 +521,11 @@ async fn test_adv_concurrent_100_tasks_racing_with_corrupted_states() {
         let corrupted_state = format!("{valid_state}-corrupted-{i}");
 
         handles.push(tokio::spawn(async move {
-            let callback = CallbackParams::new("code-123", corrupted_state);
-            let res = client_clone.handle_callback(&callback, &entry_clone).await;
+            let callback = CallbackParams::new("code-123", corrupted_state)
+                .with_iss("https://auth.example.com");
+            let res = client_clone
+                .handle_callback_with_entry(&callback, &entry_clone)
+                .await;
             assert!(res.is_err(), "Corrupted state must be rejected");
         }));
     }
@@ -563,7 +535,6 @@ async fn test_adv_concurrent_100_tasks_racing_with_corrupted_states() {
     }
 }
 
-/// 2.3: Replaying authorization code after successful exchange fails
 #[tokio::test]
 async fn test_adv_code_replay_after_successful_exchange() {
     let mock_server = MockServer::start().await;
@@ -607,24 +578,21 @@ async fn test_adv_code_replay_after_successful_exchange() {
         .await
         .unwrap();
 
-    // 1st consumption: Succeeds
     let consumed1 = store.take_state(state_key).await.unwrap();
     assert!(consumed1.is_some());
     let session = client
-        .handle_callback(
-            &CallbackParams::new("code-replay-test", state_key),
+        .handle_callback_with_entry(
+            &CallbackParams::new("code-replay-test", state_key).with_iss(&mock_server.uri()),
             &consumed1.unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(session.sub(), TEST_ALICE_DID);
 
-    // 2nd consumption (Replay): Fails because state was removed
     let consumed2 = store.take_state(state_key).await.unwrap();
     assert!(consumed2.is_none(), "Replayed state must return None");
 }
 
-/// 2.4: State consumption racing with parallel TTL eviction
 #[tokio::test]
 async fn test_adv_state_consumption_racing_with_ttl_eviction() {
     let store = Arc::new(OAuthStateStore::new(Duration::from_millis(50)));
@@ -637,7 +605,6 @@ async fn test_adv_state_consumption_racing_with_ttl_eviction() {
         DPoPKey::generate(),
     );
 
-    // Insert with 1ms TTL
     store
         .insert_state(state_key.to_string(), state_entry, Duration::from_millis(1))
         .await
@@ -658,17 +625,11 @@ async fn test_adv_state_consumption_racing_with_ttl_eviction() {
     let entry_opt = take_res.unwrap();
     let _pruned_count = prune_res.unwrap();
 
-    // State is either taken or pruned, never corrupted
     if let Some(entry) = entry_opt {
         assert_eq!(entry.state, state_key);
     }
 }
 
-// =========================================================================
-// SECTION 3: STATE STORE HIGH-CONCURRENCY COLLISION & SHARDING STRESS
-// =========================================================================
-
-/// 3.1: 1000 tasks generating keys with potential hash collisions across 64 shards
 #[tokio::test]
 async fn test_adv_sharded_store_1000_tasks_hash_collision_stress() {
     let store = Arc::new(OAuthStateStore::default());
@@ -678,7 +639,6 @@ async fn test_adv_sharded_store_1000_tasks_hash_collision_stress() {
     for i in 0..num_tasks {
         let store_clone = Arc::clone(&store);
         handles.push(tokio::spawn(async move {
-            // Keys sharing prefixes to test hash distribution
             let state_key = format!("state_prefix_collision_test_key_{:06}", i);
             let entry = create_test_state_entry(
                 &state_key,
@@ -688,24 +648,20 @@ async fn test_adv_sharded_store_1000_tasks_hash_collision_stress() {
                 DPoPKey::generate(),
             );
 
-            // Insert
             store_clone
                 .insert_state(state_key.clone(), entry, Duration::from_secs(60))
                 .await
                 .unwrap();
 
-            // Verify contains
             assert!(
                 store_clone.contains_state(&state_key).await.unwrap(),
                 "Store must contain inserted state"
             );
 
-            // Take
             let taken = store_clone.take_state(&state_key).await.unwrap();
             assert!(taken.is_some(), "Must successfully take inserted state");
             assert_eq!(taken.unwrap().state, state_key);
 
-            // Verify removed
             assert!(
                 !store_clone.contains_state(&state_key).await.unwrap(),
                 "Store must no longer contain consumed state"
@@ -718,7 +674,6 @@ async fn test_adv_sharded_store_1000_tasks_hash_collision_stress() {
     }
 }
 
-/// 3.2: 50 parallel workers performing 5,000 interleaved chaos operations
 #[tokio::test]
 async fn test_adv_sharded_store_interleaved_crud_chaos() {
     let store = Arc::new(OAuthStateStore::default());
@@ -769,7 +724,6 @@ async fn test_adv_sharded_store_interleaved_crud_chaos() {
     }
 }
 
-/// 3.3: Extreme key fuzzing (empty, huge, control chars, unicode)
 #[tokio::test]
 async fn test_adv_sharded_store_extreme_key_fuzzing() {
     let store = OAuthStateStore::default();
@@ -792,26 +746,21 @@ async fn test_adv_sharded_store_extreme_key_fuzzing() {
             DPoPKey::generate(),
         );
 
-        // Insert
         store
             .insert_state(key.clone(), entry, Duration::from_secs(60))
             .await
             .unwrap();
 
-        // Contains
         assert!(store.contains_state(key).await.unwrap());
 
-        // Take
         let taken = store.take_state(key).await.unwrap();
         assert!(taken.is_some());
         assert_eq!(&taken.unwrap().state, key);
 
-        // Second take returns None
         assert!(store.take_state(key).await.unwrap().is_none());
     }
 }
 
-/// 3.4: Rapid pruner task spawn, cancellation, and restart cycles
 #[tokio::test]
 async fn test_adv_sharded_store_pruner_cancellation_cycles() {
     let store = Arc::new(OAuthStateStore::default());
@@ -821,26 +770,18 @@ async fn test_adv_sharded_store_pruner_cancellation_cycles() {
         let pruner_handle =
             store.spawn_pruning_task(Duration::from_millis(10), cancel_token.clone());
 
-        // Let pruner tick briefly
         tokio::time::sleep(Duration::from_millis(5)).await;
 
-        // Cancel
         cancel_token.cancel();
         let _ = pruner_handle.await;
     }
 }
 
-// =========================================================================
-// SECTION 4: REFRESH TOKEN REPLAY DETECTION & TOKEN ROTATION RACES
-// =========================================================================
-
-/// 4.1: Refresh token replay attack defense
 #[tokio::test]
 async fn test_adv_refresh_token_replay_attack() {
     let mock_server = MockServer::start().await;
     let token_endpoint = format!("{}/oauth/token", mock_server.uri());
 
-    // 1st Refresh: Returns new rotated token
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
         .respond_with(
@@ -859,7 +800,6 @@ async fn test_adv_refresh_token_replay_attack() {
         .mount(&mock_server)
         .await;
 
-    // 2nd Refresh with old token: Server rejects with invalid_grant (token revoked)
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
         .respond_with(
@@ -893,16 +833,14 @@ async fn test_adv_refresh_token_replay_attack() {
     )
     .unwrap();
 
-    // 1st Refresh succeeds and rotates tokens
     client.refresh_session(&mut session).await.unwrap();
     assert_eq!(session.access_token(), "at-rotated-v1");
     assert_eq!(session.refresh_token(), Some("rt-rotated-v2"));
 
-    // Stolen old refresh token replayed in a separate forged session
     let mut forged_session = OAuthSession::new(
         TEST_ALICE_DID.to_string(),
         "at-stolen".to_string(),
-        Some("rt-initial-v1".to_string()), // old token
+        Some("rt-initial-v1".to_string()),
         "DPoP".to_string(),
         Some("atproto".to_string()),
         Some(3600),
@@ -920,13 +858,11 @@ async fn test_adv_refresh_token_replay_attack() {
     );
 }
 
-/// 4.2: 50 concurrent tasks attempting to refresh the exact same session
 #[tokio::test]
 async fn test_adv_concurrent_50_tasks_racing_same_refresh_token() {
     let mock_server = MockServer::start().await;
     let token_endpoint = format!("{}/oauth/token", mock_server.uri());
 
-    // Single-use token: Exactly 1 request gets 200 OK, subsequent get 400 invalid_grant
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
         .respond_with(
@@ -1017,13 +953,11 @@ async fn test_adv_concurrent_50_tasks_racing_same_refresh_token() {
     );
 }
 
-/// 4.3: Refresh DID subject tampering rejection
 #[tokio::test]
 async fn test_adv_refresh_sub_did_tampering_rejection() {
     let mock_server = MockServer::start().await;
     let token_endpoint = format!("{}/oauth/token", mock_server.uri());
 
-    // Malicious server returns different sub (attacker DID)
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
         .respond_with(
@@ -1035,7 +969,7 @@ async fn test_adv_refresh_sub_did_tampering_rejection() {
                     "expires_in": 3600,
                     "refresh_token": "rt-tampered",
                     "scope": "atproto",
-                    "sub": "did:plc:maliciousattacker999" // TAMPERED DID
+                    "sub": "did:plc:maliciousattacker999"
                 })),
         )
         .mount(&mock_server)
@@ -1066,12 +1000,10 @@ async fn test_adv_refresh_sub_did_tampering_rejection() {
         res.is_err(),
         "Client must reject refresh response when subject DID is tampered"
     );
-    // Ensure session state remains unmutated
     assert_eq!(session.sub(), TEST_ALICE_DID);
     assert_eq!(session.access_token(), "at-original");
 }
 
-/// 4.4: Session token rotation and expiration validation
 #[test]
 fn test_adv_session_rotation_and_expiry_validation() {
     let key = DPoPKey::generate();
@@ -1092,7 +1024,6 @@ fn test_adv_session_rotation_and_expiry_validation() {
     assert!(!session.is_expired());
     assert!(!session.is_expired_with_leeway(Duration::from_secs(60)));
 
-    // Rotate tokens
     session.rotate_tokens(
         "new-access-token-789".to_string(),
         Some("new-refresh-token-012".to_string()),
@@ -1104,11 +1035,6 @@ fn test_adv_session_rotation_and_expiry_validation() {
     assert!(session.expires_at().is_some());
 }
 
-// =========================================================================
-// SECTION 5: UPSTREAM MOCK SERVER MALFORMED JSON RESPONSE BODIES
-// =========================================================================
-
-/// 5.1: Malformed Discovery Protected Resource JSON responses
 #[tokio::test]
 async fn test_adv_malformed_discovery_protected_resource_json() {
     let pds_server = MockServer::start().await;
@@ -1116,7 +1042,6 @@ async fn test_adv_malformed_discovery_protected_resource_json() {
         allow_insecure_localhost: true,
     };
 
-    // Test cases for malformed / broken JSON bodies
     let malformed_cases = vec![
         (
             "Truncated JSON",
@@ -1156,7 +1081,6 @@ async fn test_adv_malformed_discovery_protected_resource_json() {
     }
 }
 
-/// 5.2: Malformed Discovery Authorization Server JSON responses
 #[tokio::test]
 async fn test_adv_malformed_discovery_auth_server_json() {
     let as_server = MockServer::start().await;
@@ -1190,7 +1114,6 @@ async fn test_adv_malformed_discovery_auth_server_json() {
     }
 }
 
-/// 5.3: Malformed PAR JSON response bodies
 #[tokio::test]
 async fn test_adv_malformed_par_response_json() {
     let as_server = MockServer::start().await;
@@ -1248,7 +1171,6 @@ async fn test_adv_malformed_par_response_json() {
     }
 }
 
-/// 5.4: Malformed Token endpoint JSON response bodies
 #[tokio::test]
 async fn test_adv_malformed_token_response_json() {
     let as_server = MockServer::start().await;
@@ -1296,7 +1218,6 @@ async fn test_adv_malformed_token_response_json() {
     }
 }
 
-/// 5.5: Malformed PLC Directory DID Document JSON responses
 #[tokio::test]
 async fn test_adv_malformed_plc_did_document_json() {
     let plc_server = MockServer::start().await;
@@ -1332,9 +1253,7 @@ async fn test_adv_malformed_plc_did_document_json() {
             .build();
 
         let res = resolver.resolve_did(TEST_ALICE_DID).await;
-        // If DID doc parsing fails or handle verification fails, it must be caught
         if let Ok(doc) = res {
-            // Verify extraction of PDS or handle fails
             let pds_res = doc.extract_pds_endpoint();
             let handle_res = doc.verify_handle_bidirectional(TEST_ALICE_HANDLE);
             assert!(

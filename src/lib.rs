@@ -1,11 +1,11 @@
-//! # `atproto-oauth`
+//! # `skyauth`
 //!
 //! A pure safe Rust (`#![forbid(unsafe_code)]`), zero-panic OAuth 2.1 client library
 //! for the AT Protocol (Bluesky).
 //!
 //! ## Overview
 //!
-//! `atproto-oauth` provides production-grade implementations of the foundational
+//! `skyauth` provides production-grade implementations of the foundational
 //! security standards mandated by the AT Protocol OAuth 2.1 specification:
 //!
 //! - **RFC 9449 DPoP (Demonstrating Proof-of-Possession)**: Ephemeral ECDSA P-256 keypair
@@ -29,7 +29,9 @@
 //! - **OAuth 2.0 Discovery (RFC 8414 & RFC 9728)**: Protected Resource Metadata and Authorization
 //!   Server Metadata discovery with automatic OIDC fallback and capability enforcement.
 //! - **Strict SSRF & DNS Rebinding Security**: Full IP boundary filtering blocking RFC 1918 private IPs,
-//!   loopback, link-local / cloud metadata (`169.254.169.254`), IPv6 ULA, and DNS socket pinning.
+//!   loopback, link-local / cloud metadata (`169.254.169.254`), IPv6 ULA, deprecated 6to4 (`2002::/16`
+//!   blocked when its embedded IPv4 address is restricted)
+//!   and Teredo (`2001::/32`) tunneling prefixes, cloud-metadata/internal hostname blocking, and DNS socket pinning.
 //! - **Pure Safe Cryptography**: ECDSA P-256 (`p256`), SHA-256 (`sha2`), HMAC-SHA256 (`hmac`),
 //!   and constant-time equality comparisons (`subtle`).
 //! - **Zero-Panic Invariant**: Every fallible operation returns strongly typed [`AtprotoOAuthError`].
@@ -54,7 +56,7 @@
 //!
 //! // 4. Verify inbound DPoP proof
 //! let verifier = DPoPVerifier::new();
-//! let (claims, jwk) = verifier.verify_proof(
+//! let (claims, _jwk) = verifier.verify_proof(
 //!     &proof,
 //!     "POST",
 //!     "https://pds.example.com/oauth/token",
@@ -63,6 +65,40 @@
 //!     None,
 //! )?;
 //! assert_eq!(claims.htm, "POST");
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ### OAuth Client Lifecycle
+//!
+//! ```rust,no_run
+//! use skyauth::client::{AtprotoOAuthClient, CallbackParams, OAuthClientMetadata};
+//! use skyauth::store::OAuthStateStore;
+//! use std::sync::Arc;
+//! use std::time::Duration;
+//!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! let metadata = OAuthClientMetadata::new(
+//!     "https://my-app.example.com/client-metadata.json",
+//!     "https://my-app.example.com/oauth/callback",
+//! )
+//! .with_client_name("My ATProto App")
+//! .with_scope("atproto transition:generic");
+//!
+//! let state_store = Arc::new(OAuthStateStore::new(Duration::from_secs(300)));
+//! let client = AtprotoOAuthClient::builder()
+//!     .metadata(metadata)
+//!     .state_store(state_store)
+//!     .state_ttl(Duration::from_secs(300))
+//!     .build()?;
+//!
+//! // Initiate login with user handle or DID
+//! let auth_req = client.authorize("alice.bsky.social").await?;
+//!
+//! // Handle callback with code and state (atomically consumed)
+//! let callback_params = CallbackParams::new("auth_code", &auth_req.state)
+//!     .with_iss("https://bsky.social");
+//! let session = client.handle_callback(&callback_params).await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -109,7 +145,8 @@ pub use discovery::{
 };
 pub use dpop::{
     compute_access_token_hash, extract_dpop_nonce, normalize_htu, DPoPKey, DPoPNonceCache,
-    DPoPProofClaims, DPoPVerifier, JwkEc, DEFAULT_CLOCK_SKEW_LEEWAY, DEFAULT_MAX_PROOF_AGE,
+    DPoPProofClaims, DPoPReplayCache, DPoPServerNonceSource, DPoPVerifier,
+    InMemoryServerNonceSource, JwkEc, DEFAULT_CLOCK_SKEW_LEEWAY, DEFAULT_MAX_PROOF_AGE,
 };
 pub use error::{
     AtprotoOAuthError, CryptoError, DPoPError, DiscoveryError, IdentityError, IntegrationError,
@@ -120,12 +157,17 @@ pub use identity::{
     IdentityResolver, IdentityResolverBuilder, ResolvedIdentity, StandardDnsResolver,
     VerificationMethod, DEFAULT_PLC_DIRECTORY,
 };
-pub use integrations::{AuthenticatedUser, OAuthCallbackQuery, OAuthSessionExtension};
+pub use integrations::{
+    AccessTokenValidator, AuthenticatedUser, CnfClaim, InMemoryTokenValidator,
+    JwtAccessTokenClaims, JwtAccessTokenValidator, OAuthCallbackQuery, OAuthSessionExtension,
+    RegisteredToken,
+};
 pub use par::{build_authorization_url, execute_par_request, ParParameters, ParResponse};
 pub use pkce::{derive_s256_challenge, validate_verifier, verify_pkce, PkceMethod, PkcePair};
 pub use session::OAuthSession;
 pub use ssrf::{
-    is_blocked_hostname, is_restricted_ip, is_restricted_ipv4, is_restricted_ipv6, SsrfFilter,
+    is_blocked_hostname, is_restricted_ip, is_restricted_ipv4, is_restricted_ipv6,
+    read_bounded_body, SsrfFilter, MAX_OAUTH_RESPONSE_BYTES,
 };
 pub use store::{OAuthStateStore, OAuthStore, DEFAULT_STATE_TTL, NUM_SHARDS};
 pub use verification::{

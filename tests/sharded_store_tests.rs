@@ -52,14 +52,12 @@ fn test_deterministic_shard_distribution_across_64_shards() {
         hit_shards.insert(idx);
     }
 
-    // Assert that at least 60 of the 64 shards received items
     assert!(
         hit_shards.len() >= 60,
         "Expected at least 60/64 shards hit, but got {}",
         hit_shards.len()
     );
 
-    // Assert that no single shard received an extreme overload (e.g. > 15% of all keys)
     let max_in_shard = *shard_hits.iter().max().unwrap_or(&0);
     let max_fraction = (max_in_shard as f64) / (num_samples as f64);
     assert!(
@@ -133,19 +131,15 @@ fn test_concurrent_multishard_high_throughput_100_threads() {
                 let key = format!("state_thread_{t}_op_{i}");
                 let state = create_test_state(&key, 60);
 
-                // Insert
                 s.insert_state_sync(key.clone(), state, Duration::from_secs(60))
                     .unwrap();
 
-                // Contains check
                 assert!(s.contains_state_sync(&key));
 
-                // Take
                 let consumed = s.take_state_sync(&key);
                 assert!(consumed.is_some());
                 assert_eq!(consumed.unwrap().state, key);
 
-                // Re-take must fail
                 assert!(s.take_state_sync(&key).is_none());
             }
         }));
@@ -162,7 +156,6 @@ fn test_concurrent_multishard_high_throughput_100_threads() {
 fn test_ttl_immediate_expiry_and_pruning() {
     let store = OAuthStateStore::default();
 
-    // Insert 10 active states
     for i in 0..10 {
         let key = format!("active_state_{i}");
         store
@@ -174,7 +167,6 @@ fn test_ttl_immediate_expiry_and_pruning() {
             .unwrap();
     }
 
-    // Insert 15 expired states (0s TTL)
     for i in 0..15 {
         let key = format!("expired_state_{i}");
         store
@@ -184,16 +176,13 @@ fn test_ttl_immediate_expiry_and_pruning() {
 
     assert_eq!(store.total_entries(), 25);
 
-    // Prune expired
     let pruned = store.prune_expired_sync();
     assert_eq!(pruned, 15);
     assert_eq!(store.total_entries(), 10);
 
-    // Second prune should evict 0
     assert_eq!(store.prune_expired_sync(), 0);
     assert_eq!(store.total_entries(), 10);
 
-    // Clear store
     store.clear();
     assert_eq!(store.total_entries(), 0);
     assert!(store.is_empty());
@@ -205,26 +194,21 @@ async fn test_oauth_store_trait_async_lifecycle() {
     let key = "async_trait_key_999";
     let entry = create_test_state(key, 120);
 
-    // 1. Insert state
     store
         .insert_state(key.to_string(), entry.clone(), Duration::from_secs(120))
         .await
         .unwrap();
 
-    // 2. Contains state
     assert!(store.contains_state(key).await.unwrap());
     assert!(!store.contains_state("non_existent_key").await.unwrap());
 
-    // 3. Take state
     let taken = store.take_state(key).await.unwrap();
     assert!(taken.is_some());
     assert_eq!(taken.unwrap().state, key);
 
-    // 4. Repeated take returns None
     assert!(store.take_state(key).await.unwrap().is_none());
     assert!(!store.contains_state(key).await.unwrap());
 
-    // 5. Prune on empty returns 0
     assert_eq!(store.prune_expired().await.unwrap(), 0);
 }
 
@@ -233,7 +217,6 @@ async fn test_background_pruner_task_lifecycle_and_cancellation() {
     let store = Arc::new(OAuthStateStore::default());
     let cancel_token = CancellationToken::new();
 
-    // Insert expired items
     for i in 0..20 {
         let key = format!("bg_exp_{i}");
         store
@@ -242,10 +225,8 @@ async fn test_background_pruner_task_lifecycle_and_cancellation() {
     }
     assert_eq!(store.total_entries(), 20);
 
-    // Spawn background pruner with short interval
     let pruner_handle = store.spawn_pruning_task(Duration::from_millis(15), cancel_token.clone());
 
-    // Allow pruner tick with resilient polling
     let mut cleared = false;
     for _ in 0..50 {
         if store.total_entries() == 0 {
@@ -259,7 +240,6 @@ async fn test_background_pruner_task_lifecycle_and_cancellation() {
         "Store entries should have been pruned to 0 by background task"
     );
 
-    // Cancel token and join
     cancel_token.cancel();
     let res = pruner_handle.await;
     assert!(res.is_ok());

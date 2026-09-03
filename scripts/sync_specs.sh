@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# atproto-oauth-rs Upstream Specification & Lexicon Synchronization Script
+# skyauth Upstream Specification & Lexicon Synchronization Script
 # ==============================================================================
 # Verifies and synchronizes bundled AT Protocol Lexicons and RFC JSON Schemas
 # against canonical upstream sources with automated drift detection and offline fallback.
@@ -14,13 +14,12 @@
 
 set -euo pipefail
 
-# ANSI Color Codes
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -29,7 +28,6 @@ LEXICONS_DIR="${ROOT_DIR}/lexicons"
 SCHEMAS_DIR="${ROOT_DIR}/schemas"
 MANIFEST_FILE="${SCHEMAS_DIR}/.checksums.sha256"
 
-# Canonical Upstream Lexicon URLs
 RESOLVE_HANDLE_URL="https://raw.githubusercontent.com/bluesky-social/atproto/main/lexicons/com/atproto/identity/resolveHandle.json"
 CREATE_SESSION_URL="https://raw.githubusercontent.com/bluesky-social/atproto/main/lexicons/com/atproto/server/createSession.json"
 REFRESH_SESSION_URL="https://raw.githubusercontent.com/bluesky-social/atproto/main/lexicons/com/atproto/server/refreshSession.json"
@@ -50,7 +48,7 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1" >&2
 }
 
-# Cross-platform SHA256 checksum calculator
+# SHA256 calculator usable on any of sha256sum / shasum / openssl.
 calc_sha256() {
     local file="$1"
     if command -v sha256sum &>/dev/null; then
@@ -62,7 +60,9 @@ calc_sha256() {
     fi
 }
 
-# JSON syntax validator
+# JSON syntax validator. Fail closed: with no jq/python3/node available there is
+# no way to prove a payload is JSON, so validation fails rather than trusting a
+# non-empty file (sync would otherwise replace local specs with garbage).
 validate_json() {
     local file="$1"
     if command -v jq &>/dev/null; then
@@ -72,24 +72,63 @@ validate_json() {
     elif command -v node &>/dev/null; then
         node -e "JSON.parse(require('fs').readFileSync(process.argv[1]))" "${file}" >/dev/null 2>&1
     else
-        # Basic check if no JSON tool installed
-        test -s "${file}"
+        log_error "No JSON tool (jq, python3, or node) available; cannot validate ${file}."
+        return 1
     fi
 }
 
-# Format JSON in-place if tool available
+# Format JSON in-place when a formatting tool is available. Object keys are
+# recursively sorted so the checksummed canonical form is stable regardless of
+# the tool used or the key order upstream chose; otherwise two byte-different
+# but semantically identical files would be reported as drift.
 format_json() {
     local file="$1"
     if command -v jq &>/dev/null; then
         local tmp="${file}.tmp.$$"
-        jq . "${file}" > "${tmp}" && mv "${tmp}" "${file}"
+        if jq -S . "${file}" > "${tmp}" 2>/dev/null; then
+            mv "${tmp}" "${file}"
+        else
+            rm -f "${tmp}"
+            return 1
+        fi
     elif command -v python3 &>/dev/null; then
         local tmp="${file}.tmp.$$"
-        python3 -m json.tool "${file}" > "${tmp}" && mv "${tmp}" "${file}"
+        if python3 -c '
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+with open(sys.argv[1] + ".sorted.tmp", "w") as f:
+    json.dump(data, f, indent=2, sort_keys=True)
+    f.write("\n")
+' "${file}" 2>/dev/null; then
+            mv "${file}.sorted.tmp" "${file}"
+        else
+            rm -f "${file}.sorted.tmp"
+            return 1
+        fi
+    elif command -v node &>/dev/null; then
+        local tmp="${file}.tmp.$$"
+        if node -e '
+const fs = require("fs");
+const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const sorted = (v) => {
+  if (Array.isArray(v)) return v.map(sorted);
+  if (v && typeof v === "object") {
+    return Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, val]) => [k, sorted(val)]));
+  }
+  return v;
+};
+fs.writeFileSync(process.argv[1] + ".sorted.tmp", JSON.stringify(sorted(data), null, 2) + "\n");
+' "${file}" 2>/dev/null; then
+            mv "${file}.sorted.tmp" "${file}"
+        else
+            rm -f "${file}.sorted.tmp"
+            return 1
+        fi
     fi
 }
 
-# List of all canonical managed files relative to ROOT_DIR
+# Canonical managed files relative to ROOT_DIR.
 get_managed_files() {
     cat <<EOF
 lexicons/com/atproto/identity/resolveHandle.json
@@ -102,7 +141,7 @@ schemas/atproto_client_metadata.json
 EOF
 }
 
-# Generate checksums manifest for all managed files
+# Generate the checksums manifest for all managed files.
 generate_manifest() {
     log_info "Updating checksum manifest at ${MANIFEST_FILE}..."
     mkdir -p "$(dirname "${MANIFEST_FILE}")"
@@ -125,12 +164,13 @@ generate_manifest() {
     log_success "Checksum manifest updated successfully."
 }
 
-# Verify mode: Check existence, validity, and manifest checksums
+# Verify local files against the manifest and upstream canonical sources.
 verify_specs() {
-    log_info "Running upstream specification drift verification..."
+    log_info "Running specification drift verification..."
     local drift_detected=0
+    local fetch_failed=0
+    local curl_cmd="curl -fsSL --connect-timeout 4 --max-time 10"
 
-    # 1. Verify existence and JSON validity
     while IFS= read -r rel_path; do
         local full_path="${ROOT_DIR}/${rel_path}"
         if [[ ! -f "${full_path}" ]]; then
@@ -146,15 +186,16 @@ verify_specs() {
         fi
     done < <(get_managed_files)
 
-    # 2. Check against manifest
     if [[ ! -f "${MANIFEST_FILE}" ]]; then
-        log_warn "Checksum manifest ${MANIFEST_FILE} does not exist. Generating initial manifest..."
-        generate_manifest
-        log_success "Verification passed (manifest created)."
-        return 0
+        # Fail closed: verification must not bootstrap its own trust anchor. A
+        # missing manifest means checksums cannot be validated, so --verify fails;
+        # manifest creation is reserved for the explicit --generate-manifest command.
+        log_error "Checksum manifest ${MANIFEST_FILE} does not exist; verification cannot proceed."
+        log_error "Run '${0##*/} --generate-manifest' to create it from the current files, then re-verify."
+        return 1
     fi
 
-    log_info "Verifying SHA-256 checksums against manifest..."
+    log_info "Verifying SHA-256 checksums against local manifest..."
     while IFS= read -r line; do
         [[ -z "${line}" || "${line}" =~ ^# ]] && continue
         local expected_csum
@@ -173,7 +214,7 @@ verify_specs() {
         actual_csum=$(calc_sha256 "${full_path}")
 
         if [[ "${expected_csum}" != "${actual_csum}" ]]; then
-            log_error "DRIFT DETECTED in ${rel_path}!"
+            log_error "LOCAL DRIFT DETECTED in ${rel_path}!"
             log_error "  Expected SHA-256: ${expected_csum}"
             log_error "  Actual SHA-256:   ${actual_csum}"
             drift_detected=1
@@ -182,28 +223,87 @@ verify_specs() {
         fi
     done < "${MANIFEST_FILE}"
 
+    log_info "Checking upstream canonical repositories for specification drift..."
+    check_upstream_drift() {
+        local url="$1"
+        local rel_path="$2"
+        local full_path="${ROOT_DIR}/${rel_path}"
+        local tmp_upstream
+        tmp_upstream=$(mktemp 2>/dev/null || mktemp -t 'upstream_spec')
+
+        if ${curl_cmd} "${url}" -o "${tmp_upstream}" 2>/dev/null; then
+            if validate_json "${tmp_upstream}"; then
+                format_json "${tmp_upstream}"
+                
+                local tmp_local
+                tmp_local=$(mktemp 2>/dev/null || mktemp -t 'local_spec')
+                cp "${full_path}" "${tmp_local}"
+                if validate_json "${tmp_local}"; then
+                    format_json "${tmp_local}"
+                fi
+
+                local upstream_csum
+                local local_csum
+                upstream_csum=$(calc_sha256 "${tmp_upstream}")
+                local_csum=$(calc_sha256 "${tmp_local}")
+                rm -f "${tmp_local}"
+
+                if [[ "${upstream_csum}" != "${local_csum}" ]]; then
+                    log_error "UPSTREAM DRIFT DETECTED in ${rel_path}!"
+                    log_error "  Local SHA-256:    ${local_csum}"
+                    log_error "  Upstream SHA-256: ${upstream_csum}"
+                    log_error "  Run ./scripts/sync_specs.sh --sync to update local specs."
+                    drift_detected=1
+                else
+                    echo -e "  [UPSTREAM MATCH] ${rel_path} matches upstream canonical source."
+                fi
+            else
+                log_warn "Upstream returned non-JSON payload for ${rel_path}."
+            fi
+            rm -f "${tmp_upstream}"
+        else
+            # A failed fetch means upstream state is UNKNOWN — never report it as
+            # verified. Count the failure so strict verification mode can fail.
+            log_error "  [FETCH FAILED] Upstream endpoint unreachable for ${rel_path}; upstream drift status UNVERIFIED."
+            fetch_failed=$((fetch_failed + 1))
+            rm -f "${tmp_upstream}"
+        fi
+    }
+
+    check_upstream_drift "${RESOLVE_HANDLE_URL}" "lexicons/com/atproto/identity/resolveHandle.json"
+    check_upstream_drift "${CREATE_SESSION_URL}" "lexicons/com/atproto/server/createSession.json"
+    check_upstream_drift "${REFRESH_SESSION_URL}" "lexicons/com/atproto/server/refreshSession.json"
+
     if [[ ${drift_detected} -ne 0 ]]; then
-        log_error "Specification drift check FAILED! Local files have been modified or are corrupted."
+        log_error "Specification drift check FAILED! Local files differ from manifest or upstream."
         return 1
     fi
 
-    log_success "All canonical Lexicons and RFC schemas match manifest. Zero drift detected."
+    if [[ ${fetch_failed} -ne 0 ]]; then
+        log_error "Specification verification INCOMPLETE: ${fetch_failed} upstream fetch(es) failed; upstream drift could NOT be verified."
+        log_error "Set SYNC_SPECS_ALLOW_OFFLINE=1 to accept manifest-only verification for offline development."
+        # Status 3 distinguishes "manifest verified, upstream UNVERIFIED" from hard
+        # drift (1) so the caller can apply the offline escape hatch to exactly this
+        # case. Function-local variables are not visible to main().
+        return 3
+    fi
+
+    log_success "All canonical Lexicons and RFC schemas match manifest and upstream. Zero drift detected."
     return 0
 }
 
-# Sync mode: Download latest specs if online, format, and regenerate manifest
+# Sync mode: fetch latest specs when online, format, and regenerate the manifest.
 sync_specs() {
     log_info "Synchronizing canonical Lexicons and RFC schemas from upstream..."
 
     local curl_cmd="curl -fsSL --connect-timeout 5 --max-time 15"
     local sync_errors=0
 
-    # Ensure target directories exist
     mkdir -p "${LEXICONS_DIR}/com/atproto/identity"
     mkdir -p "${LEXICONS_DIR}/com/atproto/server"
     mkdir -p "${SCHEMAS_DIR}"
 
-    # Helper function to fetch file with fallback
+    # Fetch to a temp file; fall back to the existing local copy on any failure.
     fetch_file() {
         local url="$1"
         local dest="$2"
@@ -235,16 +335,20 @@ sync_specs() {
     fetch_file "${CREATE_SESSION_URL}" "${LEXICONS_DIR}/com/atproto/server/createSession.json" "com.atproto.server.createSession"
     fetch_file "${REFRESH_SESSION_URL}" "${LEXICONS_DIR}/com/atproto/server/refreshSession.json" "com.atproto.server.refreshSession"
 
-    # Format existing schemas
     while IFS= read -r rel_path; do
         local full_path="${ROOT_DIR}/${rel_path}"
-        if [[ -f "${full_path}" ]]; then
-            format_json "${full_path}"
+        if [[ -f "${full_path}" ]] && ! format_json "${full_path}"; then
+            log_error "Failed to format ${rel_path}; aborting sync before manifest regeneration."
+            return 1
         fi
     done < <(get_managed_files)
 
-    # Regenerate checksum manifest
-    generate_manifest
+    # Fail closed on manifest generation: a silent manifest failure would let
+    # unverified content look committed. (Errexit is active outside --verify.)
+    if ! generate_manifest; then
+        log_error "Manifest regeneration failed; aborting sync."
+        return 1
+    fi
 
     if [[ ${sync_errors} -gt 0 ]]; then
         log_warn "Sync completed with ${sync_errors} offline/network fallbacks. Local specs preserved."
@@ -255,7 +359,7 @@ sync_specs() {
 
 show_help() {
     cat <<EOF
-atproto-oauth-rs Upstream Specification Drift Guard
+skyauth Upstream Specification Drift Guard
 
 Usage:
   $(basename "$0") [command]
@@ -267,16 +371,19 @@ Commands:
   --help, -h           Show this help message
 
 Exit Codes:
-  0   All specifications valid and matching manifest (no drift)
+  0   All specifications valid and matching manifest AND upstream (no drift)
   1   Drift detected, missing files, or invalid JSON syntax
+  3   Local manifest verified but upstream fetch failed (upstream drift
+      UNVERIFIED). Set SYNC_SPECS_ALLOW_OFFLINE=1 to accept manifest-only
+      verification when upstream is unreachable.
 EOF
 }
 
-# Main Dispatcher
-main() {
-    local cmd="${1:---check}"
-
-    case "${cmd}" in
+# Command dispatcher. Each subcommand runs with errexit active so any failure
+# (formatter errors, manifest generation, a failed fetch without a local copy)
+# aborts fail-closed; only the --verify status capture below suppresses errexit.
+run_command() {
+    case "${1:---check}" in
         --check|--verify)
             verify_specs
             ;;
@@ -290,11 +397,24 @@ main() {
             show_help
             ;;
         *)
-            log_error "Unknown command: ${cmd}"
+            log_error "Unknown command: ${1}"
             show_help
             exit 1
             ;;
     esac
 }
 
-main "$@"
+# Offline escape hatch: verify_specs returns 3 when the manifest is verified but
+# upstream could not be fetched. With SYNC_SPECS_ALLOW_OFFLINE=1 that specific
+# outcome is downgraded to a warning; hard drift (1) always fails. Errexit is
+# suppressed ONLY for the status capture so a non-zero return is observable
+# rather than fatal.
+set +e
+run_command "$@"
+verify_status=$?
+set -e
+if [[ ${verify_status} -eq 3 && "${SYNC_SPECS_ALLOW_OFFLINE:-0}" == "1" ]]; then
+    log_warn "SYNC_SPECS_ALLOW_OFFLINE=1: accepting manifest-only verification (upstream unverified)."
+    exit 0
+fi
+exit "${verify_status}"

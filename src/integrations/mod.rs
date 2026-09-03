@@ -24,6 +24,13 @@ pub mod actix;
 #[cfg(feature = "tower")]
 pub mod tower;
 
+pub mod validator;
+
+pub use validator::{
+    AccessTokenValidator, CnfClaim, InMemoryTokenValidator, JwtAccessTokenClaims,
+    JwtAccessTokenValidator, RegisteredToken,
+};
+
 /// Parsed query parameters received at the OAuth redirect URI callback endpoint.
 ///
 /// Handles both successful authorizations (providing `code` and `state`) and error
@@ -109,18 +116,84 @@ impl OAuthCallbackQuery {
     }
 }
 
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
 /// An authenticated user extracted from an inbound DPoP-authenticated HTTP request.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct AuthenticatedUser {
     /// The subject Decentralized Identifier (`did:plc:...` or `did:web:...`).
     pub did: String,
-    /// The DPoP-bound access token string.
+    /// The DPoP-bound access token string (skipped during serialization to prevent leakage).
+    #[serde(skip_serializing)]
     pub access_token: String,
     /// RFC 7638 JWK thumbprint (`jkt`) of the bound public key.
     pub dpop_thumbprint: String,
     /// Granted OAuth scopes, if known.
     pub scope: Option<String>,
 }
+
+impl<'de> Deserialize<'de> for AuthenticatedUser {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawUser {
+            did: String,
+            #[serde(default)]
+            access_token: Option<String>,
+            dpop_thumbprint: String,
+            scope: Option<String>,
+        }
+        let raw = RawUser::deserialize(deserializer)?;
+        // Fail closed: deserialization can never produce an empty credential.
+        // access_token is skipped during serialization (leak prevention), so a
+        // serialized AuthenticatedUser is a token-free view and cannot be
+        // deserialized back into a credential-bearing user; the token must come
+        // from the validator, never from untrusted data.
+        let access_token = raw.access_token.ok_or_else(|| {
+            serde::de::Error::custom(
+                "AuthenticatedUser deserialization requires a non-empty access_token; serialized views omit the token by design, so re-authenticate instead",
+            )
+        })?;
+        if access_token.trim().is_empty() {
+            return Err(serde::de::Error::custom(
+                "AuthenticatedUser deserialized with an empty access_token; tokens must be supplied by the validator, not from untrusted data",
+            ));
+        }
+        Ok(Self {
+            did: raw.did,
+            access_token,
+            dpop_thumbprint: raw.dpop_thumbprint,
+            scope: raw.scope,
+        })
+    }
+}
+
+impl std::fmt::Debug for AuthenticatedUser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthenticatedUser")
+            .field("did", &self.did)
+            .field("access_token", &"[REDACTED]")
+            .field("dpop_thumbprint", &self.dpop_thumbprint)
+            .field("scope", &self.scope)
+            .finish()
+    }
+}
+
+impl Zeroize for AuthenticatedUser {
+    fn zeroize(&mut self) {
+        self.access_token.zeroize();
+    }
+}
+
+impl Drop for AuthenticatedUser {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for AuthenticatedUser {}
 
 impl AuthenticatedUser {
     /// Creates a new `AuthenticatedUser`.
@@ -167,6 +240,40 @@ impl AuthenticatedUser {
     #[must_use]
     pub fn scope(&self) -> Option<&str> {
         self.scope.as_deref()
+    }
+
+    /// Consumes the user, returning the subject DID by value.
+    ///
+    /// Provided because the [`Drop`] implementation (zeroization) forbids moving
+    /// fields directly out of the struct (E0509); use these owned accessors
+    /// instead of destructuring.
+    #[must_use]
+    pub fn into_parts(self) -> (String, String, String, Option<String>) {
+        let mut this = self;
+        let did = std::mem::take(&mut this.did);
+        let access_token = std::mem::take(&mut this.access_token);
+        let dpop_thumbprint = std::mem::take(&mut this.dpop_thumbprint);
+        let scope = this.scope.take();
+        // `this` drops here; its remaining buffers are already moved-out empties.
+        (did, access_token, dpop_thumbprint, scope)
+    }
+
+    /// Consumes the user, returning the DID.
+    #[must_use]
+    pub fn into_did(mut self) -> String {
+        std::mem::take(&mut self.did)
+    }
+
+    /// Consumes the user, returning the access token.
+    #[must_use]
+    pub fn into_access_token(mut self) -> String {
+        std::mem::take(&mut self.access_token)
+    }
+
+    /// Consumes the user, returning the DPoP thumbprint.
+    #[must_use]
+    pub fn into_dpop_thumbprint(mut self) -> String {
+        std::mem::take(&mut self.dpop_thumbprint)
     }
 }
 

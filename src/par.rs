@@ -10,10 +10,10 @@ use url::Url;
 
 use crate::dpop::{extract_dpop_nonce, DPoPKey, DPoPNonceCache};
 use crate::error::{AtprotoOAuthError, DPoPError, ParError};
-use crate::ssrf::SsrfFilter;
+use crate::ssrf::{read_bounded_body, SsrfFilter, MAX_OAUTH_RESPONSE_BYTES};
 
 /// Parameters for an RFC 9126 Pushed Authorization Request.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParParameters {
     /// Canonical OAuth client ID (metadata URL or registered client identifier).
     pub client_id: String,
@@ -38,6 +38,26 @@ pub struct ParParameters {
     /// Optional client assertion JWT for confidential clients.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_assertion: Option<String>,
+}
+
+impl std::fmt::Debug for ParParameters {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParParameters")
+            .field("client_id", &self.client_id)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("scope", &self.scope)
+            .field("state", &self.state)
+            .field("code_challenge", &self.code_challenge)
+            .field("code_challenge_method", &self.code_challenge_method)
+            .field("response_type", &self.response_type)
+            .field("login_hint", &self.login_hint)
+            .field("client_assertion_type", &self.client_assertion_type)
+            .field(
+                "client_assertion",
+                &self.client_assertion.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 impl ParParameters {
@@ -83,10 +103,22 @@ impl ParParameters {
         self
     }
 
-    /// Serializes the parameters into standard `application/x-www-form-urlencoded` format.
+    /// Serializes the parameters into standard `application/x-www-form-urlencoded` format
+    /// with additional credential parameters appended (e.g. `client_secret` for
+    /// confidential-client token endpoint authentication).
     #[must_use]
-    pub fn to_form_urlencoded(&self) -> String {
+    pub fn to_form_urlencoded_with_credentials(&self, extra: &[(&str, &str)]) -> String {
         let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+        self.encode_pairs(&mut serializer);
+        for (key, value) in extra {
+            serializer.append_pair(key, value);
+        }
+        serializer.finish()
+    }
+
+    /// Single source of truth for the PAR parameter set. Any new RFC 9126 field
+    /// must be added here exactly once, so the two public serializers cannot drift.
+    fn encode_pairs<'a>(&'a self, serializer: &mut url::form_urlencoded::Serializer<'a, String>) {
         serializer.append_pair("client_id", &self.client_id);
         serializer.append_pair("response_type", &self.response_type);
         serializer.append_pair("redirect_uri", &self.redirect_uri);
@@ -104,7 +136,13 @@ impl ParParameters {
         if let Some(ref ca) = self.client_assertion {
             serializer.append_pair("client_assertion", ca);
         }
+    }
 
+    /// Serializes the parameters into standard `application/x-www-form-urlencoded` format.
+    #[must_use]
+    pub fn to_form_urlencoded(&self) -> String {
+        let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+        self.encode_pairs(&mut serializer);
         serializer.finish()
     }
 }
@@ -170,29 +208,55 @@ pub async fn execute_par_request(
     dpop_key: &DPoPKey,
     nonce_cache: &DPoPNonceCache,
 ) -> Result<ParResponse, AtprotoOAuthError> {
+    execute_par_request_with_credentials(
+        ssrf_filter,
+        par_endpoint,
+        params,
+        dpop_key,
+        nonce_cache,
+        &[],
+    )
+    .await
+}
+
+/// Executes an RFC 9126 PAR request with DPoP signing, transparent auto-nonce retry,
+/// and additional credential form parameters (e.g. `client_secret`).
+///
+/// # Errors
+///
+/// Returns [`AtprotoOAuthError`] if SSRF validation, DPoP signing, HTTP transport,
+/// or response parsing fails.
+pub async fn execute_par_request_with_credentials(
+    ssrf_filter: &SsrfFilter,
+    par_endpoint: &str,
+    params: &ParParameters,
+    dpop_key: &DPoPKey,
+    nonce_cache: &DPoPNonceCache,
+    extra_credentials: &[(&str, &str)],
+) -> Result<ParResponse, AtprotoOAuthError> {
     let parsed_url = Url::parse(par_endpoint).map_err(|e| {
         ParError::InvalidEndpoint(format!("Invalid PAR endpoint URL '{par_endpoint}': {e}"))
     })?;
 
-    ssrf_filter
-        .validate_url(&parsed_url)
+    let (client, _pinned_addr, host_header) = ssrf_filter
+        .build_pinned_client(&parsed_url)
+        .await
         .map_err(ParError::from)?;
 
     let server_origin = parsed_url.origin().ascii_serialization();
 
-    let form_body = params.to_form_urlencoded();
+    let form_body = if extra_credentials.is_empty() {
+        params.to_form_urlencoded()
+    } else {
+        params.to_form_urlencoded_with_credentials(extra_credentials)
+    };
 
-    // 1. Initial Attempt with cached nonce (if any)
     let initial_nonce = nonce_cache.get_nonce(&server_origin);
     let proof = dpop_key.create_proof("POST", par_endpoint, initial_nonce.as_deref(), None)?;
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| ParError::Http(e.to_string()))?;
-
     let resp = client
         .post(par_endpoint)
+        .header(reqwest::header::HOST, host_header.clone())
         .header("content-type", "application/x-www-form-urlencoded")
         .header("accept", "application/json")
         .header("dpop", proof)
@@ -201,7 +265,7 @@ pub async fn execute_par_request(
         .await
         .map_err(|e| ParError::Http(e.to_string()))?;
 
-    // Opportunistically cache returned DPoP nonce header
+    // Cache the returned DPoP nonce so later requests to this origin don't re-trigger the challenge.
     if let Some(new_nonce) = extract_dpop_nonce(
         resp.headers()
             .get("dpop-nonce")
@@ -212,10 +276,19 @@ pub async fn execute_par_request(
 
     let status = resp.status();
 
-    // 2. Check for use_dpop_nonce error challenge
+    // PAR endpoints must not be followed through redirects (RFC 9126).
+    if status.is_redirection() {
+        return Err(ParError::RequestFailed {
+            status: status.as_u16(),
+            error: "invalid_request".to_string(),
+            description: Some("Redirects are not permitted for PAR endpoints".to_string()),
+        }
+        .into());
+    }
+
+    // The server answered 400/401 with `use_dpop_nonce`: replay with the fresh nonce.
     if status == reqwest::StatusCode::BAD_REQUEST || status == reqwest::StatusCode::UNAUTHORIZED {
-        let resp_bytes = resp
-            .bytes()
+        let resp_bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
             .await
             .map_err(|e| ParError::Http(e.to_string()))?;
 
@@ -238,12 +311,17 @@ pub async fn execute_par_request(
                         ),
                     })?;
 
-            // 3. Single Retry with fresh nonce and fresh jti
             let retry_proof =
                 dpop_key.create_proof("POST", par_endpoint, Some(&fresh_nonce), None)?;
 
-            let retry_resp = client
+            let (retry_client, _retry_pinned_addr, retry_host_header) = ssrf_filter
+                .build_pinned_client(&parsed_url)
+                .await
+                .map_err(ParError::from)?;
+
+            let retry_resp = retry_client
                 .post(par_endpoint)
+                .header(reqwest::header::HOST, retry_host_header)
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("accept", "application/json")
                 .header("dpop", retry_proof)
@@ -262,17 +340,24 @@ pub async fn execute_par_request(
             }
 
             let retry_status = retry_resp.status();
+
+            if retry_status.is_redirection() {
+                return Err(ParError::RequestFailed {
+                    status: retry_status.as_u16(),
+                    error: "invalid_request".to_string(),
+                    description: Some("Redirects are not permitted for PAR endpoints".to_string()),
+                }
+                .into());
+            }
+
             if retry_status.is_success() {
-                let body_bytes = retry_resp
-                    .bytes()
+                let body_bytes = read_bounded_body(retry_resp, MAX_OAUTH_RESPONSE_BYTES)
                     .await
                     .map_err(|e| ParError::Http(e.to_string()))?;
                 return parse_par_response(&body_bytes);
             }
 
-            // If retry also fails
-            let err_bytes = retry_resp
-                .bytes()
+            let err_bytes = read_bounded_body(retry_resp, MAX_OAUTH_RESPONSE_BYTES)
                 .await
                 .map_err(|e| ParError::Http(e.to_string()))?;
             let err_json: Option<serde_json::Value> = serde_json::from_slice(&err_bytes).ok();
@@ -305,7 +390,6 @@ pub async fn execute_par_request(
             .into());
         }
 
-        // Other 400 error
         let error_code = json_err
             .as_ref()
             .and_then(|j| j.get("error"))
@@ -327,8 +411,7 @@ pub async fn execute_par_request(
     }
 
     if !status.is_success() {
-        let err_bytes = resp
-            .bytes()
+        let err_bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
             .await
             .map_err(|e| ParError::Http(e.to_string()))?;
         let err_json: Option<serde_json::Value> = serde_json::from_slice(&err_bytes).ok();
@@ -352,8 +435,7 @@ pub async fn execute_par_request(
         .into());
     }
 
-    let body_bytes = resp
-        .bytes()
+    let body_bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
         .await
         .map_err(|e| ParError::Http(e.to_string()))?;
     parse_par_response(&body_bytes)

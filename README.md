@@ -1,7 +1,7 @@
 # 🔐 `skyauth`
 
-[![crates.io](https://img.shields.io/crates/v/atproto-oauth.svg)](https://crates.io/crates/atproto-oauth)
-[![docs.rs](https://docs.rs/atproto-oauth/badge.svg)](https://docs.rs/atproto-oauth)
+[![crates.io](https://img.shields.io/crates/v/skyauth.svg)](https://crates.io/crates/skyauth)
+[![docs.rs](https://docs.rs/skyauth/badge.svg)](https://docs.rs/skyauth)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![Safety Guard](https://img.shields.io/badge/unsafe-forbidden-success.svg)](src/lib.rs)
 
@@ -20,24 +20,30 @@
 - **Strict SSRF & DNS Rebinding Security**: Full IP boundary filtering blocking RFC 1918 private IPs, loopback, link-local, cloud metadata (`169.254.169.254`), IPv6 ULA, and DNS socket pinning.
 - **64-Shard Partitioned State Store**: Lock-free scaling state storage across 64 independent `RwLock` shards with atomic single-use state consumption ([`OAuthStore::take_state`]) and drift-free background TTL pruning.
 - **Web Framework Integrations**: Ready-to-use extractors, response generators, and middleware for **Axum 0.7**, **Actix-Web 4**, and **Tower**.
-- **Formal Mathematical Verification**: Verified using **Verus** (deductive contracts) and **Kani** (bounded model checking with 36 mandatory anti-vacuity reachability checks).
+- **Formal Mathematical Verification**: Verified using **Verus** deductive proofs, **Kani** bounded model checking with 25 mandatory anti-vacuity reachability tags enforced across 5 proof harnesses, and pure-Rust executable state transition models.
+- **Confidential Client Support**: Automatic `client_secret` inclusion in PAR, code exchange, and refresh requests (RFC 6749 § 2.3.1 `client_secret_post`); extensible credential hook via `execute_par_request_with_credentials`.
+- **Proxied-Deployment DPoP**: `with_htu_override` on the Tower layer reconstructs absolute DPoP target URIs for servers behind reverse proxies receiving origin-form request targets.
+- **Hardened SSRF Boundary**: Deprecated 6to4 (`2002::/16`, with embedded-IPv4 re-evaluation) and Teredo (`2001::/32`) tunneling prefixes are blocked, mirrored in the formal verification models; test mode (`allow_insecure_localhost`) only exempts explicit loopback targets, never metadata/internal hosts.
+- **Single-Use Server Nonces**: Optional strict RFC 9449 § 8 nonce consumption (`InMemoryServerNonceSource::with_single_use`).
+- **Resource-Server Token Validation**: `JwtAccessTokenValidator` (RFC 9068 `at+jwt` verification with fail-closed issuer/audience matching and `cnf.jkt` DPoP binding) and an in-memory registry, with a Tower middleware layer enforcing DPoP proof verification, replay rejection, and server nonce challenges.
+- **XRPC Client Hardening**: Lexicon NSID grammar validation on `send_xrpc_request`, DPoP-signed requests with automatic nonce retry, and bounded response bodies.
 - **Dynamic Schema Invariants**: Bundled official ATProto Lexicons and RFC schemas with continuous automated upstream drift detection.
 
 ---
 
 ## 🚀 Quick Start
 
-Add `atproto-oauth` to your `Cargo.toml`:
+Add `skyauth` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-atproto-oauth = "0.1"
+skyauth = "0.2"
 ```
 
 ### 1. DPoP Proof Generation & Verification
 
 ```rust
-use skyauth::dpop::{DPoPKey, DPoPVerifier, compute_access_token_hash};
+use skyauth::dpop::{compute_access_token_hash, DPoPKey, DPoPVerifier};
 use skyauth::pkce::PkcePair;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -47,9 +53,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Generate ephemeral DPoP keypair
     let dpop_key = DPoPKey::generate();
-    let jkt = dpop_key.jwk_thumbprint();
+    let _jkt = dpop_key.jwk_thumbprint();
 
-    // 3. Create a DPoP proof for a token request
+    // 3. Create a DPoP proof for an outgoing token request
     let proof = dpop_key.create_proof(
         "POST",
         "https://pds.example.com/oauth/token",
@@ -59,7 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 4. Verify inbound DPoP proof
     let verifier = DPoPVerifier::new();
-    let (claims, jwk) = verifier.verify_proof(
+    let (claims, _jwk) = verifier.verify_proof(
         &proof,
         "POST",
         "https://pds.example.com/oauth/token",
@@ -76,34 +82,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 2. Full OAuth Client Lifecycle
 
 ```rust
-use skyauth::client::{AtprotoOAuthClient, OAuthClientMetadata};
+use skyauth::client::{AtprotoOAuthClient, CallbackParams, OAuthClientMetadata};
 use skyauth::store::OAuthStateStore;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let metadata = OAuthClientMetadata {
-        client_id: "https://my-app.example.com/client-metadata.json".to_string(),
-        client_name: Some("My ATProto App".to_string()),
-        client_uri: Some("https://my-app.example.com".to_string()),
-        redirect_uris: vec!["https://my-app.example.com/oauth/callback".to_string()],
-        grant_types: vec!["authorization_code".to_string(), "refresh_token".to_string()],
-        response_types: vec!["code".to_string()],
-        scope: "atproto transition:generic".to_string(),
-        token_endpoint_auth_method: "none".to_string(),
-        dpop_bound_access_tokens: true,
-        jwks_uri: None,
-    };
+    // 1. Configure OAuth Client Metadata
+    let metadata = OAuthClientMetadata::new(
+        "https://my-app.example.com/client-metadata.json",
+        "https://my-app.example.com/oauth/callback",
+    )
+    .with_client_name("My ATProto App")
+    .with_scope("atproto transition:generic");
 
-    let state_store = Arc::new(OAuthStateStore::new());
+    // 2. Instantiate high-level client with 64-shard concurrent state store
+    let state_store = Arc::new(OAuthStateStore::new(Duration::from_secs(300)));
     let client = AtprotoOAuthClient::builder()
         .metadata(metadata)
         .state_store(state_store)
+        .state_ttl(Duration::from_secs(300))
         .build()?;
 
-    // Initiate login with handle or DID
+    // 3. Initiate login with handle or DID (pushes PAR, generates PKCE, registers state)
     let auth_req = client.authorize("alice.bsky.social").await?;
     println!("Redirect user to: {}", auth_req.authorization_url);
+
+    // 4. Handle incoming callback after user authorization (single-use consumed)
+    let callback_params = CallbackParams::new("auth_code_from_query", &auth_req.state)
+        .with_iss("https://bsky.social");
+    let session = client.handle_callback(&callback_params).await?;
+    println!("Authenticated user DID: {}", session.sub);
+
+    // 5. Execute authenticated XRPC request
+    let response = client
+        .send_xrpc_request(&session, "com.atproto.repo.describeRepo", &[])
+        .await?;
+    println!("XRPC response status: {}", response.status());
 
     Ok(())
 }
@@ -113,25 +129,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 🛡️ Formal Verification & Mathematical Invariants
 
-`skyauth` incorporates a multi-layered formal verification hierarchy to eliminate security vulnerabilities:
+`skyauth` incorporates a multi-layered formal verification hierarchy:
 
-1. **Verus Deductive Contracts (`verus!`)**: Mathematical proofs for session state transitions, constant-time comparisons, and PKCE deterministic bounds.
-2. **Kani Bounded Model Checking (`kani::proof`)**: 5 exhaustive verification harnesses checking all symbolic byte inputs.
-3. **Anti-Vacuity Coverage (`kani::cover!`)**: 36 mandatory reachability checks ensuring harnesses actually exercise functional code paths.
+1. **Verus Deductive Contracts (`verus!`)**: Deductive mathematical proofs in [`src/verification/verus_contracts.rs`](src/verification/verus_contracts.rs) using SMT solving (Z3) to prove single-use state transition safety, terminality, SSRF IP range isolation, and PKCE bounds.
+2. **Kani Bounded Model Checking (`kani::proof`)**: Exhaustive symbolic proof harnesses in [`src/verification/kani_harnesses.rs`](src/verification/kani_harnesses.rs) using symbolic `kani::any()` and `kani::assume()` inputs with 25 mandatory anti-vacuity reachability tags (`kani::cover!` / [`AntiVacuityCoverage`]) that the deterministic test suite must reach.
+3. **Executable Formal State Models**: High-assurance transition models in [`src/verification/formal_models.rs`](src/verification/formal_models.rs) tested against property fuzzing and concurrent interleavings.
 
 ---
 
-## 🧪 Running Tests & Formal Proofs
+## 🧪 Running Tests, CI & Formal Proofs
 
 ```bash
-# Run unit, integration, and RFC vector test suites (730+ tests)
+# Run unit, integration, and RFC vector test suites
 cargo test --all-targets --all-features
 
 # Verify strict clippy compliance (0 warnings)
 cargo clippy --all-targets --all-features -- -D warnings
 
-# Verify specification drift against official ATProto Lexicons & RFC schemas
+# Verify specification drift against upstream canonical Lexicons & RFC schemas
 bash scripts/sync_specs.sh --verify
+
+# Run Kani bounded model checking proof harnesses
+cargo kani --harness proof_
+
+# Run Verus deductive formal verification proofs
+bash scripts/run_verus.sh
 ```
 
 ---

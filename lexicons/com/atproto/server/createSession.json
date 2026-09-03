@@ -19,16 +19,14 @@
               "description": "Handle or other identifier supported by the server for the authenticating user."
             },
             "password": {
-              "type": "string",
-              "description": "Password or authentication token."
+              "type": "string"
             },
             "authFactorToken": {
-              "type": "string",
-              "description": "2FA auth token."
+              "type": "string"
             },
             "allowTakendown": {
               "type": "boolean",
-              "description": "When true, response will not include account takedown status."
+              "description": "When true, instead of throwing error for takendown accounts, a valid response with a narrow scoped token will be returned"
             }
           }
         }
@@ -45,58 +43,52 @@
           ],
           "properties": {
             "accessJwt": {
-              "type": "string",
-              "description": "Access JWT token."
+              "type": "string"
             },
             "refreshJwt": {
-              "type": "string",
-              "description": "Refresh JWT token."
+              "type": "string"
             },
             "handle": {
               "type": "string",
-              "format": "handle",
-              "description": "User handle."
+              "format": "handle"
             },
             "did": {
               "type": "string",
-              "format": "did",
-              "description": "User DID."
+              "format": "did"
             },
             "didDoc": {
-              "type": "unknown",
-              "description": "Optional DID document."
+              "type": "unknown"
             },
             "email": {
-              "type": "string",
-              "description": "User email address."
+              "type": "string"
             },
             "emailConfirmed": {
-              "type": "boolean",
-              "description": "Whether the user email is confirmed."
+              "type": "boolean"
             },
             "emailAuthFactor": {
-              "type": "boolean",
-              "description": "Whether 2FA email authentication is enabled."
+              "type": "boolean"
             },
             "active": {
-              "type": "boolean",
-              "description": "Whether the account is active."
+              "type": "boolean"
             },
             "status": {
               "type": "string",
-              "description": "Account status string."
+              "description": "If active=false, this optional field indicates a possible reason for why the account is not active. If active=false and no status is supplied, then the host makes no claim for why the repository is no longer being hosted.",
+              "knownValues": [
+                "takendown",
+                "suspended",
+                "deactivated"
+              ]
             }
           }
         }
       },
       "errors": [
         {
-          "name": "AccountTakedown",
-          "description": "Account has been taken down."
+          "name": "AccountTakedown"
         },
         {
-          "name": "AuthFactorTokenRequired",
-          "description": "Two-factor authentication code required."
+          "name": "AuthFactorTokenRequired"
         }
       ]
     }

@@ -69,10 +69,6 @@ fn mock_client_metadata() -> OAuthClientMetadata {
     .with_scope("atproto transition:generic")
 }
 
-// =========================================================================
-// SECTION 1: TOWER DPOP AUTHENTICATION MIDDLEWARE ADVERSARIAL TESTS
-// =========================================================================
-
 #[cfg(feature = "tower")]
 mod tower_adversarial_tests {
     use super::*;
@@ -105,6 +101,29 @@ mod tower_adversarial_tests {
         }
     }
 
+    fn test_layer(verifier: Arc<DPoPVerifier>) -> OAuthAuthLayer {
+        let store = skyauth::integrations::InMemoryTokenValidator::new();
+        OAuthAuthLayer::from_token_store(verifier, store)
+    }
+
+    /// Builds a layer whose token store already accepts `access_token` bound to `jkt`,
+    /// ensuring requests reach DPoP proof verification instead of failing token lookup.
+    fn test_layer_for(
+        verifier: Arc<DPoPVerifier>,
+        access_token: &str,
+        jkt: &str,
+    ) -> OAuthAuthLayer {
+        let store = skyauth::integrations::InMemoryTokenValidator::new();
+        store.register_token(
+            access_token,
+            "did:plc:adversarial_subject",
+            jkt,
+            Some("atproto".to_string()),
+            None,
+        );
+        OAuthAuthLayer::from_token_store(verifier, store)
+    }
+
     #[tokio::test]
     async fn test_tower_tampered_dpop_signature_rejection() {
         let key = DPoPKey::generate();
@@ -116,7 +135,6 @@ mod tower_adversarial_tests {
         let parts: Vec<&str> = valid_proof.split('.').collect();
         assert_eq!(parts.len(), 3);
 
-        // Tamper with the signature bytes by flipping characters
         let mut tampered_sig = parts[2].to_string();
         if tampered_sig.starts_with('A') {
             tampered_sig.replace_range(0..1, "B");
@@ -126,7 +144,7 @@ mod tower_adversarial_tests {
         let tampered_proof = format!("{}.{}.{}", parts[0], parts[1], tampered_sig);
 
         let verifier = Arc::new(DPoPVerifier::new());
-        let layer = OAuthAuthLayer::new(verifier);
+        let layer = test_layer_for(verifier, access_token, &key.jwk_thumbprint());
         let mut service = layer.layer(MockService);
 
         let req = Request::builder()
@@ -158,7 +176,6 @@ mod tower_adversarial_tests {
         let valid_proof = key.create_proof("GET", uri, None, Some(&ath)).unwrap();
         let parts: Vec<&str> = valid_proof.split('.').collect();
 
-        // Tamper with payload (substituting forged method/uri while keeping original signature)
         let malicious_payload = serde_json::json!({
             "jti": "forged_jti_12345",
             "htm": "POST",
@@ -170,7 +187,7 @@ mod tower_adversarial_tests {
         let tampered_proof = format!("{}.{}.{}", parts[0], forged_payload_b64, parts[2]);
 
         let verifier = Arc::new(DPoPVerifier::new());
-        let layer = OAuthAuthLayer::new(verifier);
+        let layer = test_layer_for(verifier, access_token, &key.jwk_thumbprint());
         let mut service = layer.layer(MockService);
 
         let req = Request::builder()
@@ -183,6 +200,13 @@ mod tower_adversarial_tests {
 
         let resp = service.call(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let auth_hdr = resp
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth_hdr.contains("invalid_dpop_proof"));
     }
 
     #[tokio::test]
@@ -195,7 +219,6 @@ mod tower_adversarial_tests {
         let valid_proof = key.create_proof("GET", uri, None, Some(&ath)).unwrap();
         let parts: Vec<&str> = valid_proof.split('.').collect();
 
-        // 1. Alg = "none" tampering
         let header_alg_none = serde_json::json!({
             "typ": "dpop+jwt",
             "alg": "none",
@@ -205,7 +228,7 @@ mod tower_adversarial_tests {
         let bad_alg_proof = format!("{h_b64}.{}.{}", parts[1], parts[2]);
 
         let verifier = Arc::new(DPoPVerifier::new());
-        let layer = OAuthAuthLayer::new(verifier);
+        let layer = test_layer_for(verifier, access_token, &key.jwk_thumbprint());
         let mut service = layer.layer(MockService);
 
         let req = Request::builder()
@@ -218,8 +241,14 @@ mod tower_adversarial_tests {
 
         let resp = service.call(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let auth_hdr = resp
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth_hdr.contains("invalid_dpop_proof"));
 
-        // 2. Typ = "jwt" tampering (missing dpop+)
         let header_bad_typ = serde_json::json!({
             "typ": "jwt",
             "alg": "ES256",
@@ -238,8 +267,14 @@ mod tower_adversarial_tests {
 
         let resp = service.call(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let auth_hdr = resp
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth_hdr.contains("invalid_dpop_proof"));
 
-        // 3. JWK containing private key parameter "d"
         let header_with_privkey = serde_json::json!({
             "typ": "dpop+jwt",
             "alg": "ES256",
@@ -264,12 +299,19 @@ mod tower_adversarial_tests {
 
         let resp = service.call(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let auth_hdr = resp
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth_hdr.contains("invalid_dpop_proof"));
     }
 
     #[tokio::test]
     async fn test_tower_malformed_jwt_variations() {
         let verifier = Arc::new(DPoPVerifier::new());
-        let layer = OAuthAuthLayer::new(verifier);
+        let layer = test_layer(verifier);
         let mut service = layer.layer(MockService);
 
         let malformed_proofs = vec![
@@ -309,10 +351,9 @@ mod tower_adversarial_tests {
         let proof = key.create_proof("GET", uri, None, Some(&ath)).unwrap();
 
         let verifier = Arc::new(DPoPVerifier::new());
-        let layer = OAuthAuthLayer::new(verifier);
+        let layer = test_layer(verifier);
         let mut service = layer.layer(MockService);
 
-        // Request with DPoP proof header but NO Authorization header
         let req = Request::builder()
             .method("GET")
             .uri(uri)
@@ -351,7 +392,7 @@ mod tower_adversarial_tests {
         ];
 
         let verifier = Arc::new(DPoPVerifier::new());
-        let layer = OAuthAuthLayer::new(verifier);
+        let layer = test_layer(verifier);
         let mut service = layer.layer(MockService);
 
         for auth_hdr in invalid_auth_headers {
@@ -388,16 +429,14 @@ mod tower_adversarial_tests {
 
         let proof = key.create_proof("GET", uri, None, Some(&ath)).unwrap();
 
-        // Configure verifier with 1 second max proof age
         let verifier = Arc::new(
             DPoPVerifier::new()
                 .with_max_proof_age(Duration::from_secs(1))
                 .with_max_clock_skew(Duration::ZERO),
         );
-        let layer = OAuthAuthLayer::new(verifier);
+        let layer = test_layer_for(verifier, access_token, &key.jwk_thumbprint());
         let mut service = layer.layer(MockService);
 
-        // Sleep 2 seconds to exceed 1s max age
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         let req = Request::builder()
@@ -426,18 +465,23 @@ mod tower_adversarial_tests {
         let ath = compute_access_token_hash(access_token);
         let uri = "https://pds.example.com/xrpc/test";
 
-        // Create proof directly with an expired `exp` claim (in past)
         let header_json = serde_json::json!({
             "typ": "dpop+jwt",
             "alg": "ES256",
             "jwk": key.public_jwk()
         });
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // iat is current (within the max-age window); exp is an hour stale so
+        // even generous clock skew cannot rescue it — isolating exp rejection.
         let payload_json = serde_json::json!({
             "jti": "jti_expired_exp_test",
             "htm": "GET",
             "htu": uri,
-            "iat": 1000000,
-            "exp": 1000001, // Expired long ago
+            "iat": now_secs,
+            "exp": now_secs - 3600,
             "ath": ath
         });
 
@@ -453,7 +497,7 @@ mod tower_adversarial_tests {
         let expired_exp_jwt = format!("{signing_input}.{sig_b64}");
 
         let verifier = Arc::new(DPoPVerifier::new());
-        let layer = OAuthAuthLayer::new(verifier);
+        let layer = test_layer_for(verifier, access_token, &key.jwk_thumbprint());
         let mut service = layer.layer(MockService);
 
         let req = Request::builder()
@@ -466,6 +510,13 @@ mod tower_adversarial_tests {
 
         let resp = service.call(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let auth_hdr = resp
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth_hdr.contains("invalid_dpop_proof"));
     }
 
     #[tokio::test]
@@ -479,7 +530,7 @@ mod tower_adversarial_tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let future_iat = now_secs + 10000; // Far in the future
+        let future_iat = now_secs + 10000;
 
         let header_json = serde_json::json!({
             "typ": "dpop+jwt",
@@ -506,7 +557,7 @@ mod tower_adversarial_tests {
         let future_jwt = format!("{signing_input}.{sig_b64}");
 
         let verifier = Arc::new(DPoPVerifier::new());
-        let layer = OAuthAuthLayer::new(verifier);
+        let layer = test_layer_for(verifier, access_token, &key.jwk_thumbprint());
         let mut service = layer.layer(MockService);
 
         let req = Request::builder()
@@ -519,6 +570,13 @@ mod tower_adversarial_tests {
 
         let resp = service.call(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let auth_hdr = resp
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth_hdr.contains("invalid_dpop_proof"));
     }
 
     #[tokio::test]
@@ -529,11 +587,10 @@ mod tower_adversarial_tests {
         let ath_a = compute_access_token_hash(token_a);
         let uri = "https://pds.example.com/xrpc/test";
 
-        // Proof binds to token_a, but request sends token_b
         let proof_for_token_a = key.create_proof("GET", uri, None, Some(&ath_a)).unwrap();
 
         let verifier = Arc::new(DPoPVerifier::new());
-        let layer = OAuthAuthLayer::new(verifier).with_require_ath(true);
+        let layer = test_layer_for(verifier, token_b, &key.jwk_thumbprint()).with_require_ath(true);
         let mut service = layer.layer(MockService);
 
         let req = Request::builder()
@@ -546,6 +603,13 @@ mod tower_adversarial_tests {
 
         let resp = service.call(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let auth_hdr = resp
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth_hdr.contains("invalid_dpop_proof"));
     }
 
     #[tokio::test]
@@ -554,11 +618,11 @@ mod tower_adversarial_tests {
         let access_token = "valid_token_123";
         let uri = "https://pds.example.com/xrpc/test";
 
-        // Proof without ath claim
         let proof_without_ath = key.create_proof("GET", uri, None, None).unwrap();
 
         let verifier = Arc::new(DPoPVerifier::new());
-        let layer = OAuthAuthLayer::new(verifier).with_require_ath(true);
+        let layer =
+            test_layer_for(verifier, access_token, &key.jwk_thumbprint()).with_require_ath(true);
         let mut service = layer.layer(MockService);
 
         let req = Request::builder()
@@ -571,6 +635,13 @@ mod tower_adversarial_tests {
 
         let resp = service.call(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let auth_hdr = resp
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth_hdr.contains("invalid_dpop_proof"));
     }
 
     #[tokio::test]
@@ -586,10 +657,9 @@ mod tower_adversarial_tests {
             .unwrap();
 
         let verifier = Arc::new(DPoPVerifier::new());
-        let layer = OAuthAuthLayer::new(verifier);
+        let layer = test_layer_for(verifier, access_token, &key.jwk_thumbprint());
         let mut service = layer.layer(MockService);
 
-        // 1. URI Mismatch
         let req_wrong_uri = Request::builder()
             .method("GET")
             .uri(wrong_uri)
@@ -600,8 +670,14 @@ mod tower_adversarial_tests {
 
         let resp_uri = service.call(req_wrong_uri).await.unwrap();
         assert_eq!(resp_uri.status(), StatusCode::UNAUTHORIZED);
+        let auth_hdr_uri = resp_uri
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth_hdr_uri.contains("invalid_dpop_proof"));
 
-        // 2. Method Mismatch (POST request with GET proof)
         let req_wrong_method = Request::builder()
             .method("POST")
             .uri(valid_uri)
@@ -612,12 +688,401 @@ mod tower_adversarial_tests {
 
         let resp_method = service.call(req_wrong_method).await.unwrap();
         assert_eq!(resp_method.status(), StatusCode::UNAUTHORIZED);
+        let auth_hdr_method = resp_method
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth_hdr_method.contains("invalid_dpop_proof"));
+    }
+
+    #[tokio::test]
+    async fn test_tower_adversarial_invented_credentials_rejected() {
+        let auth_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let auth_verifying_key = *auth_key.verifying_key();
+
+        let attacker_dpop_key = DPoPKey::generate();
+        let invented_token = "attacker_invented_token_xyz999";
+        let ath = compute_access_token_hash(invented_token);
+        let uri = "https://pds.example.com/xrpc/app.bsky.actor.getProfile";
+
+        let proof = attacker_dpop_key
+            .create_proof("GET", uri, None, Some(&ath))
+            .unwrap();
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let jwt_validator = skyauth::integrations::JwtAccessTokenValidator::new()
+            .with_verifying_key(auth_verifying_key)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
+
+        let layer = OAuthAuthLayer::from_jwt_validator(verifier, jwt_validator);
+        let mut service = layer.layer(MockService);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {invented_token}"))
+            .header("DPoP", proof)
+            .body(())
+            .unwrap();
+
+        let resp = service.call(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let auth_hdr = resp
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth_hdr.contains("invalid_token"));
+    }
+
+    #[tokio::test]
+    async fn test_tower_adversarial_stolen_token_with_attacker_dpop_proof_cnf_mismatch() {
+        let auth_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let auth_verifying_key = *auth_key.verifying_key();
+
+        let alice_dpop_key = DPoPKey::generate();
+        let alice_jkt = alice_dpop_key.jwk_thumbprint();
+
+        let attacker_dpop_key = DPoPKey::generate();
+        let uri = "https://pds.example.com/xrpc/app.bsky.actor.getProfile";
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let alice_claims = skyauth::integrations::JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now + 3600,
+            &alice_jkt,
+        )
+        .with_audience("https://pds.example.com");
+
+        let alice_jwt = alice_claims.sign_jwt(&auth_key, None).unwrap();
+        let ath = compute_access_token_hash(&alice_jwt);
+
+        let attacker_proof = attacker_dpop_key
+            .create_proof("GET", uri, None, Some(&ath))
+            .unwrap();
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let jwt_validator = skyauth::integrations::JwtAccessTokenValidator::new()
+            .with_verifying_key(auth_verifying_key)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
+
+        let layer = OAuthAuthLayer::from_jwt_validator(verifier, jwt_validator);
+        let mut service = layer.layer(MockService);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {alice_jwt}"))
+            .header("DPoP", attacker_proof)
+            .body(())
+            .unwrap();
+
+        let resp = service.call(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let auth_hdr = resp
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            auth_hdr.contains("invalid_token"),
+            "expected cnf.jkt binding rejection (invalid_token), got: {auth_hdr}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tower_adversarial_forged_jwt_signature_rejected() {
+        let auth_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let auth_verifying_key = *auth_key.verifying_key();
+
+        let attacker_signing_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let attacker_dpop_key = DPoPKey::generate();
+        let attacker_jkt = attacker_dpop_key.jwk_thumbprint();
+        let uri = "https://pds.example.com/xrpc/app.bsky.actor.getProfile";
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let forged_claims = skyauth::integrations::JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now + 3600,
+            &attacker_jkt,
+        )
+        .with_audience("https://pds.example.com");
+
+        let forged_jwt = forged_claims.sign_jwt(&attacker_signing_key, None).unwrap();
+        let ath = compute_access_token_hash(&forged_jwt);
+
+        let proof = attacker_dpop_key
+            .create_proof("GET", uri, None, Some(&ath))
+            .unwrap();
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let jwt_validator = skyauth::integrations::JwtAccessTokenValidator::new()
+            .with_verifying_key(auth_verifying_key)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
+
+        let layer = OAuthAuthLayer::from_jwt_validator(verifier, jwt_validator);
+        let mut service = layer.layer(MockService);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {forged_jwt}"))
+            .header("DPoP", proof)
+            .body(())
+            .unwrap();
+
+        let resp = service.call(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let auth_hdr = resp
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .expect("401 must carry WWW-Authenticate header")
+            .to_str()
+            .unwrap();
+        assert!(
+            auth_hdr.contains("invalid_token"),
+            "forged-signature token must be rejected as invalid_token, got: {auth_hdr}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tower_adversarial_valid_token_and_proof_succeeds() {
+        let auth_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let auth_verifying_key = *auth_key.verifying_key();
+
+        let client_dpop_key = DPoPKey::generate();
+        let client_jkt = client_dpop_key.jwk_thumbprint();
+        let uri = "https://pds.example.com/xrpc/app.bsky.actor.getProfile";
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let claims = skyauth::integrations::JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now + 3600,
+            &client_jkt,
+        )
+        .with_audience("https://pds.example.com")
+        .with_scope("atproto transition:generic");
+
+        let valid_jwt = claims.sign_jwt(&auth_key, None).unwrap();
+        let ath = compute_access_token_hash(&valid_jwt);
+
+        let proof = client_dpop_key
+            .create_proof("GET", uri, None, Some(&ath))
+            .unwrap();
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let jwt_validator = skyauth::integrations::JwtAccessTokenValidator::new()
+            .with_verifying_key(auth_verifying_key)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
+
+        let layer = OAuthAuthLayer::from_jwt_validator(verifier, jwt_validator);
+        let mut service = layer.layer(MockService);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {valid_jwt}"))
+            .header("DPoP", proof)
+            .body(())
+            .unwrap();
+
+        let resp = service.call(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.body(), "OK:did:plc:alice123");
+    }
+
+    #[tokio::test]
+    async fn test_tower_adversarial_replay_attack_rejected() {
+        let auth_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let auth_verifying_key = *auth_key.verifying_key();
+
+        let client_dpop_key = DPoPKey::generate();
+        let client_jkt = client_dpop_key.jwk_thumbprint();
+        let uri = "https://pds.example.com/xrpc/app.bsky.actor.getProfile";
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let claims = skyauth::integrations::JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now + 3600,
+            &client_jkt,
+        )
+        .with_audience("https://pds.example.com");
+
+        let valid_jwt = claims.sign_jwt(&auth_key, None).unwrap();
+        let ath = compute_access_token_hash(&valid_jwt);
+
+        let proof = client_dpop_key
+            .create_proof("GET", uri, None, Some(&ath))
+            .unwrap();
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let jwt_validator = skyauth::integrations::JwtAccessTokenValidator::new()
+            .with_verifying_key(auth_verifying_key)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
+
+        let layer = OAuthAuthLayer::from_jwt_validator(verifier, jwt_validator);
+        let mut service = layer.layer(MockService);
+
+        let req1 = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {valid_jwt}"))
+            .header("DPoP", proof.clone())
+            .body(())
+            .unwrap();
+
+        let resp1 = service.call(req1).await.unwrap();
+        assert_eq!(resp1.status(), StatusCode::OK);
+        assert_eq!(resp1.body(), "OK:did:plc:alice123");
+
+        let req2 = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {valid_jwt}"))
+            .header("DPoP", proof)
+            .body(())
+            .unwrap();
+
+        let resp2 = service.call(req2).await.unwrap();
+        assert_eq!(resp2.status(), StatusCode::UNAUTHORIZED);
+        let auth_hdr = resp2
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth_hdr.contains("invalid_dpop_proof"));
+        assert!(auth_hdr.contains("replay detected"));
+    }
+
+    #[tokio::test]
+    async fn test_tower_adversarial_server_nonce_challenge_and_enforcement() {
+        let auth_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let auth_verifying_key = *auth_key.verifying_key();
+
+        let client_dpop_key = DPoPKey::generate();
+        let client_jkt = client_dpop_key.jwk_thumbprint();
+        let uri = "https://pds.example.com/xrpc/app.bsky.actor.getProfile";
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let claims = skyauth::integrations::JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now + 3600,
+            &client_jkt,
+        )
+        .with_audience("https://pds.example.com");
+
+        let valid_jwt = claims.sign_jwt(&auth_key, None).unwrap();
+        let ath = compute_access_token_hash(&valid_jwt);
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let jwt_validator = skyauth::integrations::JwtAccessTokenValidator::new()
+            .with_verifying_key(auth_verifying_key)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
+
+        let layer = OAuthAuthLayer::from_jwt_validator(verifier, jwt_validator)
+            .with_server_nonces(std::time::Duration::from_secs(60));
+        let mut service = layer.layer(MockService);
+
+        let proof_no_nonce = client_dpop_key
+            .create_proof("GET", uri, None, Some(&ath))
+            .unwrap();
+
+        let req1 = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {valid_jwt}"))
+            .header("DPoP", proof_no_nonce)
+            .body(())
+            .unwrap();
+
+        let resp1 = service.call(req1).await.unwrap();
+        assert_eq!(resp1.status(), StatusCode::UNAUTHORIZED);
+        let issued_nonce = resp1
+            .headers()
+            .get("dpop-nonce")
+            .expect("Must return DPoP-Nonce header")
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let proof_bogus_nonce = client_dpop_key
+            .create_proof("GET", uri, Some("bogus_nonce_attack"), Some(&ath))
+            .unwrap();
+
+        let req_bogus = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {valid_jwt}"))
+            .header("DPoP", proof_bogus_nonce)
+            .body(())
+            .unwrap();
+
+        let resp_bogus = service.call(req_bogus).await.unwrap();
+        assert_eq!(resp_bogus.status(), StatusCode::UNAUTHORIZED);
+        let bogus_auth = resp_bogus
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            bogus_auth.contains("use_dpop_nonce"),
+            "bogus nonce must trigger a fresh nonce challenge (use_dpop_nonce), got: {bogus_auth}"
+        );
+
+        let proof_valid_nonce = client_dpop_key
+            .create_proof("GET", uri, Some(&issued_nonce), Some(&ath))
+            .unwrap();
+
+        let req_valid = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {valid_jwt}"))
+            .header("DPoP", proof_valid_nonce)
+            .body(())
+            .unwrap();
+
+        let resp_valid = service.call(req_valid).await.unwrap();
+        assert_eq!(resp_valid.status(), StatusCode::OK);
+        assert_eq!(resp_valid.body(), "OK:did:plc:alice123");
     }
 }
-
-// =========================================================================
-// SECTION 2: AXUM EXTRACTOR ADVERSARIAL EDGE CASES
-// =========================================================================
 
 #[cfg(feature = "axum")]
 mod axum_adversarial_tests {
@@ -627,7 +1092,6 @@ mod axum_adversarial_tests {
 
     #[tokio::test]
     async fn test_axum_missing_code_and_state_parameters() {
-        // 1. Missing state
         let req_no_state = Request::builder()
             .uri("/oauth/callback?code=valid_code_only")
             .body(axum::body::Body::empty())
@@ -641,7 +1105,6 @@ mod axum_adversarial_tests {
             Err(IntegrationError::MissingState)
         ));
 
-        // 2. Missing code
         let req_no_code = Request::builder()
             .uri("/oauth/callback?state=valid_state_only")
             .body(axum::body::Body::empty())
@@ -655,7 +1118,6 @@ mod axum_adversarial_tests {
             Err(IntegrationError::MissingCode)
         ));
 
-        // 3. Completely empty query
         let req_empty = Request::builder()
             .uri("/oauth/callback")
             .body(axum::body::Body::empty())
@@ -669,7 +1131,6 @@ mod axum_adversarial_tests {
             Err(IntegrationError::MissingCode)
         ));
 
-        // 4. Server error response parameter
         let req_err = Request::builder()
             .uri("/oauth/callback?error=invalid_grant&error_description=Code+expired")
             .body(axum::body::Body::empty())
@@ -687,7 +1148,6 @@ mod axum_adversarial_tests {
 
     #[tokio::test]
     async fn test_axum_oversized_and_parameter_polluted_query_strings() {
-        // Construct an oversized query string (>50KB) with 1,000 dummy parameters + valid code & state
         let mut query_params = vec![
             ("code".to_string(), "target_code_123".to_string()),
             ("state".to_string(), "target_state_456".to_string()),
@@ -739,7 +1199,6 @@ mod axum_adversarial_tests {
 
     #[tokio::test]
     async fn test_axum_authenticated_user_extractor_rejections() {
-        // 1. Completely unauthenticated request (no extensions, no headers)
         let req_empty = Request::builder()
             .uri("/api/profile")
             .body(axum::body::Body::empty())
@@ -750,7 +1209,6 @@ mod axum_adversarial_tests {
             .unwrap_err();
         assert_eq!(err.0, StatusCode::UNAUTHORIZED);
 
-        // 2. Request with invalid Authorization scheme (Bearer instead of DPoP)
         let req_bearer = Request::builder()
             .uri("/api/profile")
             .header(header::AUTHORIZATION, "Bearer some_bearer_token")
@@ -794,10 +1252,6 @@ mod axum_adversarial_tests {
         );
     }
 }
-
-// =========================================================================
-// SECTION 3: ACTIX-WEB EXTRACTOR ADVERSARIAL EDGE CASES
-// =========================================================================
 
 #[cfg(feature = "actix")]
 mod actix_adversarial_tests {
@@ -880,7 +1334,6 @@ mod actix_adversarial_tests {
 
     #[tokio::test]
     async fn test_actix_authenticated_user_extractor_rejections() {
-        // 1. Empty request
         let req_empty = TestRequest::get().uri("/api/feed").to_http_request();
         let mut payload = Payload::None;
         let err = AuthenticatedUser::from_request(&req_empty, &mut payload)
@@ -888,7 +1341,6 @@ mod actix_adversarial_tests {
             .unwrap_err();
         assert_eq!(err.error_response().status(), ActixStatusCode::UNAUTHORIZED);
 
-        // 2. Invalid Scheme
         let req_bearer = TestRequest::get()
             .uri("/api/feed")
             .insert_header(("Authorization", "Bearer actix_bearer_token"))
