@@ -63,25 +63,44 @@ jobs:
           tool: cargo-mutants
 
       - name: Run mutation sweep (${{ matrix.shard.name }})
+        # cargo-mutants exit codes: 0 = all caught, 2 = missed mutants, 3 = test
+        # timeouts. Codes 2 and 3 are expected sweep outcomes that the kill-rate
+        # gate below must still evaluate, so only those two are tolerated; every
+        # other exit code (1 = usage error, 4 = failing baseline, 70 = internal
+        # error) fails the step and skips the gate.
         run: >
           cargo mutants -j2 --timeout 300 --no-shuffle
           ${{ matrix.shard.files }}
+          || code=$?; [ "${code:-0}" -eq 0 ] || [ "${code:-0}" -eq 2 ] || [ "${code:-0}" -eq 3 ] || exit "${code}"
 
       - name: Enforce kill-rate floor
+        if: always()
         run: |
           python3 -c "
           import json, sys, os
           name = '${{ matrix.shard.name }}'
           floor = float(os.environ['KILL_RATE_FLOOR'])
-          outcomes = json.load(open('mutants.out/outcomes.json'))
-          caught = sum(1 for o in outcomes if o.get('caught'))
-          unviable = sum(1 for o in outcomes if o.get('unviable'))
-          viable = len(outcomes) - unviable
+          report = json.load(open('mutants.out/outcomes.json'))
+          outcomes = report['outcomes']
+          # Per-outcome classification lives in the serialized 'summary' field;
+          # aggregate counts sit on the top-level report object. Baseline builds
+          # are excluded from the mutant population.
+          def classify(o):
+              summary = o.get('summary', '')
+              if isinstance(summary, dict):
+                  return summary.get('type', '')
+              return summary
+          caught = sum(1 for o in outcomes if classify(o) == 'CaughtMutant')
+          timeout = sum(1 for o in outcomes if classify(o) == 'Timeout')
+          unviable = sum(1 for o in outcomes if classify(o) == 'Unviable')
+          mutants = [o for o in outcomes if o.get('scenario') != 'Baseline']
+          viable = len(mutants) - unviable
           rate = caught / viable if viable else 0.0
-          print(f\"Shard '{name}' kill rate: {caught}/{viable} = {rate:.1%}\")
-          survivors = [o for o in outcomes if not o.get('caught') and not o.get('unviable')]
+          print(f\"Shard '{name}' kill rate: {caught}/{viable} = {rate:.1%} (timeouts: {timeout})\")
+          survivors = [o for o in mutants if classify(o) == 'MissedMutant']
           for s in survivors:
-              mut = s.get('mutant', {})
+              # Scenario::Mutant(Mutant) serializes as an externally-tagged enum.
+              mut = s.get('scenario', {}).get('Mutant', {})
               print(f\"  survivor: {mut.get('file')}:{mut.get('line')} - {mut.get('replacement')}\")
           if rate < floor:
               print('::error::shard kill rate below floor')

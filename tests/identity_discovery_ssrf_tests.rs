@@ -18,7 +18,7 @@ use skyauth::discovery::{
     discover_oauth_endpoints, fetch_auth_server_metadata, fetch_protected_resource_metadata,
     validate_auth_server_capabilities, AuthorizationServerMetadata,
 };
-use skyauth::error::{DiscoveryError, IdentityError};
+use skyauth::error::{DiscoveryError, IdentityError, SsrfError};
 use skyauth::identity::{
     normalize_handle, DidDocument, DidService, DnsTxtResolver, IdentityResolver,
 };
@@ -64,17 +64,19 @@ fn test_ssrf_loopback_and_insecure_localhost() {
     assert!(local_allowed.validate_url(&url_loopback).is_ok());
 
     let suffixes = [
-        "http://metadata.google.internal/xrpc",
-        "http://evil.internal/xrpc",
-        "http://box.local/xrpc",
-        "http://app.localhost/xrpc",
+        "https://metadata.google.internal/xrpc",
+        "https://evil.internal/xrpc",
+        "https://box.local/xrpc",
+        "https://app.localhost/xrpc",
     ];
     for u in suffixes {
         let parsed = Url::parse(u).unwrap();
-        assert!(
-            local_allowed.validate_url(&parsed).is_err(),
-            "test mode must keep blocking {u}"
-        );
+        // Test mode: HTTPS passes the scheme check, so the rejection must come
+        // from the hostname defense (BlockedHost), not InsecureScheme.
+        match local_allowed.validate_url(&parsed) {
+            Err(SsrfError::BlockedHost(_)) => {}
+            other => panic!("test mode must block {u} as BlockedHost, got {other:?}"),
+        }
         assert!(strict.validate_url(&parsed).is_err());
     }
 }
@@ -498,6 +500,7 @@ fn test_auth_server_capability_violations() {
         scopes_supported: vec!["atproto".to_string()],
         authorization_response_iss_parameter_supported: true,
         client_id_metadata_document_supported: true,
+        require_request_uri_registration: true,
     };
     assert!(validate_auth_server_capabilities(&valid_base, "https://auth.example.com").is_ok());
 
@@ -790,5 +793,31 @@ async fn test_protected_resource_capability_violations() {
             Err(DiscoveryError::ResourceMismatch { .. })
         ),
         "Same-origin resource with a query must fail with ResourceMismatch"
+    );
+
+    mock_pds.reset().await;
+    let pds_origin = Url::parse(mock_pds.uri().as_str())
+        .unwrap()
+        .origin()
+        .ascii_serialization();
+    Mock::given(method("GET"))
+        .and(path("/.well-known/oauth-protected-resource"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(serde_json::json!({
+                    "resource": format!("https://user:pass@{}/", pds_origin.trim_start_matches("https://")),
+                    "authorization_servers": [
+                        "https://auth.example.com"
+                    ]
+                })),
+        )
+        .mount(&mock_pds)
+        .await;
+
+    let res_userinfo = fetch_protected_resource_metadata(&filter, &mock_pds.uri()).await;
+    assert!(
+        matches!(res_userinfo, Err(DiscoveryError::ResourceMismatch { .. })),
+        "resource carrying userinfo must fail with ResourceMismatch (origin comparison strips userinfo)"
     );
 }

@@ -152,6 +152,7 @@ fn test_rfc8414_rust_struct_serialization_compliance() {
         scopes_supported: vec!["atproto".to_string()],
         authorization_response_iss_parameter_supported: true,
         client_id_metadata_document_supported: true,
+        require_request_uri_registration: true,
     };
 
     let serialized = serde_json::to_value(&rust_metadata)

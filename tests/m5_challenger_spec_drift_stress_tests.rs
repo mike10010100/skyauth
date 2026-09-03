@@ -332,21 +332,31 @@ fn test_manifest_checksum_tamper_detection() {
 }
 
 #[test]
-fn test_missing_manifest_triggers_initial_creation_safely() {
+fn test_missing_manifest_fails_verify_and_generate_manifest_command_works() {
     let sandbox = Sandbox::new("missing_manifest");
     let manifest_path = sandbox.root.join("schemas/.checksums.sha256");
 
     fs::remove_file(&manifest_path).unwrap();
     assert!(!manifest_path.exists());
 
+    // Verification must not bootstrap its own trust anchor: with the manifest
+    // deleted, --verify fails so a modified lexicon cannot pass by hiding the
+    // manifest. Manifest creation is reserved for --generate-manifest.
     let out = sandbox.run_script(&["--verify"], &[]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "Missing manifest MUST fail --verify with exit code 1"
+    );
+
+    let out_gen = sandbox.run_script(&["--generate-manifest"], &[]);
     assert!(
-        out.status.success(),
-        "Missing manifest triggers auto-generation and passes"
+        out_gen.status.success(),
+        "Explicit --generate-manifest must create the manifest"
     );
     assert!(
         manifest_path.exists(),
-        "Manifest must be regenerated on disk"
+        "Manifest created by --generate-manifest"
     );
 
     let new_manifest = fs::read_to_string(&manifest_path).unwrap();
@@ -357,6 +367,13 @@ fn test_missing_manifest_triggers_initial_creation_safely() {
             file
         );
     }
+
+    // After explicit bootstrap, verification passes again.
+    let out_clean = sandbox.run_script(&["--verify"], &[]);
+    assert!(
+        out_clean.status.success(),
+        "Verification must pass after explicit manifest generation"
+    );
 }
 
 #[test]

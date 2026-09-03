@@ -698,6 +698,12 @@ pub enum DiscoveryError {
     )]
     ParNotRequired(String),
 
+    /// Authorization server explicitly disabled RFC 9126 request_uri registration (`require_request_uri_registration` must not be false).
+    #[error(
+        "Authorization server '{0}' explicitly disabled require_request_uri_registration; the ATProto OAuth profile mandates it"
+    )]
+    MissingRequestUriRegistration(String),
+
     /// Authorization server metadata is missing the required 'code' response type.
     #[error("Authorization server '{0}' is missing required 'code' response type support")]
     MissingResponseType(String),

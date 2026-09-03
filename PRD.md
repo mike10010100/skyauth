@@ -79,40 +79,42 @@ skyauth/
 ├── src/
 │   ├── lib.rs              # Crate root with #![forbid(unsafe_code)] and strict lints
 │   ├── client.rs           # High-level AtprotoOAuthClient interface
-│   ├── dpop.rs             # DPoPKey, JWK serialization, & RFC 9449 proof generator
+│   ├── crypto.rs           # P-256 signing/verification, SHA-256, HMAC, JWK thumbprints, constant_time_eq
+│   ├── dpop.rs             # DPoPKey, DPoPVerifier, JWK serialization, & RFC 9449 proof engine
+│   ├── discovery.rs        # RFC 8414 / RFC 9728 metadata discovery & AS capability enforcement
+│   ├── identity.rs         # Handle/DID resolution (DNS TXT, PLC, did:web) & bidirectional verification
+│   ├── par.rs              # RFC 9126 PAR execution & authorization-URL generation
 │   ├── pkce.rs             # PKCE code_verifier and S256 challenge helpers
-│   ├── resolver.rs         # DID, PDS, & RFC 8414/9728 metadata resolver
-│   ├── store.rs            # Sharded in-memory and pluggable OAuthStateStore traits
-│   ├── session.rs          # HMAC-SHA256 session signing & validation
-│   ├── security.rs         # SSRF validation, restricted IP filtering, constant_time_eq
-│   ├── types.rs            # Strongly-typed request, response, and metadata models
+│   ├── session.rs          # OAuthSession with token rotation & zeroization
+│   ├── ssrf.rs             # SsrfFilter: restricted IP/hostname filtering, DNS pinning, bounded bodies
+│   ├── store.rs            # 64-shard OAuthStateStore & pluggable OAuthStore trait
+│   ├── verification/       # Verus contracts, Kani harnesses, executable formal models
+│   ├── integrations/       # axum / actix / tower middleware, AccessTokenValidator implementations
 │   └── error.rs            # Strongly-typed AtprotoOAuthError enum
 ├── lexicons/               # Bundled official ATProto Lexicon schemas
 │   └── com/atproto/
 │       ├── identity/resolveHandle.json
-│       └── server/createSession.json
+│       └── server/{createSession,refreshSession}.json
 ├── schemas/                # Bundled official IETF RFC OAuth schemas
 │   ├── rfc8414_authorization_server.json
 │   ├── rfc9728_protected_resource.json
+│   ├── rfc9449_dpop_proof.json
 │   └── atproto_client_metadata.json
 ├── scripts/
-│   └── sync_specs.sh       # Automated upstream spec synchronization & drift verification
-├── tests/
-│   ├── dpop_rfc9449_vectors.rs
-│   ├── pkce_rfc7636_vectors.rs
-│   ├── discovery_tests.rs
-│   ├── token_exchange_tests.rs
-│   ├── schema_compliance_tests.rs # Dynamic runtime schema AST validation
-│   ├── kani_harnesses.rs          # Bounded model checking with anti-vacuity checks
-│   ├── verus_proofs.rs            # Deductive verification contracts
-│   └── adversarial_hardening_tests.rs
+│   ├── sync_specs.sh       # Automated upstream spec synchronization & drift verification
+│   └── run_verus.sh        # Pinned-release Verus deductive verification runner
+├── tests/                  # 25 test binaries: RFC vectors, tier suites, challenger stress suites
+│                           # (see TEST_READY.md for the exact inventory)
+├── .github/workflows/      # ci.yml, codeql.yml, mutation.yml (CI-only mutation sweep)
 ├── Cargo.toml
 ├── LICENSE-MIT
 ├── LICENSE-APACHE
 └── README.md
 ```
 
-### 4.2 Core API Signatures (Mockup)
+### 4.2 Core API Signatures (Original Mockup — superseded; see `README.md` and `src/lib.rs` for the shipped API)
+
+> **Note**: The signatures below are the pre-implementation design mockup. The shipped API differs (e.g. `AtprotoOAuthClient::builder()` with `.state_store()`/`.state_ttl()`, `authorize()` → `handle_callback()`), but the overall flow is preserved.
 
 ```rust
 use skyauth::{AtprotoOAuthClient, OAuthClientMetadata, OAuthStateStore};
@@ -155,9 +157,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 2. **Authorization Code Interception (RFC 7636)**:
    - S256 PKCE challenges ensure that only the entity possessing the original code verifier can complete the code exchange.
 3. **State Poisoning & CSRF**:
-   - OAuth state tokens are generated with 256 bits of cryptographic entropy, stored in a 64-shard partitioned memory store, and consumed atomically via `take` (single-use).
+   - OAuth state tokens are generated with 256 bits of cryptographic entropy, stored in a 64-shard partitioned memory store, and consumed atomically via `take_state` (single-use).
 4. **Server-Side Request Forgery (SSRF)**:
-   - All outbound network calls to PDS or authorization servers strictly pass through `validate_outbound_url` and `is_restricted_ip`, preventing loopback (`127.0.0.1`), private RFC 1918 egress, and cloud metadata (`169.254.169.254`) exfiltration.
+   - All outbound network calls to PDS or authorization servers strictly pass through `SsrfFilter::validate_url` / `validate_url_and_dns` and `is_restricted_ip`, preventing loopback (`127.0.0.1`), private RFC 1918 egress, and cloud metadata (`169.254.169.254`) exfiltration.
 5. **Timing Side-Channels**:
    - Signature checks and token verifications utilize constant-time slice comparison (`constant_time_eq`).
 
@@ -201,7 +203,7 @@ We leverage [**Verus**](https://github.com/verus-lang/verus) (Microsoft Research
 - **Contract 4: SSRF Restricted IP Rejection Invariant**:
   Prove that `is_restricted_ip(ip)` returns `true` for all loopback (`127.0.0.0/8`, `::1`), private RFC 1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local (`169.254.0.0/16`), and carrier-grade NAT ranges.
 
-#### Layer 2 (Complementary): Kani Bounded Model Checking with Anti-Vacuity Gates (`tests/kani_harnesses.rs`)
+#### Layer 2 (Complementary): Kani Bounded Model Checking with Anti-Vacuity Gates (`src/verification/kani_harnesses.rs`)
 For bit-level transformations and low-level byte packing:
 - All Kani harnesses (`#[kani::proof]`) **must enforce strict anti-vacuity**:
   1. Mandatory `kani::cover!()` reachability statements ensuring execution paths are actually exercised.
@@ -250,7 +252,7 @@ To prevent subtle schema divergence, naming errors, or casing bugs (e.g. `camelC
   - Add `scripts/sync_specs.sh` and CI schema drift verification.
 - [x] **Milestone 6: Verus & Kani Formal Verification Suite**
   - Implement Verus specifications for `OAuthStateStore`, PKCE `S256` verification, and SSRF boundary filters.
-  - Implement `tests/kani_harnesses.rs` with mandatory `kani::cover!()` anti-vacuity reachability checks.
+  - Implement `src/verification/kani_harnesses.rs` with mandatory `kani::cover!()` anti-vacuity reachability checks.
   - Integrate formal verification checks into continuous integration pipeline.
 - [ ] **Milestone 7: Documentation, Benchmarks & Crates.io Publication** *(docs complete; latency benchmarks & crates.io publication pending → see §7.1 trade-off notes and release checklist)*
   - 100% rustdoc documentation coverage (`missing_docs` denied).

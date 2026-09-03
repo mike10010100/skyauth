@@ -60,7 +60,9 @@ calc_sha256() {
     fi
 }
 
-# JSON syntax validator
+# JSON syntax validator. Fail closed: with no jq/python3/node available there is
+# no way to prove a payload is JSON, so validation fails rather than trusting a
+# non-empty file (sync would otherwise replace local specs with garbage).
 validate_json() {
     local file="$1"
     if command -v jq &>/dev/null; then
@@ -70,8 +72,8 @@ validate_json() {
     elif command -v node &>/dev/null; then
         node -e "JSON.parse(require('fs').readFileSync(process.argv[1]))" "${file}" >/dev/null 2>&1
     else
-        # Last resort when no JSON tool exists: non-empty file.
-        test -s "${file}"
+        log_error "No JSON tool (jq, python3, or node) available; cannot validate ${file}."
+        return 1
     fi
 }
 
@@ -156,16 +158,12 @@ verify_specs() {
     done < <(get_managed_files)
 
     if [[ ! -f "${MANIFEST_FILE}" ]]; then
-        # Fail closed: a missing manifest with missing spec files must not report
-        # success just because a fresh (empty/incomplete) manifest was generated.
-        log_warn "Checksum manifest ${MANIFEST_FILE} does not exist. Generating initial manifest..."
-        if [[ ${drift_detected} -ne 0 ]]; then
-            log_error "Specification verification FAILED: required files are missing or malformed (see above)."
-            return 1
-        fi
-        generate_manifest
-        log_success "Verification passed (manifest created)."
-        return 0
+        # Fail closed: verification must not bootstrap its own trust anchor. A
+        # missing manifest means checksums cannot be validated, so --verify fails;
+        # manifest creation is reserved for the explicit --generate-manifest command.
+        log_error "Checksum manifest ${MANIFEST_FILE} does not exist; verification cannot proceed."
+        log_error "Run '${0##*/} --generate-manifest' to create it from the current files, then re-verify."
+        return 1
     fi
 
     log_info "Verifying SHA-256 checksums against local manifest..."
@@ -255,10 +253,10 @@ verify_specs() {
     if [[ ${fetch_failed} -ne 0 ]]; then
         log_error "Specification verification INCOMPLETE: ${fetch_failed} upstream fetch(es) failed; upstream drift could NOT be verified."
         log_error "Set SYNC_SPECS_ALLOW_OFFLINE=1 to accept manifest-only verification for offline development."
-        # Exit code 3 distinguishes "manifest verified, upstream UNVERIFIED" from
-        # hard drift (1) so main() can apply the offline escape hatch to exactly
-        # this case. Function-local variables are not visible to main().
-        exit 3
+        # Status 3 distinguishes "manifest verified, upstream UNVERIFIED" from hard
+        # drift (1) so the caller can apply the offline escape hatch to exactly this
+        # case. Function-local variables are not visible to main().
+        return 3
     fi
 
     log_success "All canonical Lexicons and RFC schemas match manifest and upstream. Zero drift detected."
@@ -310,12 +308,18 @@ sync_specs() {
 
     while IFS= read -r rel_path; do
         local full_path="${ROOT_DIR}/${rel_path}"
-        if [[ -f "${full_path}" ]]; then
-            format_json "${full_path}"
+        if [[ -f "${full_path}" ]] && ! format_json "${full_path}"; then
+            log_error "Failed to format ${rel_path}; aborting sync before manifest regeneration."
+            return 1
         fi
     done < <(get_managed_files)
 
-    generate_manifest
+    # Fail closed on manifest generation: a silent manifest failure would let
+    # unverified content look committed. (Errexit is active outside --verify.)
+    if ! generate_manifest; then
+        log_error "Manifest regeneration failed; aborting sync."
+        return 1
+    fi
 
     if [[ ${sync_errors} -gt 0 ]]; then
         log_warn "Sync completed with ${sync_errors} offline/network fallbacks. Local specs preserved."
@@ -346,10 +350,11 @@ Exit Codes:
 EOF
 }
 
-main() {
-    local cmd="${1:---check}"
-
-    case "${cmd}" in
+# Command dispatcher. Each subcommand runs with errexit active so any failure
+# (formatter errors, manifest generation, a failed fetch without a local copy)
+# aborts fail-closed; only the --verify status capture below suppresses errexit.
+run_command() {
+    case "${1:---check}" in
         --check|--verify)
             verify_specs
             ;;
@@ -363,22 +368,24 @@ main() {
             show_help
             ;;
         *)
-            log_error "Unknown command: ${cmd}"
+            log_error "Unknown command: ${1}"
             show_help
             exit 1
             ;;
     esac
 }
 
-# Offline escape hatch: verify_specs exits 3 when the manifest is verified but
+# Offline escape hatch: verify_specs returns 3 when the manifest is verified but
 # upstream could not be fetched. With SYNC_SPECS_ALLOW_OFFLINE=1 that specific
-# outcome is downgraded to a warning; hard drift (exit 1) always fails.
+# outcome is downgraded to a warning; hard drift (1) always fails. Errexit is
+# suppressed ONLY for the status capture so a non-zero return is observable
+# rather than fatal.
 set +e
-main "$@"
-verify_exit=$?
+run_command "$@"
+verify_status=$?
 set -e
-if [[ ${verify_exit} -eq 3 && "${SYNC_SPECS_ALLOW_OFFLINE:-0}" == "1" ]]; then
+if [[ ${verify_status} -eq 3 && "${SYNC_SPECS_ALLOW_OFFLINE:-0}" == "1" ]]; then
     log_warn "SYNC_SPECS_ALLOW_OFFLINE=1: accepting manifest-only verification (upstream unverified)."
     exit 0
 fi
-exit "${verify_exit}"
+exit "${verify_status}"

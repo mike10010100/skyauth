@@ -2947,6 +2947,7 @@ async fn test_m7_adv_wiremock_discovery_and_par_scenarios() {
         scopes_supported: vec!["atproto".to_string()],
         authorization_response_iss_parameter_supported: true,
         client_id_metadata_document_supported: true,
+        require_request_uri_registration: true,
     };
 
     Mock::given(method("GET"))

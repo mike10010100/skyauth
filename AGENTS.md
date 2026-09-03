@@ -75,18 +75,25 @@ cargo clippy --all-targets --all-features -- -D warnings
 # 3. Run all unit and integration test suites
 cargo test --all-targets --all-features
 
-# 4. Verify specification drift
+# 4. Run rustdoc examples (documentation tests)
+cargo test --doc --all-features
+
+# 5. Verify specification drift
 bash scripts/sync_specs.sh --verify
 
-# 5. Run Verus deductive formal verification (SMT proofs)
+# 6. Run Verus deductive formal verification (SMT proofs)
 bash scripts/run_verus.sh
 
-# 6. Run Kani bounded model checking harnesses (must verify all harnesses with 0 failures
+# 7. Run Kani bounded model checking harnesses (must verify all harnesses with 0 failures
 #    and all anti-vacuity cover properties satisfied)
 cargo kani
 ```
 
-Steps 5–6 are **non-optional for this repository**: the crate's headline guarantee is formal
+CI additionally enforces a coverage gate (`cargo llvm-cov --all-features --fail-under-lines 80`)
+and a supply-chain audit (`cargo-deny`); run the coverage gate locally when touching test
+coverage-sensitive code.
+
+Steps 6–7 are **non-optional for this repository**: the crate's headline guarantee is formal
 verification, so changes to `src/verification/`, `src/crypto.rs`, `src/dpop.rs`, `src/ssrf.rs`,
 `src/store.rs`, or `src/pkce.rs` without re-proving the corresponding invariants are incomplete.
 

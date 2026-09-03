@@ -273,11 +273,22 @@ pub fn proof_ssrf_restricted_ip_rejection() {
             assert!(is_restricted_ipv4(&ip));
             assert!(filter.validate_ip(IpAddr::V4(ip)).is_err());
         }
+        // Soundness of the acceptance path: when the spec says the address is
+        // permitted, `SsrfFilter::validate_ip` must actually accept it — proving
+        // the filter has no false rejects (a filter that blocked everything would
+        // satisfy the blocked-side assertions vacuously).
+        if !SsrfFormalSpec::spec_is_restricted_ipv4(&ip) {
+            assert!(
+                filter.validate_ip(IpAddr::V4(ip)).is_ok(),
+                "permitted symbolic IPv4 must be accepted by SsrfFilter::validate_ip"
+            );
+        }
         kani::cover!(is_10, "rfc1918_10_blocked");
         kani::cover!(is_172, "rfc1918_172_blocked");
         kani::cover!(is_192, "rfc1918_192_blocked");
         kani::cover!(is_meta, "cloud_metadata_169_254_blocked");
         kani::cover!(is_loop, "loopback_127_blocked");
+        kani::cover!(!should_block, "public_ip_allowed");
     }
 
     #[cfg(not(kani))]

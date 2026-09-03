@@ -960,30 +960,51 @@ impl AtprotoOAuthClient {
         Ok(resp)
     }
 
-    /// Validates an XRPC NSID against the Lexicon NSID grammar (reverse-DNS name with
-    /// dot-separated alphanumeric segments, each segment starting with a letter).
+    /// Validates an XRPC NSID against the ATProto NSID grammar
+    /// (`<https://atproto.com/specs/nsid>`, mirroring the reference validator in
+    /// `bluesky-social/atproto/packages/syntax`).
     ///
-    /// Rejects path-traversal and injection payloads (`../../admin`, empty segments,
-    /// segments starting with digits or `-`) before they can alter the request path.
+    /// Grammar: `nsid = authority delim name` where every segment is
+    /// `alpha *( alpha / number / "-" )` (<=63 chars, no leading/trailing hyphen),
+    /// the total length is <=317, the first authority segment must start with a
+    /// letter, and the final name segment is `alpha *( alpha / number )` — letters
+    /// and digits only, no hyphens, no leading digit.
     fn validate_xrpc_nsid(nsid: &str) -> Result<(), TokenError> {
         let trimmed = nsid.trim_start_matches('/');
-        if trimmed.is_empty() {
+        if trimmed.is_empty() || trimmed.len() > 317 {
             return Err(TokenError::InvalidNsid(nsid.to_string()));
         }
         if trimmed.contains("..") || trimmed.contains('\\') || trimmed.contains('%') {
             return Err(TokenError::InvalidNsid(nsid.to_string()));
         }
         let segments: Vec<&str> = trimmed.split('.').collect();
-        if segments.len() < 2 {
+        if segments.len() < 3 {
             return Err(TokenError::InvalidNsid(nsid.to_string()));
         }
         for seg in &segments {
-            let valid = !seg.is_empty()
-                && seg.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-                && seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
-            if !valid {
+            if seg.is_empty()
+                || seg.len() > 63
+                || seg.starts_with('-')
+                || seg.ends_with('-')
+                || !seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            {
                 return Err(TokenError::InvalidNsid(nsid.to_string()));
             }
+        }
+        // First authority segment must start with a letter.
+        if !segments[0]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        {
+            return Err(TokenError::InvalidNsid(nsid.to_string()));
+        }
+        // Name segment: starts with a letter, then letters/digits only (no hyphens).
+        let name = segments[segments.len() - 1];
+        let name_chars: Vec<char> = name.chars().collect();
+        let starts_with_letter = name_chars.first().is_some_and(|c| c.is_ascii_alphabetic());
+        if !starts_with_letter || name_chars.iter().any(|c| !c.is_ascii_alphanumeric()) {
+            return Err(TokenError::InvalidNsid(nsid.to_string()));
         }
         Ok(())
     }
@@ -1364,11 +1385,19 @@ mod tests {
 
     #[test]
     fn test_validate_xrpc_nsid_accepts_valid_grammar() {
+        // Includes upstream interop-suite valid cases: digit-start authority
+        // segments ("one.2.three"), hyphenated authority segments ("a-0.b-1.c"),
+        // and camel-case names ("com.example.fooBar").
         for nsid in [
             "com.atproto.repo.describeRepo",
             "/app.bsky.feed.getTimeline",
-            "a.b",
-            "com.example.my-method2.v1",
+            "a.b.c",
+            "one.2.three",
+            "one.two.three.four-and.FiVe",
+            "a-0.b-1.c",
+            "com.example.fooBar",
+            "com.example.fooBarV2",
+            "m.xn--masekowski-d0b.pl",
         ] {
             assert!(
                 AtprotoOAuthClient::validate_xrpc_nsid(nsid).is_ok(),
@@ -1383,10 +1412,19 @@ mod tests {
             "../../admin",
             "com.atproto..describeRepo",
             "com..atproto",
-            "com",
             "com.atproto.repo.",
+            "com.atproto",
+            ".one.two.three",
+            "1.0.0.127.record",
+            "0two.example.foo",
             "3com.atproto.repo",
             "com.atproto.-repo",
+            "com.atproto.repo.name-",
+            "com.atproto.repo.-name",
+            "a-0.b-1.c-3",
+            "a-0.b-1.c-o",
+            "com.example.foo.*",
+            "com.example.foo.blah*",
             "com.atproto.re\\po",
             "com.atproto.re%70o",
             "",
@@ -1399,5 +1437,29 @@ mod tests {
                 "expected InvalidNsid: {nsid:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_validate_xrpc_nsid_length_limits() {
+        // Segment cap: 63 chars is valid, 64 is not.
+        let seg63 = "o".repeat(63);
+        let seg64 = "o".repeat(64);
+        assert!(AtprotoOAuthClient::validate_xrpc_nsid(&format!("com.{seg63}.foo")).is_ok());
+        assert!(matches!(
+            AtprotoOAuthClient::validate_xrpc_nsid(&format!("com.{seg64}.foo")),
+            Err(TokenError::InvalidNsid(_))
+        ));
+        // Total cap: 317 chars (253-char authority + '.' + 63-char name), matching
+        // the upstream length-check vectors.
+        let long_authority = format!("{}.{}.{}.{}", seg63, seg63, "o".repeat(62), "o".repeat(62));
+        let nsid_317 = format!("{long_authority}.{}", "f".repeat(63));
+        assert_eq!(nsid_317.len(), 317);
+        assert!(AtprotoOAuthClient::validate_xrpc_nsid(&nsid_317).is_ok());
+        let nsid_318 = format!("{nsid_317}x");
+        assert_eq!(nsid_318.len(), 318);
+        assert!(matches!(
+            AtprotoOAuthClient::validate_xrpc_nsid(&nsid_318),
+            Err(TokenError::InvalidNsid(_))
+        ));
     }
 }

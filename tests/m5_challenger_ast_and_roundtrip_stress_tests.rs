@@ -643,6 +643,7 @@ fn test_challenge_roundtrip_authorization_server_metadata() {
         scopes_supported: vec!["atproto".to_string(), "transition:generic".to_string()],
         authorization_response_iss_parameter_supported: true,
         client_id_metadata_document_supported: true,
+        require_request_uri_registration: true,
     };
 
     let serialized = serde_json::to_value(&full).unwrap();
@@ -750,6 +751,7 @@ fn test_challenge_empty_par_endpoint_serialization_discrepancy_in_authorization_
         scopes_supported: vec!["atproto".to_string()],
         authorization_response_iss_parameter_supported: true,
         client_id_metadata_document_supported: true,
+        require_request_uri_registration: true,
     };
 
     let serialized_empty_par = serde_json::to_value(&struct_with_empty_par).unwrap();

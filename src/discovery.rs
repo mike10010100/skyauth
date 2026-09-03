@@ -77,6 +77,15 @@ pub struct AuthorizationServerMetadata {
     /// Whether client ID metadata document resolution is supported.
     #[serde(default)]
     pub client_id_metadata_document_supported: bool,
+    /// Whether the authorization server requires RFC 9126 `request_uri` registration
+    /// via PAR. The ATProto OAuth profile mandates this; an explicit `false` is
+    /// rejected during capability validation (omission is treated as `true`).
+    #[serde(default = "crate::discovery::default_true")]
+    pub require_request_uri_registration: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Fully discovered and validated OAuth endpoints bundle.
@@ -238,6 +247,8 @@ pub async fn fetch_protected_resource_metadata(
     if (resource_parsed.path() != "/" && !resource_parsed.path().is_empty())
         || resource_parsed.query().is_some()
         || resource_parsed.fragment().is_some()
+        || !resource_parsed.username().is_empty()
+        || resource_parsed.password().is_some()
     {
         return Err(DiscoveryError::ResourceMismatch {
             expected: expected_origin,
@@ -453,6 +464,14 @@ pub fn validate_auth_server_capabilities(
         ));
     }
 
+    // The ATProto OAuth profile mandates PAR request_uri registration; an explicit
+    // `require_request_uri_registration: false` contradicts it and is rejected.
+    if !meta.require_request_uri_registration {
+        return Err(DiscoveryError::MissingRequestUriRegistration(
+            auth_server_url.to_string(),
+        ));
+    }
+
     if !meta
         .dpop_signing_alg_values_supported
         .iter()
@@ -557,6 +576,7 @@ mod tests {
             scopes_supported: vec!["atproto".to_string()],
             authorization_response_iss_parameter_supported: true,
             client_id_metadata_document_supported: true,
+            require_request_uri_registration: true,
         }
     }
 
@@ -590,6 +610,55 @@ mod tests {
             validate_auth_server_capabilities(&meta, "https://auth.example.com"),
             Err(DiscoveryError::MissingPkceMethod(_))
         ));
+    }
+
+    #[test]
+    fn test_validate_auth_server_capabilities_explicit_false_request_uri_registration() {
+        // ATProto OAuth profile: require_request_uri_registration "must not be false".
+        let meta = AuthorizationServerMetadata {
+            require_request_uri_registration: false,
+            ..valid_test_metadata()
+        };
+
+        assert!(matches!(
+            validate_auth_server_capabilities(&meta, "https://auth.example.com"),
+            Err(DiscoveryError::MissingRequestUriRegistration(_))
+        ));
+    }
+
+    #[test]
+    fn test_auth_server_metadata_omitted_request_uri_registration_defaults_true() {
+        // Omission of the field must be treated as the spec default (true).
+        let json = serde_json::json!({
+            "issuer": "https://auth.example.com",
+            "authorization_endpoint": "https://auth.example.com/oauth/authorize",
+            "token_endpoint": "https://auth.example.com/oauth/token",
+            "pushed_authorization_request_endpoint": "https://auth.example.com/oauth/par",
+            "require_pushed_authorization_requests": true,
+            "dpop_signing_alg_values_supported": ["ES256"],
+            "code_challenge_methods_supported": ["S256"],
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
+            "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
+            "token_endpoint_auth_signing_alg_values_supported": ["ES256"],
+            "scopes_supported": ["atproto"],
+            "authorization_response_iss_parameter_supported": true,
+            "client_id_metadata_document_supported": true
+        });
+        let meta: AuthorizationServerMetadata = serde_json::from_value(json).unwrap();
+        assert!(meta.require_request_uri_registration);
+    }
+
+    #[test]
+    fn test_auth_server_metadata_explicit_false_request_uri_registration_deserializes() {
+        let json = serde_json::json!({
+            "issuer": "https://auth.example.com",
+            "authorization_endpoint": "https://auth.example.com/oauth/authorize",
+            "token_endpoint": "https://auth.example.com/oauth/token",
+            "require_request_uri_registration": false
+        });
+        let meta: AuthorizationServerMetadata = serde_json::from_value(json).unwrap();
+        assert!(!meta.require_request_uri_registration);
     }
 
     #[test]
