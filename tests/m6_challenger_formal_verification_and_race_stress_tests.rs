@@ -37,13 +37,13 @@ use skyauth::dpop::DPoPKey;
 use skyauth::pkce::{derive_s256_challenge, validate_verifier, PkceMethod, PkcePair};
 use skyauth::ssrf::{is_restricted_ip, is_restricted_ipv4, is_restricted_ipv6, SsrfFilter};
 use skyauth::store::{OAuthStateStore, OAuthStore};
+use skyauth::verification::formal_models::{
+    ConstantTimeEqSpec, OAuthStateTransitionModel, PkceFormalSpec, SsrfFormalSpec,
+};
 use skyauth::verification::kani_harnesses::{
     global_coverage, proof_constant_time_eq_soundness, proof_dpop_htu_normalization_invariants,
     proof_pkce_s256_verifier_bounds, proof_single_use_state_consumption,
     proof_ssrf_restricted_ip_rejection,
-};
-use skyauth::verification::verus_contracts::{
-    ConstantTimeEqSpec, OAuthStateTransitionModel, PkceFormalSpec, SsrfFormalSpec,
 };
 
 fn mock_stored_entry(state: &str) -> StoredStateEntry {
@@ -275,12 +275,34 @@ fn test_challenge_state_store_and_formal_model_state_machine_equivalence_traces(
     assert!(model.verify_global_store_invariants());
 
     let s2 = "trace_state_expired_2";
+    // Model TTL is 10 ticks from insert at tick 100 (expires at tick 110);
+    // the store uses a matching 10-second TTL so both sides expire together
+    // and the comparison is meaningful at every checkpoint.
     assert!(model.insert(s2, "client_app", 10, 100));
     assert!(store
-        .insert_state_sync(s2.to_string(), mock_stored_entry(s2), Duration::ZERO)
+        .insert_state_sync(
+            s2.to_string(),
+            mock_stored_entry(s2),
+            Duration::from_secs(10)
+        )
         .is_ok());
 
-    assert_eq!(store.contains_state_sync(s2), false);
+    // Before expiry (tick 105 < 110): both sides still hold the state.
+    assert!(store.contains_state_sync(s2));
+    {
+        let mut mid_model = model.clone();
+        let taken_mid = mid_model.take_state(s2, 105).is_some();
+        assert!(
+            taken_mid,
+            "model must return Some before the 10-tick expiry"
+        );
+        assert!(
+            store.take_state_sync(s2).is_some(),
+            "store must still hold the state before its 10s TTL elapses"
+        );
+    }
+
+    // After expiry (tick 120 > 110): both sides reject the take.
     assert_eq!(
         store.take_state_sync(s2).is_none(),
         model.take_state(s2, 120).is_none()

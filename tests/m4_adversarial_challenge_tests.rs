@@ -470,12 +470,18 @@ mod tower_adversarial_tests {
             "alg": "ES256",
             "jwk": key.public_jwk()
         });
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // iat is current (within the max-age window); exp is an hour stale so
+        // even generous clock skew cannot rescue it — isolating exp rejection.
         let payload_json = serde_json::json!({
             "jti": "jti_expired_exp_test",
             "htm": "GET",
             "htu": uri,
-            "iat": 1000000,
-            "exp": 1000001,
+            "iat": now_secs,
+            "exp": now_secs - 3600,
             "ath": ath
         });
 

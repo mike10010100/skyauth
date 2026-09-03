@@ -20,9 +20,6 @@
 #[cfg(any(verus, verus_keep_ghost))]
 use vstd::prelude::*;
 
-#[cfg(not(any(verus, verus_keep_ghost)))]
-pub use crate::verification::formal_models::*;
-
 // Under standard rustc (cargo build / cargo test), define a transparent fallback
 // macro so Verus proof syntax is recognized without compilation errors.
 #[cfg(not(any(verus, verus_keep_ghost)))]
@@ -228,6 +225,14 @@ pub open spec fn is_unreserved_ascii(c: u8) -> bool {
 }
 
 /// Specification of PKCE verifier validity condition.
+///
+/// The character-domain property is passed as the opaque `all_unreserved`
+/// boolean rather than derived from a verifier sequence: the deductive proofs in
+/// this module establish the length bounds over symbolic lengths, while the
+/// character-domain property is verified against the concrete implementation by
+/// the Kani harness ([`crate::verification::kani_harnesses::proof_pkce_s256_verifier_bounds`])
+/// and the `formal_models::PkceFormalSpec` executable model. This module does
+/// not prove character-domain coverage on its own.
 pub open spec fn spec_pkce_verifier_valid(len: nat, all_unreserved: bool) -> bool {
     len >= 43 && len <= 128 && all_unreserved
 }

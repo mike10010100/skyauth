@@ -112,4 +112,6 @@ state in the handoff report that the Kani gate could not run** — never silentl
 The same policy applies to the Verus gate: `scripts/run_verus.sh` exits non-zero unless Verus is
 installed, or the environment variable `ALLOW_VERUS_FALLBACK=1` is set to run only the executable
 model tests. Offline fallback for Verus requires the same explicit disclosure in the handoff
-report — never silently skip it either.
+report — never silently skip it either. `ALLOW_VERUS_FALLBACK=1` is a local-development escape
+hatch **only**: it must never be set in CI, workflow files, or any environment whose pass/fail
+result gates merging.

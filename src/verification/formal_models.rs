@@ -320,9 +320,12 @@ impl OAuthStateTransitionModel {
         true
     }
 
-    /// Simulates concurrent racers attempting to consume the same state token simultaneously.
+    /// Simulates repeated sequential attempts to consume the same state token.
     ///
-    /// Formally proves that exactly 1 racer obtains `Some(entry)` and all $N-1$ racers obtain `None`.
+    /// This is a deterministic sequential model (not a concurrent-execution proof):
+    /// calling `take_state` repeatedly yields exactly one `Some(entry)` — the first
+    /// call — and `None` for every subsequent call, mirroring the single-use
+    /// invariant the concurrent store tests exercise under real parallelism.
     pub fn simulate_concurrent_consumption_race(
         &mut self,
         state_id: &str,

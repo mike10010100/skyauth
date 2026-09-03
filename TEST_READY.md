@@ -20,7 +20,7 @@ All tests follow strict **opaque-box methodology**, deriving expectations direct
 | **RFC Vector & Formal Suites** | `tests/*_vectors.rs`, formal verification, stress & challenger suites | 323 | 323 | 0 | Official RFC 7636/9449 vectors, schema compliance, E2E harness rounds, proptest fuzzing, Kani fallback execution (19 suites; per-binary counts via `cargo test --test <name>`). |
 | **Unit & Property Tests** | `src/` unit modules | 124 | 124 | 0 | Pure-Rust primitives, proptest property testing, & PKCS#8 serialization. |
 | **Documentation Tests** | rustdoc examples | 15 | 15 | 0 | README/quickstart examples verified via `cargo test --doc`. |
-| **Total Test Suite** | **All Targets** | **797 (+15 doc)** | **797** | **0** | **100% Pass Rate (0 Failures, 0 Warnings).** Tier rows: 125 + 125 + 30 + 5 + 65 = 450; integration/vector/formal suites: 323 across 19 binaries; `src/` unit modules: 124. |
+| **Total Test Suite** | **All Targets** | **797 (+15 doc)** | **797** | **0** | **100% Pass Rate (0 Failures, 0 Warnings).** Tier rows: 125 + 125 + 30 + 5 + 65 = 350; integration/vector/formal suites: 323 across 19 binaries; `src/` unit modules: 124. |
 
 ---
 

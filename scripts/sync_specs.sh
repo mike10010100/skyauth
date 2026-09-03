@@ -77,12 +77,15 @@ validate_json() {
     fi
 }
 
-# Format JSON in-place when a formatting tool is available.
+# Format JSON in-place when a formatting tool is available. Object keys are
+# recursively sorted so the checksummed canonical form is stable regardless of
+# the tool used or the key order upstream chose; otherwise two byte-different
+# but semantically identical files would be reported as drift.
 format_json() {
     local file="$1"
     if command -v jq &>/dev/null; then
         local tmp="${file}.tmp.$$"
-        if jq . "${file}" > "${tmp}" 2>/dev/null; then
+        if jq -S . "${file}" > "${tmp}" 2>/dev/null; then
             mv "${tmp}" "${file}"
         else
             rm -f "${tmp}"
@@ -90,10 +93,36 @@ format_json() {
         fi
     elif command -v python3 &>/dev/null; then
         local tmp="${file}.tmp.$$"
-        if python3 -m json.tool "${file}" > "${tmp}" 2>/dev/null; then
-            mv "${tmp}" "${file}"
+        if python3 -c '
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+with open(sys.argv[1] + ".sorted.tmp", "w") as f:
+    json.dump(data, f, indent=2, sort_keys=True)
+    f.write("\n")
+' "${file}" 2>/dev/null; then
+            mv "${file}.sorted.tmp" "${file}"
         else
-            rm -f "${tmp}"
+            rm -f "${file}.sorted.tmp"
+            return 1
+        fi
+    elif command -v node &>/dev/null; then
+        local tmp="${file}.tmp.$$"
+        if node -e '
+const fs = require("fs");
+const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const sorted = (v) => {
+  if (Array.isArray(v)) return v.map(sorted);
+  if (v && typeof v === "object") {
+    return Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, val]) => [k, sorted(val)]));
+  }
+  return v;
+};
+fs.writeFileSync(process.argv[1] + ".sorted.tmp", JSON.stringify(sorted(data), null, 2) + "\n");
+' "${file}" 2>/dev/null; then
+            mv "${file}.sorted.tmp" "${file}"
+        else
+            rm -f "${file}.sorted.tmp"
             return 1
         fi
     fi

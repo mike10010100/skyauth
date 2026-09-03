@@ -203,6 +203,40 @@ impl AuthenticatedUser {
     pub fn scope(&self) -> Option<&str> {
         self.scope.as_deref()
     }
+
+    /// Consumes the user, returning the subject DID by value.
+    ///
+    /// Provided because the [`Drop`] implementation (zeroization) forbids moving
+    /// fields directly out of the struct (E0509); use these owned accessors
+    /// instead of destructuring.
+    #[must_use]
+    pub fn into_parts(self) -> (String, String, String, Option<String>) {
+        let mut this = self;
+        let did = std::mem::take(&mut this.did);
+        let access_token = std::mem::take(&mut this.access_token);
+        let dpop_thumbprint = std::mem::take(&mut this.dpop_thumbprint);
+        let scope = this.scope.take();
+        // `this` drops here; its remaining buffers are already moved-out empties.
+        (did, access_token, dpop_thumbprint, scope)
+    }
+
+    /// Consumes the user, returning the DID.
+    #[must_use]
+    pub fn into_did(mut self) -> String {
+        std::mem::take(&mut self.did)
+    }
+
+    /// Consumes the user, returning the access token.
+    #[must_use]
+    pub fn into_access_token(mut self) -> String {
+        std::mem::take(&mut self.access_token)
+    }
+
+    /// Consumes the user, returning the DPoP thumbprint.
+    #[must_use]
+    pub fn into_dpop_thumbprint(mut self) -> String {
+        std::mem::take(&mut self.dpop_thumbprint)
+    }
 }
 
 /// Request extension payload storing authentication and session context.

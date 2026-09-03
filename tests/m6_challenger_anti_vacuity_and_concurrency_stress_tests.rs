@@ -28,14 +28,14 @@ use skyauth::dpop::{normalize_htu, DPoPKey};
 use skyauth::pkce::{derive_s256_challenge, validate_verifier};
 use skyauth::ssrf::{is_restricted_ip, SsrfFilter};
 use skyauth::store::{OAuthStateStore, OAuthStore};
+use skyauth::verification::formal_models::{
+    ConstantTimeEqSpec, DPoPHtuFormalSpec, OAuthStateTransitionModel, PkceFormalSpec,
+    SsrfFormalSpec, StateTransitionStatus,
+};
 use skyauth::verification::kani_harnesses::{
     global_coverage, proof_constant_time_eq_soundness, proof_dpop_htu_normalization_invariants,
     proof_pkce_s256_verifier_bounds, proof_single_use_state_consumption,
     proof_ssrf_restricted_ip_rejection, AntiVacuityCoverage,
-};
-use skyauth::verification::verus_contracts::{
-    ConstantTimeEqSpec, DPoPHtuFormalSpec, OAuthStateTransitionModel, PkceFormalSpec,
-    SsrfFormalSpec, StateTransitionStatus,
 };
 
 fn mock_stored_state(state: &str) -> StoredStateEntry {

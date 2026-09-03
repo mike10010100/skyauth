@@ -24,6 +24,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use skyauth::client::StoredStateEntry;
 use skyauth::crypto::{
     base64url_decode, base64url_encode, constant_time_eq, hmac_sha256, jwk_thumbprint_ec_p256,
     sha256_digest, sign_p256_raw, verify_p256_raw,
@@ -34,6 +35,25 @@ use skyauth::dpop::{
 };
 use skyauth::error::{DPoPError, PkceError};
 use skyauth::pkce::{derive_s256_challenge, validate_verifier, verify_pkce, PkcePair};
+use skyauth::store::OAuthStateStore;
+
+fn mock_state_entry(state: &str) -> StoredStateEntry {
+    StoredStateEntry {
+        state: state.to_string(),
+        client_id: "https://app.example.com/client.json".to_string(),
+        code_verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk".to_string(),
+        dpop_key: DPoPKey::generate(),
+        issuer: "https://auth.example.com".to_string(),
+        did: Some("did:plc:tier2test".to_string()),
+        handle: Some("alice.bsky.social".to_string()),
+        redirect_uri: "https://app.example.com/oauth/callback".to_string(),
+        pds_endpoint: "https://pds.example.com".to_string(),
+        token_endpoint: "https://auth.example.com/oauth/token".to_string(),
+        scopes: "atproto".to_string(),
+        created_at: SystemTime::now(),
+        expires_in_secs: 300,
+    }
+}
 
 #[test]
 fn test_b1_01_sha256_empty_input() {
@@ -713,10 +733,20 @@ fn test_b16_01_rapid_double_take() {
 
 #[test]
 fn test_b16_02_single_use_after_expiry() {
-    let mut map = HashMap::new();
-    map.insert("k", "v");
-    map.clear();
-    assert_eq!(map.remove("k"), None);
+    let store = OAuthStateStore::new(Duration::from_millis(1));
+    store
+        .insert_state_sync(
+            "expired_state".to_string(),
+            mock_state_entry("expired_state"),
+            Duration::from_millis(1),
+        )
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    assert_eq!(store.contains_state_sync("expired_state"), false);
+    assert!(
+        store.take_state_sync("expired_state").is_none(),
+        "an expired state must never be consumable (single-use after expiry)"
+    );
 }
 
 #[test]
@@ -749,10 +779,36 @@ fn test_b16_05_zero_memory_leakage_after_consumption() {
 
 #[test]
 fn test_b17_01_clock_warp_backwards_saturation() {
-    let created_at: u64 = 5000;
-    let now: u64 = 1000;
-    let elapsed = now.saturating_sub(created_at);
-    assert_eq!(elapsed, 0, "Saturating subtraction must evaluate to 0");
+    // Fail-closed invariant: a StoredStateEntry whose created_at lies in the
+    // future (clock stepped backward past creation) must report expired.
+    let mut entry = mock_state_entry("warp_state");
+    entry.created_at = std::time::SystemTime::now() + Duration::from_secs(3600);
+    entry.expires_in_secs = 300;
+    assert!(
+        entry.is_expired(),
+        "entry created in the future must fail closed as expired"
+    );
+
+    // The DPoP verifier mirrors the invariant via saturating math: a proof
+    // timestamped in the future beyond clock-skew leeway is rejected.
+    let verifier = DPoPVerifier::new().with_max_clock_skew(Duration::from_secs(1));
+    let key = DPoPKey::generate();
+    let proof = key
+        .create_proof("GET", "https://pds.example.com/xrpc/test", None, None)
+        .unwrap();
+    let now = std::time::SystemTime::now() - Duration::from_secs(10_000);
+    let err = verifier.verify_proof(
+        &proof,
+        "GET",
+        "https://pds.example.com/xrpc/test",
+        None,
+        None,
+        Some(now),
+    );
+    assert!(
+        matches!(err, Err(DPoPError::FutureProof { .. })),
+        "proof dated far in the future must be rejected as FutureProof, got {err:?}"
+    );
 }
 
 #[test]

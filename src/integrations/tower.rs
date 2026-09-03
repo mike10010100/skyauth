@@ -344,10 +344,9 @@ where
             Some(f) => f(req.uri()),
             None => {
                 let scheme = req
-                    .extensions()
-                    .get::<http::request::Parts>()
-                    .and_then(|parts| parts.uri.scheme().cloned())
-                    .or_else(|| req.uri().scheme_str().and_then(|s| s.parse().ok()))
+                    .uri()
+                    .scheme_str()
+                    .and_then(|s| s.parse().ok())
                     .unwrap_or(http::uri::Scheme::HTTPS);
                 if scheme != http::uri::Scheme::HTTPS && scheme != http::uri::Scheme::HTTP {
                     tracing::debug!("DPoP htu derivation rejected non-HTTP(S) scheme: {scheme}");
@@ -688,15 +687,15 @@ mod tests {
         // Fill all 64 shards to their 2048-entry cap so the proof's shard (whatever
         // it hashes to) is full; far-future expiry keeps probes "live" vs the real clock.
         const SHARDS: usize = 64;
-        const SHARD_CAP: usize = 2048;
+        let shard_cap = crate::dpop::REPLAY_SHARD_CAPACITY;
         let cache = DPoPReplayCache::new();
         let mut i = 0u64;
-        while cache.len() < SHARDS * SHARD_CAP {
+        while cache.len() < SHARDS * shard_cap {
             let _ = cache.check_and_record(&jkt, &format!("probe{i}"), u64::MAX / 2, 0);
             i += 1;
             assert!(i < 2_000_000, "replay cache failed to saturate");
         }
-        assert_eq!(cache.len(), SHARDS * SHARD_CAP);
+        assert_eq!(cache.len(), SHARDS * shard_cap);
 
         let proof = key.create_proof("GET", uri, None, Some(&ath)).unwrap();
         let verifier = Arc::new(DPoPVerifier::new().with_replay_cache(cache));

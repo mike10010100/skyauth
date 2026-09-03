@@ -35,6 +35,8 @@ verus_pinned_sha_for() {
         "x86-macos")     echo "724efff85ccb71c958e251dda33e7663796d394ba81bfc231d407e2b4413e81c" ;;
         "arm64-macos")   echo "7075f6e1ac137143da47265691b9c8f376867708eb21480d4e751eb814806aea" ;;
         "x86-linux")     echo "b65483714e6bf2ae72bfe7c7199e1c608495a941306b979260e9ed585d5899c9" ;;
+        # No official arm64-linux Verus asset exists for the pinned release; fail
+        # closed rather than downloading and executing an unverified archive.
         "arm64-linux")   echo "" ;;
         *)               echo "" ;;
     esac
@@ -95,8 +97,9 @@ else
             fi
             log_success "Verus release integrity verified (SHA-256 match)."
         else
-            log_warn "No pinned SHA-256 digest recorded for verus-${ARCH}-${PLATFORM}; skipping integrity check."
-            log_warn "Record the digest in VERUS_PINNED_SHA256 to enforce supply-chain verification."
+            log_error "No pinned SHA-256 digest recorded for verus-${ARCH}-${PLATFORM}; refusing to execute an unverified binary."
+            log_error "Record the digest in verus_pinned_sha_for() (scripts/run_verus.sh) to enable ${ARCH}-${PLATFORM}."
+            exit 1
         fi
         unzip -q "${VERUS_ZIP}" -d "${TMP_DIR}/extracted" 2>/dev/null || true
         VERUS_EXTRACTED_DIR=$(find "${TMP_DIR}/extracted" -type f -name "verus" -exec dirname {} \; | head -n 1)

@@ -235,21 +235,12 @@ pub async fn fetch_protected_resource_metadata(
             actual: meta.resource.clone(),
         });
     }
-    // RFC 9728 identifiers for an origin-scoped resource are bare origins; a path
-    // or query would make the declared identifier differ from the queried PDS and
-    // is metadata-confusion signal, so it is rejected even at the same origin.
-    let resource_parsed = Url::parse(&meta.resource).map_err(|e| {
-        DiscoveryError::InvalidEndpointUrl(format!(
-            "Invalid resource identifier '{}': {e}",
-            meta.resource
-        ))
-    })?;
-    if (resource_parsed.path() != "/" && !resource_parsed.path().is_empty())
-        || resource_parsed.query().is_some()
-        || resource_parsed.fragment().is_some()
-        || !resource_parsed.username().is_empty()
-        || resource_parsed.password().is_some()
-    {
+    // RFC 9728 identifiers for an origin-scoped resource are bare origins; a
+    // path, query, fragment, userinfo, or explicit default port would make the
+    // declared identifier differ from the queried PDS and is metadata-confusion
+    // signal, so it is rejected even at the same origin. Reuses is_origin_only
+    // for the same authority rules applied to authorization-server URLs.
+    if !is_origin_only(&meta.resource) {
         return Err(DiscoveryError::ResourceMismatch {
             expected: expected_origin,
             actual: meta.resource.clone(),

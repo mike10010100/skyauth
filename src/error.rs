@@ -383,9 +383,17 @@ pub enum TokenError {
     #[error("Malformed token: {0}")]
     MalformedToken(String),
 
-    /// The XRPC NSID fails Lexicon NSID grammar validation (path traversal or malformed segments).
-    #[error("Invalid NSID '{0}': must be a reverse-DNS Lexicon identifier (dot-separated alphanumeric segments, each starting with a letter)")]
+    /// The XRPC NSID fails ATProto NSID grammar validation.
+    #[error(
+        "Invalid NSID '{0}': must be a reverse-DNS, dot-separated identifier of at least three segments (total <=317 chars, each segment <=63 chars, ASCII alphanumerics and internal hyphens only, no leading/trailing hyphens, first segment starting with a letter, final name segment letters and digits only with no leading digit)"
+    )]
     InvalidNsid(String),
+
+    /// The configured authorization state TTL is not a whole number of seconds.
+    #[error(
+        "Invalid state TTL {0:?}: must be a whole number of seconds (sub-second TTLs cannot be represented in StoredStateEntry)"
+    )]
+    InvalidStateTtl(std::time::Duration),
 
     /// Invalid token_type (must be case-insensitively "DPoP").
     #[error("Invalid token_type: expected 'DPoP', got '{0}'")]

@@ -74,7 +74,12 @@ jobs:
           || code=$?; [ "${code:-0}" -eq 0 ] || [ "${code:-0}" -eq 2 ] || [ "${code:-0}" -eq 3 ] || exit "${code}"
 
       - name: Enforce kill-rate floor
-        if: always()
+        # The sweep step exits 0 for tolerated outcomes (all caught, missed
+        # mutants, timeouts), so success() runs the gate in exactly those cases;
+        # a genuine sweep failure (usage error, failing baseline) fails the
+        # workflow before this step. always() would re-run the gate even after
+        # cancellation, which is unnecessary noise.
+        if: success()
         run: |
           python3 -c "
           import json, sys, os

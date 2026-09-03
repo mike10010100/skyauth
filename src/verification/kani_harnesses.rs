@@ -384,7 +384,11 @@ pub fn proof_ssrf_restricted_ip_rejection() {
 /// - `invalid_long_length_rejected`: 129-char verifier rejected.
 /// - `invalid_character_rejected`: Verifier with illegal char (e.g. space, `+`) rejected.
 /// - `challenge_length_is_43`: S256 challenge length is strictly 43.
+// unwind(129) covers the full 128-byte `max_bytes` iteration plus the loop's
+// termination check; the default unwind of 10 would leave the max-length
+// parity loop unwound (vacuously discharged).
 #[cfg_attr(kani, kani::proof)]
+#[cfg_attr(kani, kani::unwind(129))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 pub fn proof_pkce_s256_verifier_bounds() {
     #[cfg(kani)]
@@ -640,14 +644,12 @@ pub fn proof_constant_time_eq_soundness() {
 /// Note: This harness is executed in deterministic verification mode via `formal_verification_tests.rs`.
 /// `#[cfg_attr(kani, kani::proof)]` is omitted here because symbolic execution of `Url::parse`
 /// triggers an upstream Kani compiler ICE on `zerovec::ZeroSlice` in `icu_normalizer-2.3.0`
-/// (tracking: <https://github.com/model-checking/kani/issues>). The `#[cfg(kani)]` block below
-/// is therefore compiled but never selected as a proof harness; it is retained behind the
-/// `kani_dpop_htu` gating constant so the deterministic fallback remains the sole executor.
+/// (no upstream issue has been filed). The `#[cfg(any())]` block below is unreachable
+/// dead code: `any()` is never true, so the block is parsed for readability but is
+/// never compiled or type-checked; the `#[cfg(not(kani))]` branch is the sole
+/// authoritative verification path.
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 pub fn proof_dpop_htu_normalization_invariants() {
-    // Intentionally NOT symbolically executed by Kani (see the ICE note in the doc
-    // comment above): this branch exists only as a compilable reference; the
-    // `not(kani)` branch is the authoritative verification path.
     #[cfg(any())]
     {
         let port: u16 = kani::any();

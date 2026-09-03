@@ -420,10 +420,16 @@ fn test_offline_sync_network_failure_fallback_preserves_files() {
     for &rel_path in MANAGED_FILES {
         let full_path = sandbox.root.join(rel_path);
         let current_content = fs::read_to_string(&full_path).unwrap();
+        // Semantic preservation: sync re-canonicalizes formatting (recursively
+        // sorted keys) even for preserved files, so compare parsed JSON rather
+        // than bytes.
+        let current_json: serde_json::Value = serde_json::from_str(&current_content)
+            .unwrap_or_else(|e| panic!("{} must remain valid JSON: {e}", rel_path));
+        let original_json: serde_json::Value =
+            serde_json::from_str(original_contents.get(rel_path).unwrap()).unwrap();
         assert_eq!(
-            &current_content,
-            original_contents.get(rel_path).unwrap(),
-            "File {} must be preserved exactly under network failure",
+            current_json, original_json,
+            "File {} must preserve its JSON content under network failure",
             rel_path
         );
     }
@@ -488,9 +494,14 @@ exit 0
     for &rel_path in MANAGED_FILES {
         let full_path = sandbox.root.join(rel_path);
         let current_content = fs::read_to_string(&full_path).unwrap();
+        // Sync re-canonicalizes formatting even for preserved files, so compare
+        // parsed JSON content rather than bytes.
+        let current_json: serde_json::Value = serde_json::from_str(&current_content)
+            .unwrap_or_else(|e| panic!("{} must remain valid JSON: {e}", rel_path));
+        let original_json: serde_json::Value =
+            serde_json::from_str(original_contents.get(rel_path).unwrap()).unwrap();
         assert_eq!(
-            &current_content,
-            original_contents.get(rel_path).unwrap(),
+            current_json, original_json,
             "File {} must not be overwritten by malformed upstream HTML",
             rel_path
         );

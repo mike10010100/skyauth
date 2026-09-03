@@ -800,13 +800,21 @@ async fn test_protected_resource_capability_violations() {
         .unwrap()
         .origin()
         .ascii_serialization();
+    let pds_authority = pds_origin
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let userinfo_resource = format!(
+        "{}://user:pass@{}/",
+        pds_origin.split("://").next().unwrap_or("http"),
+        pds_authority
+    );
     Mock::given(method("GET"))
         .and(path("/.well-known/oauth-protected-resource"))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/json")
                 .set_body_json(serde_json::json!({
-                    "resource": format!("https://user:pass@{}/", pds_origin.trim_start_matches("https://")),
+                    "resource": userinfo_resource,
                     "authorization_servers": [
                         "https://auth.example.com"
                     ]
@@ -819,5 +827,37 @@ async fn test_protected_resource_capability_violations() {
     assert!(
         matches!(res_userinfo, Err(DiscoveryError::ResourceMismatch { .. })),
         "resource carrying userinfo must fail with ResourceMismatch (origin comparison strips userinfo)"
+    );
+
+    mock_pds.reset().await;
+    let pds_origin = Url::parse(mock_pds.uri().as_str())
+        .unwrap()
+        .origin()
+        .ascii_serialization();
+    let pds_authority = pds_origin
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    Mock::given(method("GET"))
+        .and(path("/.well-known/oauth-protected-resource"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(serde_json::json!({
+                    "resource": format!("https://{pds_authority}:443/"),
+                    "authorization_servers": [
+                        "https://auth.example.com"
+                    ]
+                })),
+        )
+        .mount(&mock_pds)
+        .await;
+
+    let res_default_port = fetch_protected_resource_metadata(&filter, &mock_pds.uri()).await;
+    assert!(
+        matches!(
+            res_default_port,
+            Err(DiscoveryError::ResourceMismatch { .. })
+        ),
+        "resource with an explicit :443 default port must fail with ResourceMismatch"
     );
 }

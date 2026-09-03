@@ -336,7 +336,20 @@ impl AtprotoOAuthClientBuilder {
     /// # Panics / Errors
     ///
     /// Returns error if client metadata is missing.
+    /// Builds the configured [`AtprotoOAuthClient`].
+    ///
+    /// # Panics / Errors
+    ///
+    /// Returns [`AtprotoOAuthError`] if client metadata was not configured, or if
+    /// the configured `state_ttl` is not a whole number of seconds — sub-second
+    /// TTLs would be truncated by `StoredStateEntry::expires_in_secs`, making
+    /// entries appear instantly expired while the store still holds them.
     pub fn build(self) -> Result<AtprotoOAuthClient, AtprotoOAuthError> {
+        if self.state_ttl.subsec_nanos() != 0 {
+            return Err(AtprotoOAuthError::Token(TokenError::InvalidStateTtl(
+                self.state_ttl,
+            )));
+        }
         let metadata = self
             .metadata
             .ok_or(ParError::MissingField("client_metadata"))?;

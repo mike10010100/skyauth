@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **XRPC NSID Validation**: `send_xrpc_request` validates the NSID against the full ATProto NSID grammar (≤317 chars total, ≤63 per segment, ≥3 segments, digit-start authority segments legal, name segment letters/digits only with no leading digit or hyphen) and rejects path-traversal payloads (`../../admin`) with `TokenError::InvalidNsid` before URL construction. Validated against the upstream `bluesky-social/atproto` interop vectors.
 - **`require_request_uri_registration` Enforcement**: `AuthorizationServerMetadata` now deserializes the field (defaulting to `true` on omission), and `validate_auth_server_capabilities` rejects an explicit `false` with `DiscoveryError::MissingRequestUriRegistration`, per the ATProto OAuth profile ("must not be false").
 - **DPoP Nonce Saturation Error**: `DPoPServerNonceSource::generate_nonce` now returns `Result<String, DPoPError>`; nonce-cache capacity exhaustion returns `DPoPError::NonceCacheSaturated` (mapped to HTTP 503 by the Tower middleware) instead of an empty-string nonce. **Breaking**: custom `DPoPServerNonceSource` implementations must update `generate_nonce`'s signature.
+- **`AuthenticatedUser` owned accessors**: `into_did()`, `into_access_token()`, `into_dpop_thumbprint()`, and `into_parts()` consume the user and return fields by value — the `Drop`/zeroization implementation forbids direct field moves (E0509), and these accessors provide the by-value escape hatch.
 
 ### Fixed
 
@@ -35,6 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
+- **`AuthorizationServerMetadata` gains `require_request_uri_registration`**: adding the field (defaulting to `true` on deserialization omission) breaks downstream struct literals, which must now set it. `validate_auth_server_capabilities` rejects an explicit `false`.
+- **`AtprotoOAuthClientBuilder::build` rejects sub-second `state_ttl`**: `StoredStateEntry::expires_in_secs` truncates sub-second TTLs to zero (making entries appear instantly expired while the store still holds them); the builder now returns `TokenError::InvalidStateTtl` for non-whole-second durations.
 - **`JwtAccessTokenValidator` requires expected issuer and audience**: validators built without `with_expected_issuer` and `with_expected_audience` reject all tokens with `IntegrationError::AuthFailed` instead of accepting them. Production validators were expected to configure both already (and the earlier presence checks rejected tokens with absent `iss`/`aud` claims); only call sites that relied on the permissive unset-configuration path are affected.
 - **`DPoPServerNonceSource::generate_nonce` returns `Result`**: implementations must return `Result<String, DPoPError>`; saturation surfaces as `DPoPError::NonceCacheSaturated` instead of an empty string.
 

@@ -187,7 +187,12 @@ impl DPoPKey {
     #[must_use]
     pub fn to_bytes(&self) -> Zeroizing<[u8; 32]> {
         let mut out = Zeroizing::new([0u8; 32]);
-        out.copy_from_slice(&self.signing_key.to_bytes());
+        // SigningKey::to_bytes returns a plain FieldBytes (GenericArray) that does
+        // not zeroize on drop; bind, copy, and wipe it so the plaintext scalar
+        // does not linger on the stack.
+        let mut scalar = self.signing_key.to_bytes();
+        out.copy_from_slice(&scalar);
+        scalar.zeroize();
         out
     }
 
@@ -745,6 +750,17 @@ impl DPoPNonceCache {
     }
 }
 
+/// Replay-cache admissions between amortized lazy prunes of expired entries.
+pub(crate) const REPLAY_PRUNE_HINT_INTERVAL: u64 = 64;
+/// Replay-cache per-shard size that triggers opportunistic expiry pruning.
+pub(crate) const REPLAY_PRUNE_THRESHOLD: usize = 512;
+/// Replay-cache per-shard hard capacity; live admissions beyond this fail closed.
+pub(crate) const REPLAY_SHARD_CAPACITY: usize = 2048;
+/// Nonce-cache size that triggers opportunistic expiry pruning.
+pub(crate) const NONCE_PRUNE_THRESHOLD: usize = 1024;
+/// Nonce-cache hard capacity; generation beyond this fails closed.
+pub(crate) const NONCE_CACHE_CAPACITY: usize = 4096;
+
 /// In-memory 64-shard partitioned concurrent cache for tracking consumed DPoP `jti` identifiers.
 ///
 /// Prevents DPoP proof replay attacks within the acceptance time window per RFC 9449 § 4.3 and § 11.1.
@@ -827,14 +843,14 @@ impl DPoPReplayCache {
         }
 
         let admissions = self.prune_hints[shard_idx].fetch_add(1, Ordering::Relaxed);
-        if guard.len() > 512 && admissions % 64 == 0 {
+        if guard.len() > REPLAY_PRUNE_THRESHOLD && admissions % REPLAY_PRUNE_HINT_INTERVAL == 0 {
             guard.retain(|_, &mut exp| exp > now_secs);
         }
 
         // Fail closed at capacity rather than evicting live proofs; expired entries always remain prunable.
-        if guard.len() >= 2048 {
+        if guard.len() >= REPLAY_SHARD_CAPACITY {
             guard.retain(|_, &mut exp| exp > now_secs);
-            if guard.len() >= 2048 {
+            if guard.len() >= REPLAY_SHARD_CAPACITY {
                 return Err(DPoPError::ReplayCacheSaturated);
             }
         }
@@ -959,11 +975,11 @@ impl DPoPServerNonceSource for InMemoryServerNonceSource {
         let exp = now_secs.saturating_add(self.ttl.as_secs());
 
         let mut guard = self.nonces.write();
-        if guard.len() > 1024 {
+        if guard.len() > NONCE_PRUNE_THRESHOLD {
             guard.retain(|_, &mut e| e > now_secs);
         }
         // Fail closed at capacity rather than evicting a live nonce: admissions are pre-authentication, so an attacker must not displace nonces for legitimate clients.
-        if guard.len() >= 4096 {
+        if guard.len() >= NONCE_CACHE_CAPACITY {
             return Err(DPoPError::NonceCacheSaturated);
         }
         guard.insert(nonce.clone(), exp);
@@ -1262,7 +1278,7 @@ mod tests {
     fn test_in_memory_server_nonce_source_saturation_fails_closed() {
         let source = InMemoryServerNonceSource::new(Duration::from_secs(3600));
         let mut i = 0;
-        while source.nonces.read().len() < 4096 {
+        while source.nonces.read().len() < NONCE_CACHE_CAPACITY {
             assert!(source.generate_nonce().is_ok());
             i += 1;
             assert!(i < 100_000, "nonce cache failed to fill");
@@ -1282,7 +1298,7 @@ mod tests {
         let mut recorded_jtis = Vec::new();
         let mut count = 0;
         let mut i = 0;
-        while count < 2048 {
+        while count < REPLAY_SHARD_CAPACITY {
             let key = format!("jkt:{i}");
             if cache.shard_index(&key) == target_shard {
                 assert!(cache
