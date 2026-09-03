@@ -163,7 +163,12 @@ fn test_tamper_every_single_managed_schema_file_caught_by_verify() {
 
         fs::write(&full_path, original_content).unwrap();
 
-        let out_clean = sandbox.run_script(&["--verify"], &[]);
+        // The subject of this assertion is local-state restoration, not upstream
+        // liveness: strict --verify additionally requires a live upstream fetch,
+        // which is environment-dependent in CI. The escape hatch verifies the
+        // manifest (the thing this test restored) while tolerating upstream
+        // unreachability.
+        let out_clean = sandbox.run_script(&["--verify"], &[("SYNC_SPECS_ALLOW_OFFLINE", "1")]);
         assert!(
             out_clean.status.success(),
             "Restored file {} must return --verify to exit code 0",
@@ -324,7 +329,9 @@ fn test_manifest_checksum_tamper_detection() {
     );
 
     fs::write(&manifest_path, original_manifest).unwrap();
-    let out_clean = sandbox.run_script(&["--verify"], &[]);
+    // Local-restoration assertion; upstream reachability is not this test's
+    // subject, so the offline escape hatch tolerates CI network flakiness.
+    let out_clean = sandbox.run_script(&["--verify"], &[("SYNC_SPECS_ALLOW_OFFLINE", "1")]);
     assert!(
         out_clean.status.success(),
         "Restoring manifest must restore exit code 0"
@@ -434,7 +441,10 @@ fn test_offline_sync_network_failure_fallback_preserves_files() {
         );
     }
 
-    let out_verify = sandbox.run_script(&["--verify"], &[]);
+    // The fallback-preservation subject is local content, not upstream
+    // liveness; the escape hatch keeps this deterministic when the CI runner's
+    // upstream fetches are rate-limited (as in the netfail mock above).
+    let out_verify = sandbox.run_script(&["--verify"], &[("SYNC_SPECS_ALLOW_OFFLINE", "1")]);
     assert!(
         out_verify.status.success(),
         "--verify must pass after offline sync fallback"
