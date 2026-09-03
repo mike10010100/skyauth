@@ -960,6 +960,34 @@ impl AtprotoOAuthClient {
         Ok(resp)
     }
 
+    /// Validates an XRPC NSID against the Lexicon NSID grammar (reverse-DNS name with
+    /// dot-separated alphanumeric segments, each segment starting with a letter).
+    ///
+    /// Rejects path-traversal and injection payloads (`../../admin`, empty segments,
+    /// segments starting with digits or `-`) before they can alter the request path.
+    fn validate_xrpc_nsid(nsid: &str) -> Result<(), TokenError> {
+        let trimmed = nsid.trim_start_matches('/');
+        if trimmed.is_empty() {
+            return Err(TokenError::InvalidNsid(nsid.to_string()));
+        }
+        if trimmed.contains("..") || trimmed.contains('\\') || trimmed.contains('%') {
+            return Err(TokenError::InvalidNsid(nsid.to_string()));
+        }
+        let segments: Vec<&str> = trimmed.split('.').collect();
+        if segments.len() < 2 {
+            return Err(TokenError::InvalidNsid(nsid.to_string()));
+        }
+        for seg in &segments {
+            let valid = !seg.is_empty()
+                && seg.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                && seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+            if !valid {
+                return Err(TokenError::InvalidNsid(nsid.to_string()));
+            }
+        }
+        Ok(())
+    }
+
     /// Executes an authenticated XRPC request against the session's PDS endpoint with DPoP signing and auto-nonce retry.
     ///
     /// # Arguments
@@ -970,13 +998,15 @@ impl AtprotoOAuthClient {
     ///
     /// # Errors
     ///
-    /// Returns [`AtprotoOAuthError`] if the PDS endpoint is missing or invalid, or if the request fails.
+    /// Returns [`AtprotoOAuthError`] if the PDS endpoint is missing or invalid, the NSID
+    /// fails Lexicon NSID grammar validation, or the request fails.
     pub async fn send_xrpc_request(
         &self,
         session: &OAuthSession,
         nsid: &str,
         query_params: &[(&str, &str)],
     ) -> Result<reqwest::Response, AtprotoOAuthError> {
+        Self::validate_xrpc_nsid(nsid).map_err(AtprotoOAuthError::Token)?;
         let pds_endpoint = session
             .pds_endpoint()
             .ok_or(TokenError::MissingField("pds_endpoint"))?;
@@ -1330,5 +1360,44 @@ mod tests {
                 "pds_endpoint"
             )))
         ));
+    }
+
+    #[test]
+    fn test_validate_xrpc_nsid_accepts_valid_grammar() {
+        for nsid in [
+            "com.atproto.repo.describeRepo",
+            "/app.bsky.feed.getTimeline",
+            "a.b",
+            "com.example.my-method2.v1",
+        ] {
+            assert!(
+                AtprotoOAuthClient::validate_xrpc_nsid(nsid).is_ok(),
+                "expected valid NSID: {nsid}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_xrpc_nsid_rejects_traversal_and_malformed() {
+        for nsid in [
+            "../../admin",
+            "com.atproto..describeRepo",
+            "com..atproto",
+            "com",
+            "com.atproto.repo.",
+            "3com.atproto.repo",
+            "com.atproto.-repo",
+            "com.atproto.re\\po",
+            "com.atproto.re%70o",
+            "",
+        ] {
+            assert!(
+                matches!(
+                    AtprotoOAuthClient::validate_xrpc_nsid(nsid),
+                    Err(TokenError::InvalidNsid(_))
+                ),
+                "expected InvalidNsid: {nsid:?}"
+            );
+        }
     }
 }

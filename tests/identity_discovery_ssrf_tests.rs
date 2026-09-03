@@ -59,6 +59,24 @@ fn test_ssrf_loopback_and_insecure_localhost() {
     assert!(!local_allowed.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
     assert!(!local_allowed.is_ip_restricted(IpAddr::V6(Ipv6Addr::LOCALHOST)));
     assert!(local_allowed.is_ip_restricted(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+
+    let url_loopback = Url::parse("http://localhost:8080/xrpc").unwrap();
+    assert!(local_allowed.validate_url(&url_loopback).is_ok());
+
+    let suffixes = [
+        "http://metadata.google.internal/xrpc",
+        "http://evil.internal/xrpc",
+        "http://box.local/xrpc",
+        "http://app.localhost/xrpc",
+    ];
+    for u in suffixes {
+        let parsed = Url::parse(u).unwrap();
+        assert!(
+            local_allowed.validate_url(&parsed).is_err(),
+            "test mode must keep blocking {u}"
+        );
+        assert!(strict.validate_url(&parsed).is_err());
+    }
 }
 
 #[test]
@@ -722,5 +740,55 @@ async fn test_protected_resource_capability_violations() {
             Err(DiscoveryError::InvalidAuthorizationServerUrl(_))
         ),
         "AS URL with explicit :443 must fail with InvalidAuthorizationServerUrl"
+    );
+
+    mock_pds.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/oauth-protected-resource"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(serde_json::json!({
+                    "resource": format!("{}/evil", mock_pds.uri()),
+                    "authorization_servers": [
+                        "https://auth.example.com"
+                    ]
+                })),
+        )
+        .mount(&mock_pds)
+        .await;
+
+    let res_same_origin_path = fetch_protected_resource_metadata(&filter, &mock_pds.uri()).await;
+    assert!(
+        matches!(
+            res_same_origin_path,
+            Err(DiscoveryError::ResourceMismatch { .. })
+        ),
+        "Same-origin resource with a path must fail with ResourceMismatch"
+    );
+
+    mock_pds.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/oauth-protected-resource"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(serde_json::json!({
+                    "resource": format!("{}?backdoor=1", mock_pds.uri()),
+                    "authorization_servers": [
+                        "https://auth.example.com"
+                    ]
+                })),
+        )
+        .mount(&mock_pds)
+        .await;
+
+    let res_same_origin_query = fetch_protected_resource_metadata(&filter, &mock_pds.uri()).await;
+    assert!(
+        matches!(
+            res_same_origin_query,
+            Err(DiscoveryError::ResourceMismatch { .. })
+        ),
+        "Same-origin resource with a query must fail with ResourceMismatch"
     );
 }

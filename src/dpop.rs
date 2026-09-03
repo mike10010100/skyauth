@@ -888,13 +888,18 @@ impl DPoPReplayCache {
 /// Server-side DPoP challenge nonce generation and verification per RFC 9449 § 8.
 pub trait DPoPServerNonceSource: Send + Sync + 'static {
     /// Generates a fresh challenge nonce.
-    fn generate_nonce(&self) -> String;
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DPoPError::NonceCacheSaturated`] when the source cannot store the
+    /// new nonce (capacity exhaustion); the empty string is never a valid nonce.
+    fn generate_nonce(&self) -> Result<String, DPoPError>;
     /// Verifies whether the presented nonce is valid and active.
     fn verify_nonce(&self, nonce: &str) -> bool;
 }
 
 impl<T: DPoPServerNonceSource + ?Sized> DPoPServerNonceSource for Arc<T> {
-    fn generate_nonce(&self) -> String {
+    fn generate_nonce(&self) -> Result<String, DPoPError> {
         (**self).generate_nonce()
     }
 
@@ -942,7 +947,7 @@ impl InMemoryServerNonceSource {
 }
 
 impl DPoPServerNonceSource for InMemoryServerNonceSource {
-    fn generate_nonce(&self) -> String {
+    fn generate_nonce(&self) -> Result<String, DPoPError> {
         let mut raw = [0u8; 24];
         rand::thread_rng().fill_bytes(&mut raw);
         let nonce = base64url_encode(&raw);
@@ -959,10 +964,10 @@ impl DPoPServerNonceSource for InMemoryServerNonceSource {
         }
         // Fail closed at capacity rather than evicting a live nonce: admissions are pre-authentication, so an attacker must not displace nonces for legitimate clients.
         if guard.len() >= 4096 {
-            return String::new();
+            return Err(DPoPError::NonceCacheSaturated);
         }
         guard.insert(nonce.clone(), exp);
-        nonce
+        Ok(nonce)
     }
 
     fn verify_nonce(&self, nonce: &str) -> bool {
@@ -1226,7 +1231,7 @@ mod tests {
     #[test]
     fn test_in_memory_server_nonce_source_lifecycle() {
         let source = InMemoryServerNonceSource::new(Duration::from_secs(60));
-        let nonce = source.generate_nonce();
+        let nonce = source.generate_nonce().unwrap();
         assert!(source.verify_nonce(&nonce));
         let mut raw = [0u8; 24];
         rand::thread_rng().fill_bytes(&mut raw);
@@ -1237,20 +1242,37 @@ mod tests {
     #[test]
     fn test_in_memory_server_nonce_source_single_use() {
         let reusable = InMemoryServerNonceSource::new(Duration::from_secs(60));
-        let nonce = reusable.generate_nonce();
+        let nonce = reusable.generate_nonce().unwrap();
         assert!(reusable.verify_nonce(&nonce));
         assert!(reusable.verify_nonce(&nonce));
 
         let strict = InMemoryServerNonceSource::new(Duration::from_secs(60)).with_single_use();
-        let nonce = strict.generate_nonce();
+        let nonce = strict.generate_nonce().unwrap();
         assert!(strict.verify_nonce(&nonce));
         assert!(
             !strict.verify_nonce(&nonce),
             "consumed nonce must not verify again"
         );
 
-        let second = strict.generate_nonce();
+        let second = strict.generate_nonce().unwrap();
         assert!(strict.verify_nonce(&second));
+    }
+
+    #[test]
+    fn test_in_memory_server_nonce_source_saturation_fails_closed() {
+        let source = InMemoryServerNonceSource::new(Duration::from_secs(3600));
+        let mut i = 0;
+        while source.nonces.read().len() < 4096 {
+            assert!(source.generate_nonce().is_ok());
+            i += 1;
+            assert!(i < 100_000, "nonce cache failed to fill");
+        }
+        // At hard capacity, admission is refused with an explicit error — never an
+        // empty-string nonce or eviction of live nonces.
+        assert!(matches!(
+            source.generate_nonce(),
+            Err(DPoPError::NonceCacheSaturated)
+        ));
     }
 
     #[test]

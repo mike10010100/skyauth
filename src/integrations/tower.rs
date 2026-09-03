@@ -314,13 +314,28 @@ where
             },
             None => {
                 let fresh_nonce = self.nonce_source.as_ref().map(|s| s.generate_nonce());
-                return Box::pin(async move {
-                    Ok(unauthorized_response(
-                        "missing_dpop_proof",
-                        None,
-                        fresh_nonce.as_deref(),
-                    ))
-                });
+                match fresh_nonce {
+                    Some(Ok(nonce)) => {
+                        return Box::pin(async move {
+                            Ok(unauthorized_response(
+                                "missing_dpop_proof",
+                                None,
+                                Some(&nonce),
+                            ))
+                        });
+                    }
+                    Some(Err(DPoPError::NonceCacheSaturated)) => {
+                        tracing::warn!(
+                            "DPoP nonce cache saturated in Tower middleware; returning 503"
+                        );
+                        return Box::pin(async { Ok(service_unavailable_response()) });
+                    }
+                    Some(Err(_)) | None => {
+                        return Box::pin(async {
+                            Ok(unauthorized_response("missing_dpop_proof", None, None))
+                        });
+                    }
+                }
             }
         };
 
@@ -385,13 +400,28 @@ where
             Err(err) => {
                 tracing::debug!("DPoP proof verification failed in Tower middleware: {err}");
                 let fresh_nonce = self.nonce_source.as_ref().map(|s| s.generate_nonce());
-                return Box::pin(async move {
-                    Ok(unauthorized_response(
-                        "invalid_dpop_proof",
-                        None,
-                        fresh_nonce.as_deref(),
-                    ))
-                });
+                match fresh_nonce {
+                    Some(Ok(nonce)) => {
+                        return Box::pin(async move {
+                            Ok(unauthorized_response(
+                                "invalid_dpop_proof",
+                                None,
+                                Some(&nonce),
+                            ))
+                        });
+                    }
+                    Some(Err(DPoPError::NonceCacheSaturated)) => {
+                        tracing::warn!(
+                            "DPoP nonce cache saturated in Tower middleware; returning 503"
+                        );
+                        return Box::pin(async { Ok(service_unavailable_response()) });
+                    }
+                    Some(Err(_)) | None => {
+                        return Box::pin(async {
+                            Ok(unauthorized_response("invalid_dpop_proof", None, None))
+                        });
+                    }
+                }
             }
         };
 
@@ -403,14 +433,32 @@ where
                 .unwrap_or(false);
 
             if !valid_nonce {
-                let fresh_nonce = nonce_source.generate_nonce();
-                return Box::pin(async move {
-                    Ok(unauthorized_response(
-                        "use_dpop_nonce",
-                        Some("Resource server requires fresh DPoP nonce"),
-                        Some(&fresh_nonce),
-                    ))
-                });
+                match nonce_source.generate_nonce() {
+                    Ok(fresh_nonce) => {
+                        return Box::pin(async move {
+                            Ok(unauthorized_response(
+                                "use_dpop_nonce",
+                                Some("Resource server requires fresh DPoP nonce"),
+                                Some(&fresh_nonce),
+                            ))
+                        });
+                    }
+                    Err(DPoPError::NonceCacheSaturated) => {
+                        tracing::warn!(
+                            "DPoP nonce cache saturated in Tower middleware; returning 503"
+                        );
+                        return Box::pin(async { Ok(service_unavailable_response()) });
+                    }
+                    Err(_) => {
+                        return Box::pin(async {
+                            Ok(unauthorized_response(
+                                "use_dpop_nonce",
+                                Some("Resource server requires fresh DPoP nonce"),
+                                None,
+                            ))
+                        });
+                    }
+                }
             }
         }
 
@@ -1025,7 +1073,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_tower_default_htu_handles_origin_form_with_host_authority() {
+    async fn test_tower_default_htu_derives_absolute_form_from_uri_authority() {
         let key = DPoPKey::generate();
         let jkt = key.jwk_thumbprint();
         let access_token = "origin_form_default_htu_token";

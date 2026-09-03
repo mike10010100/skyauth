@@ -255,7 +255,10 @@ verify_specs() {
     if [[ ${fetch_failed} -ne 0 ]]; then
         log_error "Specification verification INCOMPLETE: ${fetch_failed} upstream fetch(es) failed; upstream drift could NOT be verified."
         log_error "Set SYNC_SPECS_ALLOW_OFFLINE=1 to accept manifest-only verification for offline development."
-        return 1
+        # Exit code 3 distinguishes "manifest verified, upstream UNVERIFIED" from
+        # hard drift (1) so main() can apply the offline escape hatch to exactly
+        # this case. Function-local variables are not visible to main().
+        exit 3
     fi
 
     log_success "All canonical Lexicons and RFC schemas match manifest and upstream. Zero drift detected."
@@ -336,9 +339,10 @@ Commands:
 
 Exit Codes:
   0   All specifications valid and matching manifest AND upstream (no drift)
-  1   Drift detected, missing files, invalid JSON syntax, or an upstream fetch
-      failed (upstream drift UNVERIFIED). Set SYNC_SPECS_ALLOW_OFFLINE=1 to
-      accept manifest-only verification when upstream is unreachable.
+  1   Drift detected, missing files, or invalid JSON syntax
+  3   Local manifest verified but upstream fetch failed (upstream drift
+      UNVERIFIED). Set SYNC_SPECS_ALLOW_OFFLINE=1 to accept manifest-only
+      verification when upstream is unreachable.
 EOF
 }
 
@@ -347,18 +351,7 @@ main() {
 
     case "${cmd}" in
         --check|--verify)
-            if verify_specs; then
-                exit 0
-            else
-                # Offline escape hatch: SYNC_SPECS_ALLOW_OFFLINE=1 downgrades failed
-                # upstream fetches to a warning and accepts manifest-only verification.
-                # Drift itself still fails regardless of this flag.
-                if [[ "${SYNC_SPECS_ALLOW_OFFLINE:-0}" == "1" ]] && [[ ${fetch_failed:-0} -gt 0 ]] && [[ ${drift_detected:-0} -eq 0 ]]; then
-                    log_warn "SYNC_SPECS_ALLOW_OFFLINE=1: accepting manifest-only verification (upstream unverified)."
-                    exit 0
-                fi
-                exit 1
-            fi
+            verify_specs
             ;;
         --sync)
             sync_specs
@@ -377,4 +370,15 @@ main() {
     esac
 }
 
+# Offline escape hatch: verify_specs exits 3 when the manifest is verified but
+# upstream could not be fetched. With SYNC_SPECS_ALLOW_OFFLINE=1 that specific
+# outcome is downgraded to a warning; hard drift (exit 1) always fails.
+set +e
 main "$@"
+verify_exit=$?
+set -e
+if [[ ${verify_exit} -eq 3 && "${SYNC_SPECS_ALLOW_OFFLINE:-0}" == "1" ]]; then
+    log_warn "SYNC_SPECS_ALLOW_OFFLINE=1: accepting manifest-only verification (upstream unverified)."
+    exit 0
+fi
+exit "${verify_exit}"

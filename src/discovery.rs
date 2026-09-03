@@ -139,10 +139,19 @@ fn is_origin_only(url_str: &str) -> bool {
             None => host_port.contains(':'),
         };
         if has_explicit_port {
+            // Parse the port numerically so leading-zero spellings (`:0443`, `:0080`)
+            // match the default-port forms they normalize to; a non-numeric port fails
+            // the origin check outright.
             let port_str = host_port.rsplit(':').next().unwrap_or("");
-            if (scheme == "https" && port_str == "443") || (scheme == "http" && port_str == "80") {
-                return false;
+            match port_str.parse::<u16>() {
+                Ok(443) if scheme == "https" => return false,
+                Ok(80) if scheme == "http" => return false,
+                Ok(_) => {}
+                Err(_) => return false,
             }
+        }
+        if host_port.contains('\\') {
+            return false;
         }
         let path = parsed.path();
         (path.is_empty() || path == "/") && parsed.query().is_none() && parsed.fragment().is_none()
@@ -212,6 +221,24 @@ pub async fn fetch_protected_resource_metadata(
     let expected_origin = normalize_origin(pds_endpoint);
     let actual_origin = normalize_origin(&meta.resource);
     if expected_origin != actual_origin {
+        return Err(DiscoveryError::ResourceMismatch {
+            expected: expected_origin,
+            actual: meta.resource.clone(),
+        });
+    }
+    // RFC 9728 identifiers for an origin-scoped resource are bare origins; a path
+    // or query would make the declared identifier differ from the queried PDS and
+    // is metadata-confusion signal, so it is rejected even at the same origin.
+    let resource_parsed = Url::parse(&meta.resource).map_err(|e| {
+        DiscoveryError::InvalidEndpointUrl(format!(
+            "Invalid resource identifier '{}': {e}",
+            meta.resource
+        ))
+    })?;
+    if (resource_parsed.path() != "/" && !resource_parsed.path().is_empty())
+        || resource_parsed.query().is_some()
+        || resource_parsed.fragment().is_some()
+    {
         return Err(DiscoveryError::ResourceMismatch {
             expected: expected_origin,
             actual: meta.resource.clone(),
@@ -632,6 +659,19 @@ mod tests {
         assert!(!is_origin_only("https://auth.example.com:443"));
         assert!(!is_origin_only("https://auth.example.com:443/"));
         assert!(is_origin_only("https://auth.example.com:8443"));
+    }
+
+    #[test]
+    fn test_is_origin_only_rejects_leading_zero_and_malformed_ports() {
+        // Leading-zero spellings normalize to the default port.
+        assert!(!is_origin_only("https://auth.example.com:0443"));
+        assert!(!is_origin_only("http://auth.example.com:0080"));
+        // Non-numeric and malformed ports never form a valid origin.
+        assert!(!is_origin_only("https://auth.example.com:not_a_port"));
+        assert!(!is_origin_only("https://auth.example.com:443\\"));
+        // A port that merely contains the default digits stays valid.
+        assert!(is_origin_only("https://auth.example.com:44371"));
+        assert!(is_origin_only("http://127.0.0.1:8080"));
     }
 
     #[test]

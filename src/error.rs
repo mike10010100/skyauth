@@ -224,6 +224,15 @@ pub enum DPoPError {
     )]
     ReplayCacheSaturated,
 
+    /// The DPoP server-nonce cache has reached capacity with live (unexpired) nonces.
+    ///
+    /// Like [`DPoPError::ReplayCacheSaturated`], this is a server-side resource-
+    /// exhaustion condition; callers should map it to an HTTP 503-class response.
+    #[error(
+        "DPoP nonce cache capacity saturated with active nonces (server-side resource exhaustion)"
+    )]
+    NonceCacheSaturated,
+
     /// JSON or byte serialization failed.
     #[error("Serialization error: {0}")]
     Serialization(String),
@@ -373,6 +382,10 @@ pub enum TokenError {
     /// The token format or claims payload is malformed.
     #[error("Malformed token: {0}")]
     MalformedToken(String),
+
+    /// The XRPC NSID fails Lexicon NSID grammar validation (path traversal or malformed segments).
+    #[error("Invalid NSID '{0}': must be a reverse-DNS Lexicon identifier (dot-separated alphanumeric segments, each starting with a letter)")]
+    InvalidNsid(String),
 
     /// Invalid token_type (must be case-insensitively "DPoP").
     #[error("Invalid token_type: expected 'DPoP', got '{0}'")]

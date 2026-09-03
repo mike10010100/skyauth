@@ -428,10 +428,10 @@ async fn test_adv_concurrent_50_tasks_racing_exact_same_code_and_state() {
         AtprotoOAuthClient::builder()
             .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
             .allow_insecure_localhost(true)
+            .state_store(Arc::clone(&store))
             .build()
             .unwrap(),
     );
-
     let state_key = "race-state-token-single-use-12345";
     let dpop_key = DPoPKey::generate();
     let state_entry = create_test_state_entry(
@@ -448,33 +448,35 @@ async fn test_adv_concurrent_50_tasks_racing_exact_same_code_and_state() {
         .unwrap();
 
     let concurrency = 50;
+    let issuer = mock_server.uri();
     let success_count = Arc::new(AtomicUsize::new(0));
-    let state_consumed_miss_count = Arc::new(AtomicUsize::new(0));
+    let invalid_state_count = Arc::new(AtomicUsize::new(0));
 
     let mut handles = Vec::with_capacity(concurrency);
     for _ in 0..concurrency {
         let store_clone = Arc::clone(&store);
         let client_clone = Arc::clone(&client);
         let success_clone = Arc::clone(&success_count);
-        let miss_clone = Arc::clone(&state_consumed_miss_count);
+        let invalid_clone = Arc::clone(&invalid_state_count);
+        let state_key_owned = state_key.to_string();
+        let issuer_owned = issuer.clone();
 
         handles.push(tokio::spawn(async move {
-            let entry_opt = store_clone.take_state(state_key).await.unwrap();
-            match entry_opt {
-                Some(entry) => {
-                    let callback_params =
-                        CallbackParams::new("authz-code-race-1", state_key).with_iss(&entry.issuer);
-                    let res = client_clone
-                        .handle_callback_with_entry(&callback_params, &entry)
-                        .await;
-                    if res.is_ok() {
-                        success_clone.fetch_add(1, Ordering::SeqCst);
-                    }
+            let callback_params =
+                CallbackParams::new("authz-code-race-1", state_key_owned).with_iss(issuer_owned);
+            let res = client_clone.handle_callback(&callback_params).await;
+            match res {
+                Ok(_) => {
+                    success_clone.fetch_add(1, Ordering::SeqCst);
                 }
-                None => {
-                    miss_clone.fetch_add(1, Ordering::SeqCst);
+                Err(skyauth::error::AtprotoOAuthError::Token(TokenError::InvalidState(_))) => {
+                    invalid_clone.fetch_add(1, Ordering::SeqCst);
+                }
+                Err(other) => {
+                    panic!("unexpected error in callback race: {other:?}");
                 }
             }
+            let _ = store_clone; // keep Arc alive for the task lifetime
         }));
     }
 
@@ -485,12 +487,12 @@ async fn test_adv_concurrent_50_tasks_racing_exact_same_code_and_state() {
     assert_eq!(
         success_count.load(Ordering::SeqCst),
         1,
-        "Exactly 1 concurrent task must successfully consume state and exchange code"
+        "Exactly 1 concurrent task must win the take_state race and complete the code exchange"
     );
     assert_eq!(
-        state_consumed_miss_count.load(Ordering::SeqCst),
+        invalid_state_count.load(Ordering::SeqCst),
         concurrency - 1,
-        "All other 49 concurrent tasks must observe state already consumed"
+        "All other 49 tasks must be rejected by atomic single-use state consumption"
     );
 }
 

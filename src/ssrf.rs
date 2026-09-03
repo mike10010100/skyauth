@@ -200,7 +200,7 @@ impl SsrfFilter {
             return Err(SsrfError::BlockedHost(host.to_string()));
         }
 
-        // Test mode exempts only explicit loopback; metadata and `.internal` hosts stay blocked.
+        // Test mode exempts only explicit loopback; metadata, `.internal`, `.local`, and `.localhost` hosts stay blocked.
         if self.allow_insecure_localhost {
             let lower_host = host.to_ascii_lowercase();
             let trimmed_host = lower_host.trim_end_matches('.');
@@ -208,7 +208,9 @@ impl SsrfFilter {
                 || trimmed_host == "instance-data"
                 || trimmed_host == "metadata.internal"
                 || trimmed_host == "169.254.169.254"
-                || trimmed_host.ends_with(".internal");
+                || trimmed_host.ends_with(".internal")
+                || trimmed_host.ends_with(".local")
+                || trimmed_host.ends_with(".localhost");
             if metadata_or_internal {
                 return Err(SsrfError::BlockedHost(host.to_string()));
             }

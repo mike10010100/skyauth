@@ -84,7 +84,7 @@ The test suite incorporates authoritative test vectors directly from standard RF
 
 ## Test Suite Execution
 
-To execute the entire test infrastructure and verification suite (all six mandatory quality gates — fmt, clippy, tests, doc-tests, spec drift, Verus, and Kani — are defined in [`AGENTS.md`](AGENTS.md)):
+To execute the entire test infrastructure and verification suite (all mandatory quality gates — formatting, strict Clippy, tests, doc-tests, coverage, spec drift, Verus, and Kani — are defined in [`AGENTS.md`](AGENTS.md)):
 
 ```bash
 # Run all integration test suites and unit tests

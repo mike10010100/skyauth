@@ -94,7 +94,7 @@ verification, so changes to `src/verification/`, `src/crypto.rs`, `src/dpop.rs`,
 
 Neither Verus nor Kani is preinstalled on a fresh machine. Both self-bootstrap:
 
-- **Verus**: `scripts/run_verus.sh` auto-downloads the latest release into `~/.verus` on first run.
+- **Verus**: `scripts/run_verus.sh` auto-downloads a pinned release into `~/.verus` on first run.
 - **Kani**: `cargo install kani-verifier --locked` then `cargo kani setup` (installs a pinned
   nightly toolchain). Only needed once per environment.
 

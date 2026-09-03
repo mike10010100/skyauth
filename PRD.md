@@ -255,7 +255,7 @@ To prevent subtle schema divergence, naming errors, or casing bugs (e.g. `camelC
 - [ ] **Milestone 7: Documentation, Benchmarks & Crates.io Publication** *(docs complete; latency benchmarks & crates.io publication pending → see §7.1 trade-off notes and release checklist)*
   - 100% rustdoc documentation coverage (`missing_docs` denied).
   - Latency benchmarks asserting $< 1.0\text{ms}$ proof generation.
-  - Publish `v0.1.0` to crates.io and GitHub.
+  - Publish `v0.2.0` to crates.io and GitHub. *(v0.1.0 published 2026-08-29; v0.2.0 hardening release in progress.)*
 
 ---
 

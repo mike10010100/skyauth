@@ -7,16 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **XRPC NSID Validation**: `send_xrpc_request` validates the NSID against the Lexicon NSID grammar (reverse-DNS dot-separated segments, each starting with a letter) and rejects path-traversal payloads (`../../admin`) with `TokenError::InvalidNsid` before URL construction.
+- **DPoP Nonce Saturation Error**: `DPoPServerNonceSource::generate_nonce` now returns `Result<String, DPoPError>`; nonce-cache capacity exhaustion returns `DPoPError::NonceCacheSaturated` (mapped to HTTP 503 by the Tower middleware) instead of an empty-string nonce. **Breaking**: custom `DPoPServerNonceSource` implementations must update `generate_nonce`'s signature.
+
 ### Fixed
 
 - **Mandatory Issuer & Audience Matching (fail closed)**: `JwtAccessTokenValidator::verify_token_sync` now **rejects every token** unless both `with_expected_issuer` and `with_expected_audience` have been configured, returning `IntegrationError::AuthFailed` (a validator-misconfiguration error). Previously, issuer and audience matching were opt-in: a validator without `with_expected_audience` accepted tokens carrying any `aud`, leaving the RFC 9068 § 4 cross-resource-server audience-confusion path open. Tokens whose `iss`/`aud` do not match the configured values are still rejected with `IssuerMismatch`/`AudienceMismatch`.
 - **`ReplayCacheSaturated` maps to HTTP 503 in Tower middleware**: DPoP replay-cache capacity exhaustion is a server-side resource-exhaustion condition, not a defective client proof. The Tower layer now responds `503 Service Unavailable` (with `Retry-After: 1`) instead of `401 invalid_dpop_proof`, matching the documented semantics of `DPoPError::ReplayCacheSaturated`.
 - **Default absolute DPoP `htu` derivation in Tower middleware**: the default `htu` is now reconstructed as an absolute URI from the trusted connection scheme, the request authority, and the path/query, instead of using the raw request-URI string. HTTP/1.1 origin-form targets (`/xrpc/foo`) behind proxies are reconstructed (default ports stripped per RFC 9449 § 4.2), and requests with no usable authority fail closed with `401 invalid_dpop_proof` rather than verifying against a path-only `htu`. `with_htu_override` continues to take precedence for servers whose public origin differs from the inbound authority.
-- **`sync_specs.sh --verify` fails when upstream is unreachable**: a failed upstream fetch is now reported as `[FETCH FAILED] … UNVERIFIED` and causes a non-zero exit, instead of being logged as offline-but-verified. Set `SYNC_SPECS_ALLOW_OFFLINE=1` to accept manifest-only verification for offline development; actual drift still fails regardless.
+- **`sync_specs.sh --verify` fails when upstream is unreachable**: a failed upstream fetch exits `3` (distinct from drift's `1`) and strict verification fails; `SYNC_SPECS_ALLOW_OFFLINE=1` accepts manifest-only verification for offline development. The escape hatch is driven by the exit code rather than function-local counters, so the offline path can no longer mask real drift.
+- **Strict origin-port parsing in discovery**: `is_origin_only` parses explicit ports numerically, so leading-zero default-port spellings (`:0443`, `:0080`) and malformed ports (including trailing backslash) are rejected instead of slipping past the default-port check.
+- **Protected-resource identifier strictness (RFC 9728)**: a `resource` value at the correct origin but carrying a path, query, or fragment is rejected with `ResourceMismatch` — origin-scoped resource identifiers must be bare origins.
+- **Test-mode SSRF hostname blocking**: `allow_insecure_localhost(true)` now also keeps `.local` and `.localhost` hostname suffixes blocked (previously only `.internal` and metadata hosts were re-checked in test mode).
+- **CI workflow fixes**: the Mutation Sweep job name now references `matrix.shard.name` (the bare `matrix.shard` object rendered as garbage in the job name), and `actions/upload-artifact` is SHA-pinned like every other action reference.
+- **m7 concurrency test now exercises the real single-use path**: the 50-task callback race drives `handle_callback` against a client sharing the test's `OAuthStateStore` (previously the test won `take_state` manually and called `handle_callback_with_entry`, bypassing the composed single-use path; the client also silently built its own state store).
+
+### Documentation
+
+- Corrected the Verus bootstrap description in `AGENTS.md` (pinned release, not latest), `TEST_INFRA.md` gate enumeration, `TEST_READY.md` execution command (`--all-features`) and test-count totals, `PRD.md` release checklist target (v0.2.0), and the `lib.rs` 6to4 doc wording (conditional on the embedded IPv4 address).
 
 ### Breaking Changes
 
 - **`JwtAccessTokenValidator` requires expected issuer and audience**: validators built without `with_expected_issuer` and `with_expected_audience` reject all tokens with `IntegrationError::AuthFailed` instead of accepting them. Production validators were expected to configure both already (and the earlier presence checks rejected tokens with absent `iss`/`aud` claims); only call sites that relied on the permissive unset-configuration path are affected.
+- **`DPoPServerNonceSource::generate_nonce` returns `Result`**: implementations must return `Result<String, DPoPError>`; saturation surfaces as `DPoPError::NonceCacheSaturated` instead of an empty string.
 
 ## [0.2.0] - 2026-08-30
 
