@@ -119,17 +119,55 @@ impl OAuthCallbackQuery {
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// An authenticated user extracted from an inbound DPoP-authenticated HTTP request.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct AuthenticatedUser {
     /// The subject Decentralized Identifier (`did:plc:...` or `did:web:...`).
     pub did: String,
     /// The DPoP-bound access token string (skipped during serialization to prevent leakage).
-    #[serde(skip_serializing, default)]
+    #[serde(skip_serializing)]
     pub access_token: String,
     /// RFC 7638 JWK thumbprint (`jkt`) of the bound public key.
     pub dpop_thumbprint: String,
     /// Granted OAuth scopes, if known.
     pub scope: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for AuthenticatedUser {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawUser {
+            did: String,
+            #[serde(default)]
+            access_token: Option<String>,
+            dpop_thumbprint: String,
+            scope: Option<String>,
+        }
+        let raw = RawUser::deserialize(deserializer)?;
+        // Fail closed: deserialization can never produce an empty credential.
+        // access_token is skipped during serialization (leak prevention), so a
+        // serialized AuthenticatedUser is a token-free view and cannot be
+        // deserialized back into a credential-bearing user; the token must come
+        // from the validator, never from untrusted data.
+        let access_token = raw.access_token.ok_or_else(|| {
+            serde::de::Error::custom(
+                "AuthenticatedUser deserialization requires a non-empty access_token; serialized views omit the token by design, so re-authenticate instead",
+            )
+        })?;
+        if access_token.trim().is_empty() {
+            return Err(serde::de::Error::custom(
+                "AuthenticatedUser deserialized with an empty access_token; tokens must be supplied by the validator, not from untrusted data",
+            ));
+        }
+        Ok(Self {
+            did: raw.did,
+            access_token,
+            dpop_thumbprint: raw.dpop_thumbprint,
+            scope: raw.scope,
+        })
+    }
 }
 
 impl std::fmt::Debug for AuthenticatedUser {

@@ -58,6 +58,21 @@ fn test_authenticated_user_serialization_omits_access_token(
     assert!(!json.contains("access_token"));
     assert!(json.contains("did:plc:testuser12345"));
     assert!(json.contains("0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"));
+
+    // Fail-closed deserialization: a serialized view omits the token, so it
+    // cannot be deserialized back into a credential-bearing AuthenticatedUser.
+    assert!(serde_json::from_str::<AuthenticatedUser>(&json).is_err());
+
+    // A present-but-empty token is rejected outright.
+    let empty_token_json =
+        r#"{"did":"did:plc:x","access_token":"","dpop_thumbprint":"jkt","scope":null}"#;
+    assert!(serde_json::from_str::<AuthenticatedUser>(empty_token_json).is_err());
+
+    // A properly-supplied non-empty token deserializes fine.
+    let full_json =
+        r#"{"did":"did:plc:x","access_token":"real_token","dpop_thumbprint":"jkt","scope":null}"#;
+    let parsed: AuthenticatedUser = serde_json::from_str(full_json)?;
+    assert_eq!(parsed.access_token(), "real_token");
     Ok(())
 }
 
