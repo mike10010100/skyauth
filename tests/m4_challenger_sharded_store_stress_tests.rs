@@ -28,7 +28,9 @@ use proptest::prelude::*;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use tokio_util::sync::CancellationToken;
+#[cfg(feature = "tower")]
 use tower_layer::Layer;
+#[cfg(feature = "tower")]
 use tower_service::Service;
 
 use skyauth::client::{AuthorizationRequest, OAuthClientMetadata, StoredStateEntry};

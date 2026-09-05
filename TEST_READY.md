@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-The complete, multi-tiered End-to-End (E2E) test suite for `skyauth` has been designed, implemented, and verified. As of **v0.2.0**, the suite comprises **797 passing test cases** (plus 15 doc-tests) spanning five testing tiers, RFC/lexicon vector suites, formal-verification harnesses, and unit/property suites, achieving a **100% pass rate** across the 25 system features defined in `PRD.md`.
+The complete, multi-tiered End-to-End (E2E) test suite for `skyauth` has been designed, implemented, and verified. As of the **v0.2.0 verification upgrade**, the suite comprises **825 passing test cases** (plus 16 doc-tests) spanning five testing tiers, RFC/lexicon vector suites, formal-verification harnesses, and unit/property suites, achieving a **100% pass rate** across the 25 system features defined in `PRD.md`. Formal verification stands at **69 Verus obligations** (21 standalone + 48 kernel-bound over the shipped `src/kernels/` source) and **7 Kani symbolic harnesses** with a machine-inventoried 57-tag anti-vacuity gate.
 
 All tests follow strict **opaque-box methodology**, deriving expectations directly from authoritative RFC specifications (**RFC 9449, RFC 9126, RFC 7636, RFC 8414, RFC 9728, RFC 7638, RFC 2104**) and standard ATProto OAuth specifications.
 
@@ -13,14 +13,14 @@ All tests follow strict **opaque-box methodology**, deriving expectations direct
 | Test Suite / Tier | File Path | Total Tests | Passed | Failed | Description |
 |---|---|---|---|---|---|
 | **Tier 1: Feature Coverage** | `tests/tier1_feature_tests.rs` | 125 | 125 | 0 | $\ge 5$ distinct test cases for every one of the 25 system features. |
-| **Tier 2: Boundary & Corner** | `tests/tier2_boundary_tests.rs` | 125 | 125 | 0 | $\ge 5$ edge cases, extreme inputs, and boundary conditions per feature. |
+| **Tier 2: Boundary & Corner** | `tests/tier2_boundary_tests.rs` | 126 | 126 | 0 | $\ge 5$ edge cases, extreme inputs, and boundary conditions per feature (incl. `expires_in` overflow fail-closed regression). |
 | **Tier 3: Pairwise Combinations** | `tests/tier3_pairwise_tests.rs` | 30 | 30 | 0 | Combinatorial interactions across Crypto, DPoP, PKCE, Discovery, PAR, & Sharding. |
 | **Tier 4: Realistic Workloads** | `tests/tier4_workload_tests.rs` | 5 | 5 | 0 | Realistic end-to-end login lifecycles, 3-hop auto-nonce recovery, & high concurrency. |
-| **Tier 5: Adversarial & Fuzzing** | `tests/tier5_adversarial_tests.rs` | 65 | 65 | 0 | Adversarial DPoP/JWT mutation, SSRF boundary fuzzing, & attack-path rejection. |
-| **RFC Vector & Formal Suites** | `tests/*_vectors.rs`, formal verification, stress & challenger suites | 323 | 323 | 0 | Official RFC 7636/9449 vectors, schema compliance, E2E harness rounds, proptest fuzzing, Kani fallback execution (19 suites; per-binary counts via `cargo test --test <name>`). |
-| **Unit & Property Tests** | `src/` unit modules | 124 | 124 | 0 | Pure-Rust primitives, proptest property testing, & PKCS#8 serialization. |
-| **Documentation Tests** | rustdoc examples | 15 | 15 | 0 | README/quickstart examples verified via `cargo test --doc`. |
-| **Total Test Suite** | **All Targets** | **797 (+15 doc)** | **797** | **0** | **100% Pass Rate (0 Failures, 0 Warnings).** Tier rows: 125 + 125 + 30 + 5 + 65 = 350; integration/vector/formal suites: 323 across 19 binaries; `src/` unit modules: 124. |
+| **Tier 5: Adversarial & Fuzzing** | `tests/tier5_adversarial_tests.rs` | 66 | 66 | 0 | Adversarial DPoP/JWT mutation, SSRF boundary fuzzing, & attack-path rejection (incl. `jti` 256/257 byte boundary). |
+| **RFC Vector & Formal Suites** | `tests/*_vectors.rs`, formal verification, stress & challenger suites | 344 | 344 | 0 | Official RFC 7636/9449 vectors, schema compliance, E2E harness rounds, proptest fuzzing, Kani fallback execution, tag-inventory meta-test (21 suites; per-binary counts via `cargo test --test <name>`). |
+| **Unit & Property Tests** | `src/` unit modules | 147 | 147 | 0 | Pure-Rust primitives, proptest property testing, PKCS#8 serialization, & kernel unit tests. |
+| **Documentation Tests** | rustdoc examples | 16 | 16 | 0 | README/quickstart examples verified via `cargo test --doc`. |
+| **Total Test Suite** | **All Targets** | **825 (+16 doc)** | **825** | **0** | **100% Pass Rate (0 Failures, 0 Warnings).** Tier rows: 125 + 126 + 30 + 5 + 66 = 352; integration/vector/formal suites: 326 across 21 binaries; `src/` unit modules: 147. |
 
 ---
 

@@ -9,7 +9,9 @@ use skyauth::client::{AuthorizationRequest, OAuthClientMetadata, StoredStateEntr
 use skyauth::dpop::{compute_access_token_hash, DPoPKey, DPoPVerifier};
 use skyauth::error::IntegrationError;
 use skyauth::integrations::{AuthenticatedUser, OAuthCallbackQuery, OAuthSessionExtension};
+#[cfg(feature = "tower")]
 use tower_layer::Layer;
+#[cfg(feature = "tower")]
 use tower_service::Service;
 use url::Url;
 

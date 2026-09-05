@@ -129,6 +129,7 @@ fi
 VERUS_LOG=$(mktemp 2>/dev/null || mktemp -t 'verus_err')
 trap 'rm -f "${VERUS_LOG}"; rm -rf "${TMP_DIR:-}"' EXIT
 
+# Layer 1: standalone deductive specification layer (models + theorems).
 log_info "Running Verus deductive formal verification on ${VERUS_FILE}..."
 if ! "${VERUS_CMD}" --crate-type=lib "${VERUS_FILE}" 2>"${VERUS_LOG}"; then
     VERUS_OUTPUT=$(cat "${VERUS_LOG}" | sed -e 's/\x1b\[[0-9;]*m//g' | tr -d '\r')
@@ -151,4 +152,18 @@ if ! "${VERUS_CMD}" --crate-type=lib "${VERUS_FILE}" 2>"${VERUS_LOG}"; then
         exit 1
     fi
 fi
+log_success "Standalone Verus layer verified."
+
+# Layer 2: kernel-bound verification — proofs over the SHIPPED kernel source
+# (src/kernels/*) via #[path] inclusion. These contracts bind the same bytes
+# that compile into the published crate.
+VERUS_KERNELS_FILE="${ROOT_DIR}/src/verification/verus_kernels.rs"
+log_info "Running Verus kernel-bound verification on ${VERUS_KERNELS_FILE}..."
+if ! "${VERUS_CMD}" --crate-type=lib "${VERUS_KERNELS_FILE}" 2>"${VERUS_LOG}"; then
+    VERUS_OUTPUT=$(cat "${VERUS_LOG}" | sed -e 's/\x1b\[[0-9;]*m//g' | tr -d '\r')
+    echo "${VERUS_OUTPUT}" >&2
+    exit 1
+fi
+log_success "Kernel-bound Verus layer verified (proofs over shipped source)."
+
 log_success "All Verus deductive proofs and SMT invariants verified successfully."
