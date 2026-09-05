@@ -966,7 +966,6 @@ pub fn proof_ipv6_adapter_refinement() {
     #[cfg(kani)]
     {
         use crate::kernels::ip_filter::{is_restricted_ipv4_octets, is_restricted_ipv6_segments};
-        use crate::ssrf::is_restricted_ipv6;
         use crate::verification::formal_models::SsrfFormalSpec as IPFormalSpec;
         use std::net::Ipv6Addr;
 
