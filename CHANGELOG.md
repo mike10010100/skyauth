@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CI Kani Cover Gate**: measured that unsatisfied `kani::cover!` properties do NOT fail plain `cargo kani` (exit 0 on UNSATISFIABLE). The CI Kani job now runs with `--coverage` and a fail-closed gate step errors on any UNSATISFIABLE cover or missing summary.
 - **MSRV CI Job**: `rust-version` raised honestly from 1.81 to 1.88 after measurement (`zeroize 1.9.0` requires Edition-2024 cargo, unreachable from 1.81; `actix-web 4.15` / `icu 2.3` require rustc ≥ 1.88). New CI job pins `cargo +1.88.0 check --locked --lib --all-features` and gates publish.
 
+### Removed
+
+- **Static `client_secret` Confidential-Client Mode** (review H1, **Breaking**): ATProto OAuth has no shared client secret — confidential clients authenticate with `private_key_jwt` (ES256 client assertions). The previous `OAuthClientMetadata::with_client_secret` path sent the static secret to a **user-selected** authorization server in the first PAR request, an unconditional credential-disclosure path for any malicious identity. `client_secret` is removed from `OAuthClientMetadata`, `with_client_secret`/`execute_par_request_with_credentials` are gone, and generated framework metadata now advertises `token_endpoint_auth_method: "none"` exclusively. `private_key_jwt` support is planned for 0.3.0.
+
 ### Fixed
 
 - **DPoP-Nonce Enforcement on Both Sides of the Wire** (review H2): the client now **rejects success responses to DPoP-authenticated requests that omit the `DPoP-Nonce` header** (new `DPoPError::ResponseMissingDpopNonce`) — previously it silently accepted them, degrading replay protection for subsequent requests (ATProto profile violation at PAR, token, refresh, and XRPC success paths, including auto-nonce retries). The Tower server middleware now **attaches a fresh `DPoP-Nonce` to every success response** when a nonce source is configured (nonce-source exhaustion maps to 503, consistent with replay-cache saturation). Mock fixtures updated to be profile-compliant; two regression tests pin both directions.

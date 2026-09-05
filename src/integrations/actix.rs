@@ -89,7 +89,9 @@ pub fn client_metadata_http_response(
         "grant_types": grant_types,
         "response_types": response_types,
         "scope": metadata.scope,
-        "token_endpoint_auth_method": if metadata.client_secret.is_some() { "client_secret_post" } else { "none" },
+        // ATProto OAuth profile: only public clients (`none`) are supported;
+        // confidential clients use private_key_jwt, not shared secrets (review H1).
+        "token_endpoint_auth_method": "none",
         "dpop_bound_access_tokens": true
     });
 

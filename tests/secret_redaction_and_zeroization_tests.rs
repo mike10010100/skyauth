@@ -102,16 +102,17 @@ fn test_stored_state_entry_debug_redacts_code_verifier() {
 }
 
 #[test]
-fn test_oauth_client_metadata_debug_redacts_client_secret() {
+fn test_oauth_client_metadata_has_no_secret_surface() {
+    // Review H1: the static client_secret path was removed — ATProto confidential
+    // clients must use private_key_jwt, not shared secrets. There is no secret
+    // surface left to redact, and no builder method accepts one.
     let metadata = OAuthClientMetadata::new(
         "https://app.example.com/client-metadata.json",
         "https://app.example.com/callback",
-    )
-    .with_client_secret("top_secret_confidential_client_key_999");
-
+    );
     let debug_output = format!("{metadata:?}");
-    assert!(!debug_output.contains("top_secret_confidential_client_key_999"));
-    assert!(debug_output.contains("[REDACTED]"));
+    assert!(!debug_output.contains("client_secret"));
+    assert!(!debug_output.contains("[REDACTED]"));
 }
 
 #[test]
