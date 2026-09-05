@@ -339,12 +339,11 @@ pub fn validate_auth_server_capabilities(
             auth_server_url.to_string(),
         ));
     }
-    if let Err(e) = Url::parse(&meta.pushed_authorization_request_endpoint) {
-        return Err(DiscoveryError::InvalidEndpointUrl(format!(
-            "Invalid PAR endpoint URL '{}': {e}",
-            meta.pushed_authorization_request_endpoint
-        )));
-    }
+    validate_https_endpoint(
+        &meta.pushed_authorization_request_endpoint,
+        "PAR",
+        auth_server_url,
+    )?;
 
     // ATProto profile mandates PAR.
     if !meta.require_pushed_authorization_requests {
@@ -356,24 +355,18 @@ pub fn validate_auth_server_capabilities(
             auth_server_url.to_string(),
         ));
     }
-    if let Err(e) = Url::parse(&meta.token_endpoint) {
-        return Err(DiscoveryError::InvalidEndpointUrl(format!(
-            "Invalid token endpoint URL '{}': {e}",
-            meta.token_endpoint
-        )));
-    }
+    validate_https_endpoint(&meta.token_endpoint, "token", auth_server_url)?;
 
     if meta.authorization_endpoint.trim().is_empty() {
         return Err(DiscoveryError::MissingAuthorizationEndpoint(
             auth_server_url.to_string(),
         ));
     }
-    if let Err(e) = Url::parse(&meta.authorization_endpoint) {
-        return Err(DiscoveryError::InvalidEndpointUrl(format!(
-            "Invalid authorization endpoint URL '{}': {e}",
-            meta.authorization_endpoint
-        )));
-    }
+    validate_https_endpoint(
+        &meta.authorization_endpoint,
+        "authorization",
+        auth_server_url,
+    )?;
 
     if !meta.response_types_supported.iter().any(|r| r == "code") {
         return Err(DiscoveryError::MissingResponseType(
@@ -538,6 +531,52 @@ impl IdentityResolver {
     ) -> Result<DiscoveredAuthEndpoints, DiscoveryError> {
         discover_oauth_endpoints(self, did_or_handle).await
     }
+}
+
+/// Validates that a discovered authorization-server endpoint URL is HTTPS,
+/// hierarchical, and free of embedded credentials.
+///
+/// ATProto endpoints are always HTTPS (review M6): a non-HTTPS
+/// `authorization_endpoint` would be copied into the user-agent redirect,
+/// exposing authorization codes; embedded credentials indicate a malformed or
+/// hostile metadata document.
+fn validate_https_endpoint(
+    endpoint: &str,
+    label: &str,
+    issuer: &str,
+) -> Result<(), DiscoveryError> {
+    let _ = issuer;
+    let parsed = Url::parse(endpoint).map_err(|e| {
+        DiscoveryError::InvalidEndpointUrl(format!(
+            "Invalid {label} endpoint URL '{endpoint}': {e}"
+        ))
+    })?;
+    if parsed.scheme() != "https" {
+        // Test-mode accommodation mirroring `SsrfFilter::allow_insecure_localhost`:
+        // plaintext HTTP is only acceptable for explicit loopback/localhost hosts
+        // (wiremock/ephemeral test servers). Public hosts must always be HTTPS.
+        let host = parsed.host_str().unwrap_or_default();
+        let host_is_local =
+            host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]";
+        let scheme_is_http = parsed.scheme() == "http";
+        if !(scheme_is_http && host_is_local) {
+            return Err(DiscoveryError::InvalidEndpointUrl(format!(
+                "{label} endpoint URL must be HTTPS (got '{}'; only loopback/localhost may use HTTP)",
+                parsed.scheme()
+            )));
+        }
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(DiscoveryError::InvalidEndpointUrl(format!(
+            "{label} endpoint URL must not contain embedded credentials: '{endpoint}'"
+        )));
+    }
+    if parsed.host_str().is_none() {
+        return Err(DiscoveryError::InvalidEndpointUrl(format!(
+            "{label} endpoint URL is missing a host: '{endpoint}'"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

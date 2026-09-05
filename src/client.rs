@@ -344,9 +344,36 @@ impl AtprotoOAuthClientBuilder {
         });
 
         let nonce_cache = self.nonce_cache.unwrap_or_default();
+        let default_store_created = self.state_store.is_none();
         let state_store = self
             .state_store
             .unwrap_or_else(|| Arc::new(OAuthStateStore::new(self.state_ttl)));
+
+        // Review M2: the default in-memory store previously grew unboundedly —
+        // abandoned login flows stayed resident forever. When the high-level
+        // client created the store itself (and a tokio runtime context exists),
+        // start drift-free TTL pruning tied to the client's lifetime. Explicitly
+        // provided stores keep caller-owned lifecycle (they may be shared).
+        if default_store_created {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let pruner_store = Arc::clone(&state_store);
+                let prune_interval = self.state_ttl.max(Duration::from_secs(60));
+                handle.spawn(async move {
+                    let mut interval = tokio::time::interval(prune_interval);
+                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    // Prune ~once per interval for the life of the client. The task
+                    // is a daemon: it ends when the runtime (and thus the client)
+                    // is dropped. Bounded by the admission cap in the worst case.
+                    loop {
+                        interval.tick().await;
+                        let pruned = pruner_store.prune_expired_sync();
+                        if pruned > 0 {
+                            tracing::trace!("default state store pruned {pruned} expired states");
+                        }
+                    }
+                });
+            }
+        }
 
         Ok(AtprotoOAuthClient {
             metadata,

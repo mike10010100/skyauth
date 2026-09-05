@@ -833,6 +833,13 @@ pub enum StoreError {
     #[error("Storage backend error: {0}")]
     Backend(String),
 
+    /// The state store is at its admission capacity (per-shard cap); the
+    /// caller should retry after pruning or use a distributed backend.
+    /// Fail-closed by design (review H5/M2: unbounded pre-auth state enables
+    /// memory-exhaustion floods).
+    #[error("State store at admission capacity ({0} entries per shard)")]
+    CapacityExceeded(usize),
+
     /// State serialization or deserialization failed.
     #[error("Serialization error: {0}")]
     Serialization(String),

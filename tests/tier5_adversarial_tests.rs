@@ -2345,14 +2345,24 @@ fn test_adv_did_syntax_fuzzing() {
         );
     }
 
+    // did:plc grammar (spec): exactly 24 lowercase alphanumeric characters.
     assert!(matches!(
-        validate_did_syntax("did:plc:1234567"), // 7 chars (< 8)
+        validate_did_syntax("did:plc:1234567"), // 7 chars
         Err(IdentityError::InvalidDidSyntax(_))
     ));
-    assert_eq!(
-        validate_did_syntax("did:plc:12345678").unwrap(), // 8 chars (>= 8)
-        DidMethod::Plc
-    );
+    assert!(matches!(
+        validate_did_syntax("did:plc:12345678"), // 8 chars — spec requires 24
+        Err(IdentityError::InvalidDidSyntax(_))
+    ));
+    assert!(matches!(
+        // Traversal payload must be rejected at the syntax boundary (review #4/L2).
+        validate_did_syntax("did:plc:x/../../admin"),
+        Err(IdentityError::InvalidDidSyntax(_))
+    ));
+    assert!(matches!(
+        validate_did_syntax("did:plc:ABCDEFGHIJKLMONPQRSTUVWXYZ1"), // uppercase rejected
+        Err(IdentityError::InvalidDidSyntax(_))
+    ));
     assert_eq!(
         validate_did_syntax("did:plc:ewvi7nxzyoun6zhxrhs64oiz").unwrap(),
         DidMethod::Plc
@@ -2362,14 +2372,29 @@ fn test_adv_did_syntax_fuzzing() {
         validate_did_syntax("did:web:"),
         Err(IdentityError::InvalidDidSyntax(_))
     ));
+    assert!(matches!(
+        // Userinfo trick must be rejected: '@' re-parses the host (review L2).
+        validate_did_syntax("did:web:trusted.example@evil.example"),
+        Err(IdentityError::InvalidDidSyntax(_))
+    ));
+    // did:web path segments are legal grammar (W3C did:web encodes URL paths
+    // via ':'); port re-targeting is prevented at RESOLUTION time (the resolver
+    // constructs the URL host from only the first segment), not the syntax check.
+    assert_eq!(
+        validate_did_syntax("did:web:example.com:8080").unwrap(),
+        DidMethod::Web
+    );
+    assert!(matches!(
+        // Empty path segment is structurally invalid.
+        validate_did_syntax("did:web:example.com::path"),
+        Err(IdentityError::InvalidDidSyntax(_))
+    ));
     assert_eq!(
         validate_did_syntax("did:web:example.com").unwrap(),
         DidMethod::Web
     );
-    assert_eq!(
-        validate_did_syntax("did:web:auth.example.com:path:to:user").unwrap(),
-        DidMethod::Web
-    );
+    // Percent-encoded characters remain legal (did:web path encoding; test
+    // environments encode ephemeral ports this way).
     assert_eq!(
         validate_did_syntax("did:web:localhost%3A8080").unwrap(),
         DidMethod::Web
@@ -2387,30 +2412,34 @@ async fn test_adv_identity_resolver_mock_server_spoofing_scenarios() {
         .build();
 
     Mock::given(method("GET"))
-        .and(path("/did:plc:nonexistent123"))
+        .and(path("/did:plc:nonexistent1234567890abc"))
         .respond_with(ResponseTemplate::new(404))
         .mount(&mock_server)
         .await;
 
-    let res_404 = resolver.resolve_did_plc("did:plc:nonexistent123").await;
+    let res_404 = resolver
+        .resolve_did_plc("did:plc:nonexistent1234567890abc")
+        .await;
     assert!(
-        matches!(res_404, Err(IdentityError::DidNotFound(ref d)) if d == "did:plc:nonexistent123")
+        matches!(res_404, Err(IdentityError::DidNotFound(ref d)) if d == "did:plc:nonexistent1234567890abc")
     );
 
     Mock::given(method("GET"))
-        .and(path("/did:plc:malformed123"))
+        .and(path("/did:plc:malformed123aaaaaaaaaaaa"))
         .respond_with(ResponseTemplate::new(200).set_body_string("<html>Server Error</html>"))
         .mount(&mock_server)
         .await;
 
-    let res_malformed = resolver.resolve_did_plc("did:plc:malformed123").await;
+    let res_malformed = resolver
+        .resolve_did_plc("did:plc:malformed123aaaaaaaaaaaa")
+        .await;
     assert!(matches!(
         res_malformed,
         Err(IdentityError::MalformedDidDocument(_))
     ));
 
     let mismatched_doc = DidDocument {
-        id: "did:plc:evilimposter999".to_string(),
+        id: "did:plc:evilimposter999999999999".to_string(),
         also_known_as: vec!["at://victim.com".to_string()],
         verification_method: vec![],
         service: vec![DidService {
@@ -2420,7 +2449,7 @@ async fn test_adv_identity_resolver_mock_server_spoofing_scenarios() {
         }],
     };
     Mock::given(method("GET"))
-        .and(path("/did:plc:victim12345678"))
+        .and(path("/did:plc:victim12345678abcdefghij"))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/json")
@@ -2429,11 +2458,13 @@ async fn test_adv_identity_resolver_mock_server_spoofing_scenarios() {
         .mount(&mock_server)
         .await;
 
-    let res_mismatch = resolver.resolve_did_plc("did:plc:victim12345678").await;
+    let res_mismatch = resolver
+        .resolve_did_plc("did:plc:victim12345678abcdefghij")
+        .await;
     assert!(matches!(
         res_mismatch,
         Err(IdentityError::DidDocumentIdMismatch { ref expected, ref actual })
-            if expected == "did:plc:victim12345678" && actual == "did:plc:evilimposter999"
+            if expected == "did:plc:victim12345678abcdefghij" && actual == "did:plc:evilimposter999999999999"
     ));
 }
 
