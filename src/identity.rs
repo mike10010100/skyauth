@@ -349,6 +349,30 @@ pub trait DnsTxtResolver: std::fmt::Debug + Send + Sync + 'static {
     >;
 }
 
+/// Maximum DoH response body size (review L5: the only network read that
+/// previously bypassed the shared `read_bounded_body`).
+const DOH_MAX_RESPONSE_BYTES: usize = 64 * 1024;
+
+/// Shared reqwest client for DoH queries (review L5: a new client per query
+/// defeated connection pooling and re-paid TLS setup on every lookup).
+static DOH_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
+fn doh_client() -> Result<&'static reqwest::Client, IdentityError> {
+    if let Some(c) = DOH_CLIENT.get() {
+        return Ok(c);
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(4))
+        // DoH bootstrap must not be transparently routed through environment
+        // proxies: a proxied resolver's answers are a different trust domain
+        // (and the DoH host would be proxy-resolved, bypassing the SSRF pinning
+        // model used everywhere else — review H6/L5).
+        .no_proxy()
+        .build()
+        .map_err(|e| IdentityError::Dns(e.to_string()))?;
+    Ok(DOH_CLIENT.get_or_init(|| client))
+}
+
 /// Standard DNS resolver querying public DNS-over-HTTPS (DoH) endpoints.
 #[derive(Debug, Clone, Default)]
 pub struct StandardDnsResolver;
@@ -363,16 +387,7 @@ impl DnsTxtResolver for StandardDnsResolver {
         Box::pin(async move {
             let doh_url =
                 format!("https://cloudflare-dns.com/dns-query?name={query_name}&type=TXT");
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(4))
-                // DoH bootstrap must not be transparently routed through
-                // environment proxies: a proxied resolver's answers are a
-                // different trust domain (and the DoH host would be
-                // proxy-resolved, bypassing the SSRF pinning model used
-                // everywhere else — review H6/L5).
-                .no_proxy()
-                .build()
-                .map_err(|e| IdentityError::Dns(e.to_string()))?;
+            let client = doh_client()?;
 
             let resp = client
                 .get(&doh_url)
@@ -381,8 +396,15 @@ impl DnsTxtResolver for StandardDnsResolver {
                 .await
                 .map_err(|e| IdentityError::Dns(e.to_string()))?;
 
+            // Review L5: a non-2xx DoH response is a RESOLVER FAILURE, not
+            // "no records" — conflating them masked upstream outages as
+            // negative answers (a resolution-integrity concern, since callers
+            // fall through to the next strategy).
             if !resp.status().is_success() {
-                return Ok(Vec::new());
+                return Err(IdentityError::Dns(format!(
+                    "DoH resolver returned HTTP {} for query '{query_name}'",
+                    resp.status()
+                )));
             }
 
             #[derive(Deserialize)]
@@ -398,10 +420,12 @@ impl DnsTxtResolver for StandardDnsResolver {
                 answer: Vec<DohAnswer>,
             }
 
-            let body: DohResponse = resp
-                .json()
+            // Review L5: bound the body read like every other network read.
+            let bytes = crate::ssrf::read_bounded_body(resp, DOH_MAX_RESPONSE_BYTES)
                 .await
                 .map_err(|e| IdentityError::Dns(e.to_string()))?;
+            let body: DohResponse =
+                serde_json::from_slice(&bytes).map_err(|e| IdentityError::Dns(e.to_string()))?;
 
             let records = body
                 .answer

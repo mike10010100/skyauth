@@ -15,12 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CI Kani Cover Gate**: measured that unsatisfied `kani::cover!` properties do NOT fail plain `cargo kani` (exit 0 on UNSATISFIABLE). The CI Kani job now runs with `--coverage` and a fail-closed gate step errors on any UNSATISFIABLE cover or missing summary.
 - **MSRV CI Job**: `rust-version` raised honestly from 1.81 to 1.88 after measurement (`zeroize 1.9.0` requires Edition-2024 cargo, unreachable from 1.81; `actix-web 4.15` / `icu 2.3` require rustc ≥ 1.88). New CI job pins `cargo +1.88.0 check --locked --lib --all-features` and gates publish.
 
+### Changed
+
+- **Empty Default Feature Set + Slim Tokio** (review L6, **packaging**): `default = []` — CLI/library consumers no longer compile axum + actix-web + tower unconditionally; `tokio` is now minimal (`rt-multi-thread`, `net`, `time`, `sync`, `macros`) instead of `full`. Framework integrations are opt-in via their existing features; CI gained a default-features test leg.
+- **DoH Resolver Hardened** (review L5): the standard resolver reuses a pooled client (`OnceLock`, previously a new client + TLS handshake per query), bounds the response body (64 KiB, the last unbounded network read), and treats non-2xx DoH responses as **resolver failures** instead of conflating them with "no records" (which previously masked upstream outages as negative answers).
+
 ### Removed
 
+- **Dead Error Variants** (review L11): `TokenError::MissingCnf` (the `cnf` claim is structurally mandatory — a token without it fails deserialization) and `TokenError::UseDPoPNonce` (nonce challenges are handled transparently by the auto-retry paths).
 - **Static `client_secret` Confidential-Client Mode** (review H1, **Breaking**): ATProto OAuth has no shared client secret — confidential clients authenticate with `private_key_jwt` (ES256 client assertions). The previous `OAuthClientMetadata::with_client_secret` path sent the static secret to a **user-selected** authorization server in the first PAR request, an unconditional credential-disclosure path for any malicious identity. `client_secret` is removed from `OAuthClientMetadata`, `with_client_secret`/`execute_par_request_with_credentials` are gone, and generated framework metadata now advertises `token_endpoint_auth_method: "none"` exclusively. `private_key_jwt` support is planned for 0.3.0.
 
 ### Fixed
 
+- **`TokenResponse` Secret Hygiene** (review L8): the token-endpoint response struct previously derived unrestricted `Debug` (printing live access/refresh tokens in logs) with no zeroization; `Debug` now redacts credentials and the struct zeroizes on drop, with E0509-safe `into_parts()` owned accessors mirroring the `AuthenticatedUser` pattern.
+- **PAR Error Extraction Deduplicated** (review L12): the identical OAuth error-field extraction block appeared three times in `par.rs`; factored into `parse_par_error_fields`.
 - **RFC 9068 Access-Token Claims Completed + Stricter Validation** (review M5): `JwtAccessTokenClaims` now carries the RFC 9068 § 2.2 mandatory `client_id` (exposed to downstream policy), and mandatory `iat`/`jti` as non-optional fields — a wire token missing any of them is rejected at deserialization. The `iss` comparison is now **exact** (trailing-slash normalization previously accepted a differently-spelled issuer), and a token at exactly `now == exp` (+leeway) is expired (previously `now > exp` accepted the boundary instant).
 - **Generated Client Metadata Omits Absent Optionals** (review M7): the axum/actix metadata helpers serialized `client_name: null` when unset — schema-invalid; absent optional fields are now omitted.
 - **Specification-Drift Verification Hardened** (review M4): a successful upstream HTTP response with a **non-JSON payload** (proxy error page) now counts as unverified and fails strict verification (previously a `warn`); manifest coverage is **one-to-one** — every managed file must have a checksum entry (removing a manifest line no longer silently excludes a file); the success message accurately states that only the 3 ATProto lexicons have upstreams (RFC schemas are project-authored).
