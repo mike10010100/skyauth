@@ -365,10 +365,6 @@ pub enum TokenError {
     #[error("Invalid token signature")]
     InvalidSignature,
 
-    /// The access token is missing the required confirmation (`cnf.jkt`) claim.
-    #[error("Missing cnf.jkt confirmation claim in access token")]
-    MissingCnf,
-
     /// The access token `cnf.jkt` binding does not match the presented DPoP key thumbprint.
     #[error(
         "DPoP key thumbprint mismatch: token cnf.jkt '{expected_jkt}' does not match proof jkt '{actual_jkt}'"
@@ -391,13 +387,6 @@ pub enum TokenError {
     /// The token is missing the required Decentralized Identifier (`did`) subject.
     #[error("Missing or invalid subject/issuer DID")]
     MissingDid,
-
-    /// The server challenged the client with a DPoP nonce requirement (`use_dpop_nonce`).
-    #[error("Server requires DPoP nonce challenge (use_dpop_nonce)")]
-    UseDPoPNonce {
-        /// New nonce value provided by the server, if any.
-        nonce: Option<String>,
-    },
 
     /// The token format or claims payload is malformed.
     #[error("Malformed token: {0}")]

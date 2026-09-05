@@ -329,17 +329,7 @@ pub async fn execute_par_request(
                 return Err(DPoPError::NonceRetryLimitExceeded.into());
             }
 
-            let error_code = err_json
-                .as_ref()
-                .and_then(|j| j.get("error"))
-                .and_then(|e| e.as_str())
-                .unwrap_or("par_request_failed")
-                .to_string();
-            let error_desc = err_json
-                .as_ref()
-                .and_then(|j| j.get("error_description"))
-                .and_then(|d| d.as_str())
-                .map(ToString::to_string);
+            let (error_code, error_desc) = parse_par_error_fields(err_json.as_ref());
 
             return Err(ParError::RequestFailed {
                 status: retry_status.as_u16(),
@@ -349,17 +339,7 @@ pub async fn execute_par_request(
             .into());
         }
 
-        let error_code = json_err
-            .as_ref()
-            .and_then(|j| j.get("error"))
-            .and_then(|e| e.as_str())
-            .unwrap_or("par_request_failed")
-            .to_string();
-        let error_desc = json_err
-            .as_ref()
-            .and_then(|j| j.get("error_description"))
-            .and_then(|d| d.as_str())
-            .map(ToString::to_string);
+        let (error_code, error_desc) = parse_par_error_fields(json_err.as_ref());
 
         return Err(ParError::RequestFailed {
             status: status.as_u16(),
@@ -427,6 +407,24 @@ fn parse_par_response(bytes: &[u8]) -> Result<ParResponse, AtprotoOAuthError> {
         request_uri,
         expires_in,
     })
+}
+
+/// Extracts `(error_code, error_description)` from a PAR error body, defaulting
+/// the code to `par_request_failed` when the body carries no `error` field
+/// (review L12: this extraction was duplicated three times).
+fn parse_par_error_fields(json: Option<&serde_json::Value>) -> (String, Option<String>) {
+    let error_code = json
+        .as_ref()
+        .and_then(|j| j.get("error"))
+        .and_then(|e| e.as_str())
+        .unwrap_or("par_request_failed")
+        .to_string();
+    let error_desc = json
+        .as_ref()
+        .and_then(|j| j.get("error_description"))
+        .and_then(|d| d.as_str())
+        .map(ToString::to_string);
+    (error_code, error_desc)
 }
 
 #[cfg(test)]
