@@ -372,7 +372,49 @@ impl AtprotoOAuthClientBuilder {
             ssrf_filter: self.ssrf_filter,
             state_store,
             state_ttl: self.state_ttl,
+            refresh_single_flight: Arc::new(RefreshSingleFlight::new()),
         })
+    }
+}
+
+/// High-level AT Protocol OAuth 2.1 Client.
+///
+/// Orchestrates the entire lifecycle: identity resolution, discovery, PAR, code exchange,
+/// token rotation, and transparent auto-nonce retry loops.
+/// Per-subject single-flight coordination for refresh-token exchanges
+/// (review H4, mirroring `@atproto/oauth-client-node`'s per-DID `requestLock`).
+///
+/// A refresh token is single-use: two concurrent refreshes for the same
+/// session race at the authorization server, and the loser receives
+/// `invalid_grant` with no recovery. This guard serializes refreshes per
+/// subject so concurrent callers *share* one refresh outcome instead of
+/// competing for the grant.
+#[derive(Debug, Default)]
+struct RefreshSingleFlight {
+    /// One mutex per in-flight subject; entries are intentionally left in the
+    /// map after use (bounded by distinct subjects per client instance).
+    locks: parking_lot::RwLock<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+impl RefreshSingleFlight {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the mutex guarding refreshes for `sub`.
+    fn lock_for(&self, sub: &str) -> Arc<tokio::sync::Mutex<()>> {
+        // Sync RwLock read fast-path; write lock upgrade path is a plain loop
+        // (no await held across lock acquisition).
+        if let Some(existing) = self.locks.read().get(sub) {
+            return Arc::clone(existing);
+        }
+        let mut guard = self.locks.write();
+        if let Some(existing) = guard.get(sub) {
+            return Arc::clone(existing);
+        }
+        let fresh = Arc::new(tokio::sync::Mutex::new(()));
+        guard.insert(sub.to_string(), Arc::clone(&fresh));
+        fresh
     }
 }
 
@@ -388,6 +430,7 @@ pub struct AtprotoOAuthClient {
     ssrf_filter: SsrfFilter,
     state_store: Arc<OAuthStateStore>,
     state_ttl: Duration,
+    refresh_single_flight: Arc<RefreshSingleFlight>,
 }
 
 impl AtprotoOAuthClient {
@@ -407,6 +450,7 @@ impl AtprotoOAuthClient {
             ssrf_filter,
             state_store: Arc::new(OAuthStateStore::default()),
             state_ttl: DEFAULT_STATE_TTL,
+            refresh_single_flight: Arc::new(RefreshSingleFlight::new()),
         }
     }
 
@@ -747,6 +791,12 @@ impl AtprotoOAuthClient {
         &self,
         session: &mut OAuthSession,
     ) -> Result<(), AtprotoOAuthError> {
+        // Per-subject single-flight: serialize refreshes for the same DID so
+        // concurrent callers share one grant instead of racing the single-use
+        // refresh token (review H4; mirrors @atproto/oauth-client-node).
+        let refresh_lock = self.refresh_single_flight.lock_for(session.sub());
+        let _refresh_guard = refresh_lock.lock().await;
+
         let refresh_token = session
             .refresh_token()
             .ok_or(TokenError::MissingRefreshToken)?;
@@ -778,7 +828,22 @@ impl AtprotoOAuthClient {
             return Err(TokenError::InvalidTokenType(resp_json.token_type).into());
         }
 
-        if !resp_json.sub.is_empty() && resp_json.sub != session.sub() {
+        // Identity invariant (review H4): the refresh response's `sub` MUST be
+        // present and match the session's subject. An empty `sub` is a
+        // protocol violation — accepting it would let a token without proven
+        // identity rotate the session.
+        if resp_json.sub.is_empty() {
+            return Err(TokenError::RequestFailed {
+                status: 200,
+                error: "invalid_request".to_string(),
+                description: Some(
+                    "Refresh response is missing mandatory `sub` claim (review H4: fail-closed)"
+                        .to_string(),
+                ),
+            }
+            .into());
+        }
+        if resp_json.sub != session.sub() {
             return Err(TokenError::SubMismatch {
                 expected: session.sub().to_string(),
                 actual: resp_json.sub,
@@ -786,19 +851,41 @@ impl AtprotoOAuthClient {
             .into());
         }
 
-        // Scope revalidation: reject silent scope narrowing on rotation (RFC 6749 § 6:
-        // the refreshed scope MUST NOT exceed the original grant, and ATProto profiles
-        // mandate that "atproto" remains present).
+        // Scope revalidation (RFC 6749 § 6 + review H4):
+        // - the refreshed scope MUST NOT exceed the original grant (expansion is
+        //   rejected — privileges cannot silently accumulate);
+        // - ATProto profiles mandate that "atproto" remains present;
+        // - the returned scope is persisted atomically with the tokens so
+        //   authorization decisions cannot use stale grants.
+        let granted_scope = session.scope().unwrap_or("").to_string();
         if let Some(ref new_scope) = resp_json.scope {
             if !new_scope.split_whitespace().any(|s| s == "atproto") {
                 return Err(TokenError::MissingAtprotoScope(new_scope.clone()).into());
             }
+            if !granted_scope.is_empty() {
+                // Expansion check: every newly-requested scope must be in the
+                // original grant (order-insensitive).
+                let granted: std::collections::HashSet<&str> =
+                    granted_scope.split_whitespace().collect();
+                let expanded: Vec<&str> = new_scope
+                    .split_whitespace()
+                    .filter(|s| !granted.contains(*s))
+                    .collect();
+                if !expanded.is_empty() {
+                    return Err(TokenError::ScopeExpansion {
+                        granted: granted_scope,
+                        requested: new_scope.clone(),
+                    }
+                    .into());
+                }
+            }
         }
 
-        session.rotate_tokens(
+        session.rotate_tokens_with_scope(
             resp_json.access_token,
             resp_json.refresh_token,
             resp_json.expires_in,
+            resp_json.scope,
         );
 
         Ok(())

@@ -404,7 +404,7 @@ async fn test_refresh_session_and_rotation_success() {
         "at_initial_token",
         Some("rt_initial_token".to_string()),
         "DPoP",
-        Some("atproto".to_string()),
+        Some("atproto transition:generic".to_string()),
         Some(300),
         initial_key.clone(),
         Some("https://pds.example.com".to_string()),
@@ -448,7 +448,7 @@ async fn test_refresh_session_nonce_retry_success() {
         "at_initial_token",
         Some("rt_initial_token".to_string()),
         "DPoP",
-        Some("atproto".to_string()),
+        Some("atproto transition:generic".to_string()),
         Some(300),
         initial_key.clone(),
         Some("https://pds.example.com".to_string()),
@@ -496,7 +496,7 @@ async fn test_refresh_session_missing_refresh_token_rejected() {
         "at_initial_token",
         None,
         "DPoP",
-        Some("atproto".to_string()),
+        Some("atproto transition:generic".to_string()),
         Some(300),
         initial_key.clone(),
         None,
@@ -601,7 +601,7 @@ async fn test_refresh_token_returns_new_session_instance() {
         "at_old_token",
         Some("rt_old_token".to_string()),
         "DPoP",
-        Some("atproto".to_string()),
+        Some("atproto transition:generic".to_string()),
         Some(300),
         initial_key.clone(),
         Some("https://pds.example.com".to_string()),
@@ -670,4 +670,250 @@ fn test_session_expiration_leeway_calculations() {
     assert!(!session.is_expired());
     assert!(!session.is_expired_with_leeway(Duration::from_secs(30)));
     assert!(session.is_expired_with_leeway(Duration::from_secs(120)));
+}
+
+#[tokio::test]
+async fn test_h4_refresh_empty_sub_rejected() {
+    // Review H4: an empty `sub` in the refresh response is a protocol violation
+    // — the session must NOT rotate on a token without proven identity.
+    let auth_server = e2e_harness::MockAuthServer::start().await;
+
+    let mut session = OAuthSession::new(
+        TEST_ALICE_DID,
+        "at_initial_token",
+        Some("rt_empty_sub".to_string()),
+        "DPoP",
+        Some("atproto".to_string()),
+        Some(300),
+        DPoPKey::generate(),
+        Some("https://pds.example.com".to_string()),
+        Some(auth_server.uri()),
+        Some(format!("{}/oauth/token", auth_server.uri())),
+    )
+    .unwrap();
+
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .and(header_exists("dpop"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(serde_json::json!({
+                    "access_token": "at_evil",
+                    "token_type": "DPoP",
+                    "expires_in": 3600,
+                    "refresh_token": "rt_evil",
+                    "sub": ""
+                })),
+        )
+        .mount(&auth_server.server)
+        .await;
+
+    let client = AtprotoOAuthClient::builder()
+        .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
+        .allow_insecure_localhost(true)
+        .build()
+        .unwrap();
+
+    let res = client.refresh_session(&mut session).await;
+    assert!(res.is_err(), "empty sub must be rejected (fail-closed)");
+    // Session must remain untouched.
+    assert_eq!(session.access_token(), "at_initial_token");
+    assert_eq!(session.refresh_token(), Some("rt_empty_sub"));
+}
+
+#[tokio::test]
+async fn test_h4_refresh_scope_expansion_rejected() {
+    // Review H4 (RFC 6749 § 6): a refresh response whose scope exceeds the
+    // original grant must be rejected — privileges cannot silently accumulate.
+    let auth_server = e2e_harness::MockAuthServer::start().await;
+
+    let mut session = OAuthSession::new(
+        TEST_ALICE_DID,
+        "at_initial_token",
+        Some("rt_expansion".to_string()),
+        "DPoP",
+        Some("atproto".to_string()),
+        Some(300),
+        DPoPKey::generate(),
+        Some("https://pds.example.com".to_string()),
+        Some(auth_server.uri()),
+        Some(format!("{}/oauth/token", auth_server.uri())),
+    )
+    .unwrap();
+
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .and(header_exists("dpop"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(serde_json::json!({
+                    "access_token": "at_expanded",
+                    "token_type": "DPoP",
+                    "expires_in": 3600,
+                    "refresh_token": "rt_expanded",
+                    "scope": "atproto transition:generic",
+                    "sub": TEST_ALICE_DID
+                })),
+        )
+        .mount(&auth_server.server)
+        .await;
+
+    let client = AtprotoOAuthClient::builder()
+        .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
+        .allow_insecure_localhost(true)
+        .build()
+        .unwrap();
+
+    let res = client.refresh_session(&mut session).await;
+    assert!(
+        matches!(
+            res,
+            Err(AtprotoOAuthError::Token(TokenError::ScopeExpansion { .. }))
+        ),
+        "scope expansion must be rejected with ScopeExpansion"
+    );
+    // Session tokens must remain untouched.
+    assert_eq!(session.access_token(), "at_initial_token");
+    assert_eq!(session.scope(), Some("atproto"));
+}
+
+#[tokio::test]
+async fn test_h4_refresh_scope_persisted_atomically() {
+    // Review H4: the returned scope must be persisted with the tokens so
+    // authorization decisions cannot use stale grants.
+    let auth_server = e2e_harness::MockAuthServer::start().await;
+
+    let mut session = OAuthSession::new(
+        TEST_ALICE_DID,
+        "at_initial_token",
+        Some("rt_scope_persist".to_string()),
+        "DPoP",
+        Some("atproto".to_string()),
+        Some(300),
+        DPoPKey::generate(),
+        Some("https://pds.example.com".to_string()),
+        Some(auth_server.uri()),
+        Some(format!("{}/oauth/token", auth_server.uri())),
+    )
+    .unwrap();
+
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .and(header_exists("dpop"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(serde_json::json!({
+                    "access_token": "at_persisted",
+                    "token_type": "DPoP",
+                    "expires_in": 3600,
+                    "refresh_token": "rt_persisted",
+                    "scope": "atproto",
+                    "sub": TEST_ALICE_DID
+                })),
+        )
+        .mount(&auth_server.server)
+        .await;
+
+    let client = AtprotoOAuthClient::builder()
+        .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
+        .allow_insecure_localhost(true)
+        .build()
+        .unwrap();
+
+    client.refresh_session(&mut session).await.unwrap();
+    assert_eq!(session.access_token(), "at_persisted");
+    assert_eq!(session.refresh_token(), Some("rt_persisted"));
+    assert_eq!(session.scope(), Some("atproto"));
+}
+
+#[tokio::test]
+async fn test_h4_refresh_single_flight_serializes_per_subject() {
+    // Review H4: per-subject single-flight — concurrent refreshes for the same
+    // DID must serialize (never overlap upstream), matching
+    // @atproto/oauth-client-node's per-DID requestLock.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc as StdArc;
+
+    let auth_server = e2e_harness::MockAuthServer::start().await;
+
+    let in_flight = StdArc::new(AtomicUsize::new(0));
+    let max_in_flight = StdArc::new(AtomicUsize::new(0));
+
+    let in_flight_clone = in_flight.clone();
+    let max_clone = max_in_flight.clone();
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .and(header_exists("dpop"))
+        .respond_with(move |_: &wiremock::Request| {
+            let now = in_flight_clone.fetch_add(1, Ordering::SeqCst) + 1;
+            max_clone.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            in_flight_clone.fetch_sub(1, Ordering::SeqCst);
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(serde_json::json!({
+                    "access_token": "at_serialized",
+                    "token_type": "DPoP",
+                    "expires_in": 3600,
+                    "refresh_token": "rt_serialized",
+                    "scope": "atproto",
+                    "sub": TEST_ALICE_DID
+                }))
+        })
+        .mount(&auth_server.server)
+        .await;
+
+    let client = StdArc::new(
+        AtprotoOAuthClient::builder()
+            .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
+            .allow_insecure_localhost(true)
+            .build()
+            .unwrap(),
+    );
+
+    let token_uri = auth_server.uri();
+    let token_url = format!("{token_uri}/oauth/token");
+    let key = DPoPKey::generate();
+    let mut handles = Vec::new();
+    for _ in 0..10 {
+        let client = client.clone();
+        let key = key.clone();
+        let token_url = token_url.clone();
+        handles.push(tokio::spawn(async move {
+            let mut session = OAuthSession::new(
+                TEST_ALICE_DID,
+                "at_initial_token",
+                Some("rt_serialized_input".to_string()),
+                "DPoP",
+                Some("atproto".to_string()),
+                Some(300),
+                key,
+                Some("https://pds.example.com".to_string()),
+                Some(
+                    token_url
+                        .rsplit("/oauth/token")
+                        .next()
+                        .unwrap_or("")
+                        .to_string(),
+                ),
+                Some(token_url),
+            )
+            .unwrap();
+            // The refresh itself may succeed or hit invalid_grant from a racing
+            // single-use token — what this test pins is the SERIALIZATION.
+            let _ = client.refresh_session(&mut session).await;
+        }));
+    }
+    for h in handles {
+        h.await.unwrap();
+    }
+
+    assert_eq!(
+        max_in_flight.load(Ordering::SeqCst),
+        1,
+        "concurrent refreshes for the same DID must never overlap upstream (single-flight)"
+    );
 }

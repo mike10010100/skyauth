@@ -92,7 +92,11 @@ impl Respond for StatefulRefreshTokenResponder {
                         "token_type": "DPoP",
                         "expires_in": 3600,
                         "refresh_token": next_rt,
-                        "scope": "atproto transition:generic",
+                        // Echo the granted scope verbatim: RFC 6749 § 6 forbids the AS
+                        // from expanding scope on refresh, and the client now enforces
+                        // that invariant (review H4). Sessions created in these tests
+                        // are granted "atproto".
+                        "scope": "atproto",
                         "sub": self.sub_did
                     }))
             } else {
