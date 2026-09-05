@@ -15,6 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use p256::ecdsa::VerifyingKey;
 use parking_lot::RwLock;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
 use super::AuthenticatedUser;
@@ -53,6 +54,9 @@ pub struct JwtAccessTokenClaims {
     pub iss: String,
     /// Subject Decentralized Identifier (`sub`), e.g. `did:plc:...` or `did:web:...`.
     pub sub: String,
+    /// Client identifier of the OAuth client the token was issued to
+    /// (RFC 9068 § 2.2 mandatory `client_id`; review M5).
+    pub client_id: String,
     /// Target audience / Resource Server identifier (`aud`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aud: Option<serde_json::Value>,
@@ -61,12 +65,11 @@ pub struct JwtAccessTokenClaims {
     /// Not-before timestamp in seconds since epoch (`nbf`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nbf: Option<u64>,
-    /// Issued-at timestamp in seconds since epoch (`iat`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub iat: Option<u64>,
-    /// Unique token identifier (`jti`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub jti: Option<String>,
+    /// Issued-at timestamp in seconds since epoch (`iat`) — RFC 9068 § 2.2
+    /// mandatory (review M5).
+    pub iat: u64,
+    /// Unique token identifier (`jti`) — RFC 9068 § 2.2 mandatory (review M5).
+    pub jti: String,
     /// Granted OAuth scopes (`scope`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
@@ -75,7 +78,14 @@ pub struct JwtAccessTokenClaims {
 }
 
 impl JwtAccessTokenClaims {
-    /// Creates a new `JwtAccessTokenClaims` builder with mandatory claims.
+    /// Creates a new `JwtAccessTokenClaims` with the RFC 9068 § 2.2 mandatory
+    /// claims (`iss`, `sub`, `exp`, `client_id`, `iat`, `jti`) and the DPoP
+    /// binding; optional claims default to `None`.
+    ///
+    /// `iat`/`jti` default to the current time and a random identifier —
+    /// wire-level validation (via [`JwtAccessTokenValidator`]) enforces their
+    /// presence in the presented token regardless of how the claims object was
+    /// constructed.
     #[must_use]
     pub fn new(
         iss: impl Into<String>,
@@ -83,14 +93,21 @@ impl JwtAccessTokenClaims {
         exp: u64,
         dpop_thumbprint: impl Into<String>,
     ) -> Self {
+        let iat = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut raw = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut raw);
         Self {
             iss: iss.into(),
             sub: sub.into(),
+            client_id: "https://app.example.com/client-metadata.json".to_string(),
             aud: None,
             exp,
             nbf: None,
-            iat: None,
-            jti: None,
+            iat,
+            jti: crate::crypto::base64url_encode(&raw),
             scope: None,
             cnf: CnfClaim::new(dpop_thumbprint),
         }
@@ -114,20 +131,6 @@ impl JwtAccessTokenClaims {
     #[must_use]
     pub fn with_nbf(mut self, nbf: u64) -> Self {
         self.nbf = Some(nbf);
-        self
-    }
-
-    /// Sets the issued-at claim (`iat`).
-    #[must_use]
-    pub fn with_iat(mut self, iat: u64) -> Self {
-        self.iat = Some(iat);
-        self
-    }
-
-    /// Sets the token identifier claim (`jti`).
-    #[must_use]
-    pub fn with_jti(mut self, jti: impl Into<String>) -> Self {
-        self.jti = Some(jti.into());
         self
     }
 
@@ -398,7 +401,11 @@ impl JwtAccessTokenValidator {
             .as_secs();
         let leeway_secs = self.clock_skew_leeway.as_secs();
 
-        if now_secs > claims.exp.saturating_add(leeway_secs) {
+        // RFC 9068 § 4 / RFC 7519 § 4.1.4: `exp` is the instant AFTER which the
+        // token must not be accepted — a token at exactly `now == exp` (plus
+        // configured leeway) is expired (review M5; previously `now > exp` accepted
+        // the boundary instant).
+        if now_secs.saturating_add(leeway_secs) >= claims.exp {
             return Err(IntegrationError::Token(TokenError::Expired {
                 exp: claims.exp,
                 now: now_secs,
@@ -425,15 +432,14 @@ impl JwtAccessTokenValidator {
                     .to_string(),
             ));
         };
-        {
-            let norm_expected = exp_iss.trim().trim_end_matches('/');
-            let norm_actual = claims.iss.trim().trim_end_matches('/');
-            if norm_expected != norm_actual {
-                return Err(IntegrationError::Token(TokenError::IssuerMismatch {
-                    expected: exp_iss.clone(),
-                    actual: claims.iss.clone(),
-                }));
-            }
+        // RFC 9068 § 4 (review M5): the `iss` comparison is EXACT — normalizing
+        // trailing slashes would accept an issuer that differs from the one the
+        // resource server pinned.
+        if claims.iss != *exp_iss {
+            return Err(IntegrationError::Token(TokenError::IssuerMismatch {
+                expected: exp_iss.clone(),
+                actual: claims.iss.clone(),
+            }));
         }
 
         // RFC 9068 § 4: audience must identify this resource server — one AS key mints tokens for several resource servers, so accepting any audience opens cross-RS token-confusion attacks.
@@ -689,7 +695,6 @@ mod tests {
     use crate::dpop::DPoPKey;
     use p256::ecdsa::SigningKey;
     use rand::thread_rng;
-
     #[test]
     fn test_jwt_access_token_signing_and_validation_roundtrip() {
         let auth_key = SigningKey::random(&mut thread_rng());
@@ -1052,6 +1057,98 @@ mod tests {
         assert!(
             matches!(err, IntegrationError::AuthFailed(ref msg) if msg.contains("issuer")),
             "expected misconfiguration (missing expected issuer) rejection, got {err:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
+mod m5_enforcement_tests {
+    use super::*;
+    use p256::ecdsa::SigningKey;
+    use rand::thread_rng;
+
+    fn signed_token(claims: &JwtAccessTokenClaims, key: &SigningKey) -> String {
+        claims.sign_jwt(key, None).unwrap()
+    }
+
+    #[test]
+    fn test_m5_exp_boundary_is_exact() {
+        // Review M5: a token at exactly `now == exp` (zero leeway) is expired —
+        // the previous `now > exp` comparison accepted the boundary instant.
+        let key = SigningKey::random(&mut thread_rng());
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let claims = JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now, // exp == now
+            "dpop_jkt",
+        );
+        let token = signed_token(&claims, &key);
+
+        let validator = JwtAccessTokenValidator::new()
+            .with_verifying_key(*key.verifying_key())
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
+        let res = validator.verify_token_sync(&token, "dpop_jkt");
+        assert!(
+            matches!(
+                res,
+                Err(IntegrationError::Token(TokenError::Expired { .. }))
+            ),
+            "token at the exp boundary must be expired"
+        );
+    }
+
+    #[test]
+    fn test_m5_issuer_comparison_is_exact() {
+        // Review M5: trailing-slash normalization previously accepted an issuer
+        // differing from the pinned one by a slash.
+        let key = SigningKey::random(&mut thread_rng());
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let claims = JwtAccessTokenClaims::new(
+            "https://auth.example.com/", // trailing slash vs pinned value
+            "did:plc:alice123",
+            now + 3600,
+            "dpop_jkt",
+        );
+        let token = signed_token(&claims, &key);
+
+        let validator = JwtAccessTokenValidator::new()
+            .with_verifying_key(*key.verifying_key())
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
+        let res = validator.verify_token_sync(&token, "dpop_jkt");
+        assert!(
+            matches!(
+                res,
+                Err(IntegrationError::Token(TokenError::IssuerMismatch { .. }))
+            ),
+            "issuer comparison must be exact"
+        );
+    }
+
+    #[test]
+    fn test_m5_wire_rejects_missing_mandatory_claims() {
+        // Review M5: RFC 9068 § 2.2 mandates client_id, iat, jti. A token
+        // payload missing them must be rejected at deserialization.
+        let raw_without_mandatory = r#"{
+            "iss": "https://auth.example.com",
+            "sub": "did:plc:alice123",
+            "exp": 9999999999,
+            "scope": "atproto",
+            "cnf": {"jkt": "dpop_jkt"}
+        }"#;
+        let claims: Result<JwtAccessTokenClaims, _> = serde_json::from_str(raw_without_mandatory);
+        assert!(
+            claims.is_err(),
+            "missing client_id/iat/jti must fail deserialization (RFC 9068 § 2.2 mandatory claims)"
         );
     }
 }
