@@ -194,7 +194,12 @@ jobs:
             echo "::error::kani_output.txt missing — Kani did not run; failing closed"
             exit 1
           fi
-          if grep -q "UNSATISFIABLE" kani_output.txt; then
+          # NOTE: CBMC's internal solver lines ("SAT checker: instance is
+          # UNSATISFIABLE") are NORMAL for successful proofs — they mean no
+          # assertion-violation trace exists. Only a cover property's own
+          # status line ("\t - Status: UNSATISFIABLE") indicates an
+          # unreachable cover.
+          if grep -E $'^[[:space:]]*-[[:space:]]Status: UNSATISFIABLE' kani_output.txt; then
             echo "::error::Kani cover property UNSATISFIABLE (vacuous-proof risk)"
             exit 1
           fi
