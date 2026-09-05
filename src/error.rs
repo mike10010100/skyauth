@@ -428,6 +428,18 @@ pub enum TokenError {
     #[error("Token scope '{0}' is missing mandatory 'atproto' scope")]
     MissingAtprotoScope(String),
 
+    /// A refresh response granted a scope exceeding the original grant
+    /// (RFC 6749 § 6: a refresh grant MUST NOT exceed the original). The
+    /// client refuses to silently accumulate privileges; persistence of the
+    /// returned scope is rejected with this variant.
+    #[error("Refresh attempted scope expansion from '{granted}' to '{requested}'")]
+    ScopeExpansion {
+        /// The scope originally granted to the session.
+        granted: String,
+        /// The scope requested in the refresh response.
+        requested: String,
+    },
+
     /// The token endpoint rejected the request.
     #[error("Token request failed with HTTP status {status}: {error} ({description:?})")]
     RequestFailed {

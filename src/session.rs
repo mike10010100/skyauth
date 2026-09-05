@@ -175,6 +175,23 @@ impl OAuthSession {
         refresh_token: Option<String>,
         expires_in_secs: Option<u64>,
     ) {
+        self.rotate_tokens_with_scope(access_token, refresh_token, expires_in_secs, None);
+    }
+
+    /// Atomically rotates the session tokens upon successful refresh token exchange,
+    /// optionally persisting the authorization server's returned scope.
+    ///
+    /// Updates `access_token`, `refresh_token`, recalculates `expires_at` based on
+    /// current time, and (when `scope` is `Some`) replaces the session scope so
+    /// authorization decisions cannot use stale grants (review H4). Outgoing token
+    /// strings are zeroized in memory before being replaced.
+    pub fn rotate_tokens_with_scope(
+        &mut self,
+        access_token: impl Into<String>,
+        refresh_token: Option<String>,
+        expires_in_secs: Option<u64>,
+        scope: Option<String>,
+    ) {
         // Explicitly zeroize outgoing credentials before overwriting so the previous
         // secrets are scrubbed rather than simply dropped unzeroed.
         self.access_token.zeroize();
@@ -184,6 +201,9 @@ impl OAuthSession {
 
         self.access_token = access_token.into();
         self.refresh_token = refresh_token;
+        if let Some(new_scope) = scope {
+            self.scope = Some(new_scope);
+        }
         let now = SystemTime::now();
         // Fail closed on overflow (same rationale as `new`): an overflowing
         // `expires_in` must not yield a never-expiring session.
