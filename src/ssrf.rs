@@ -165,10 +165,20 @@ impl SsrfFilter {
         }
 
         let lookup_target = format!("{host}:{port}");
-        let mut addrs: Vec<SocketAddr> = tokio::net::lookup_host(&lookup_target)
-            .await
-            .map_err(|e| SsrfError::DnsResolutionFailed(format!("{host}: {e}")))?
-            .collect();
+        // Bound the system DNS lookup explicitly: the reqwest client's connect
+        // timeout does not cover this pre-resolution step, and an unbounded
+        // lookup would let a slow/stalled resolver hang callers (review H6).
+        // 5s matches the pinned client's connect timeout.
+        let mut addrs: Vec<SocketAddr> = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio::net::lookup_host(&lookup_target),
+        )
+        .await
+        .map_err(|_| {
+            SsrfError::DnsResolutionFailed(format!("DNS resolution for {host} timed out after 5s"))
+        })?
+        .map_err(|e| SsrfError::DnsResolutionFailed(format!("{host}: {e}")))?
+        .collect();
 
         if addrs.is_empty() {
             return Err(SsrfError::DnsResolutionFailed(format!(
@@ -219,7 +229,16 @@ impl SsrfFilter {
         let mut builder = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(std::time::Duration::from_secs(5))
-            .timeout(std::time::Duration::from_secs(10));
+            .timeout(std::time::Duration::from_secs(10))
+            // Hard-disable environment proxies (`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`):
+            // with an HTTPS proxy the TCP connection terminates at the proxy and the
+            // target hostname is sent via CONNECT, so proxy-side DNS — not the locally
+            // validated and pinned address — would select the destination. That
+            // silently invalidates the socket pin below and re-opens split-DNS /
+            // proxy-side rebinding paths (independent review H6). Pinned transport
+            // and proxies are mutually exclusive trust models; if proxied egress is
+            // ever needed it requires a separate, explicitly-constructed client.
+            .no_proxy();
 
         if host_only.parse::<IpAddr>().is_err() {
             builder = builder.resolve(host_only, pinned_addr);

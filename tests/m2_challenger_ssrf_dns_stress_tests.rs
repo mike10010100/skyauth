@@ -28,6 +28,63 @@ use skyauth::ssrf::{
     is_blocked_hostname, is_restricted_ip, is_restricted_ipv4, is_restricted_ipv6, SsrfFilter,
 };
 
+#[tokio::test]
+async fn test_ssrf_pinned_client_ignores_hostile_proxy_environment() {
+    // Regression for review H6: the pinned client must hard-disable
+    // environment proxies (`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`). With a
+    // hostile proxy configured, the connection must still reach the pinned
+    // destination directly — if reqwest honored the proxy, the CONNECT
+    // target would be proxy-resolved and this test would fail to connect
+    // (or be redirected), proving the pin was bypassed.
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/pin"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .mount(&mock_server)
+        .await;
+
+    let filter = SsrfFilter::new(true);
+    let url = format!("{}/pin", mock_server.uri());
+
+    // Set hostile proxy environment; the client under test must ignore it.
+    // SAFETY of the test-local env mutation: cargo runs tests in the same
+    // process; use a mutex-free unique var name and restore afterwards to
+    // avoid cross-test contamination.
+    let saved = std::env::var("HTTP_PROXY").ok();
+    std::env::set_var("HTTP_PROXY", "http://127.0.0.1:9"); // discard port (never connects)
+    std::env::set_var("http_proxy", "http://127.0.0.1:9");
+    std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:9");
+    std::env::set_var("https_proxy", "http://127.0.0.1:9");
+
+    let request = async {
+        let parsed = url.parse::<Url>().expect("url");
+        let (client, _addr, _host) = filter
+            .build_pinned_client(&parsed)
+            .await
+            .expect("pinned client");
+        let resp = client
+            .get(&url)
+            .send()
+            .await
+            .expect("request through pinned client");
+        assert!(
+            resp.status().is_success(),
+            "pinned request must succeed despite hostile proxy env"
+        );
+    };
+
+    // Run the pinned request, then restore the environment regardless of outcome.
+    request.await;
+    match saved {
+        Some(v) => std::env::set_var("HTTP_PROXY", v),
+        None => std::env::remove_var("HTTP_PROXY"),
+    }
+    std::env::remove_var("http_proxy");
+    std::env::remove_var("HTTPS_PROXY");
+    std::env::remove_var("https_proxy");
+}
+
 #[test]
 fn test_ssrf_zero_network_and_broadcast_boundaries() {
     let filter = SsrfFilter::new(false);
