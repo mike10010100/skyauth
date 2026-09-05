@@ -147,8 +147,26 @@ jobs:
       - name: Run cargo-deny security checks
         uses: EmbarkStudios/cargo-deny-action@b66acf5e9fe20f8aba065be86778a8a4c846f902 # v2
 
+  msrv:
+    name: MSRV (1.88) Library Build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.88 toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal
+
+      - name: Check library on MSRV (locked deps, all features)
+        run: cargo +1.88.0 check --locked --lib --all-features
+
   kani:
     name: Kani Bounded Model Checking
+
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -159,7 +177,30 @@ jobs:
           persist-credentials: false
 
       - name: Run Kani Proofs
+        # Unsatisfied `kani::cover!` properties do NOT fail plain `cargo kani`
+        # (measured: UNSATISFIABLE covers exit 0 — review finding M3). The
+        # gate step below parses the coverage output and fails the job on any
+        # UNSATISFIABLE cover or on unparseable output (fail-closed).
         uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
+        with:
+          command: 'cargo-kani'
+          args: '--harness proof_ --coverage | tee kani_output.txt'
+
+      - name: Gate on Kani cover satisfaction (anti-vacuity, fail-closed)
+        run: |
+          if ! ls kani_output.txt >/dev/null 2>&1; then
+            echo "::error::kani_output.txt missing — Kani did not run; failing closed"
+            exit 1
+          fi
+          if grep -q "UNSATISFIABLE" kani_output.txt; then
+            echo "::error::Kani cover property UNSATISFIABLE (vacuous-proof risk)"
+            exit 1
+          fi
+          if ! grep -qE "successfully verified harnesses" kani_output.txt; then
+            echo "::error::Kani summary missing (fail-closed)"
+            exit 1
+          fi
+          echo "All Kani cover properties satisfied."
 
   verus:
     name: Verus Deductive Verification
@@ -178,7 +219,7 @@ jobs:
   publish:
     name: Auto-Publish to Crates.io & Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [fmt-and-clippy, test, coverage, security-audit, kani, verus]
+    needs: [fmt-and-clippy, test, coverage, security-audit, msrv, kani, verus]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
