@@ -169,8 +169,13 @@ impl OAuthStateTransitionModel {
     ///
     /// # Hoare Logic Specification
     /// - **Precondition**: `!state_id.is_empty() && ttl_ticks > 0`.
-    /// - **Postcondition**: If `status == Uninitialized`, becomes `Pending`.
-    /// - **Returns**: `true` if inserted, `false` if collision.
+    /// - **Postcondition**: status becomes `Pending` with the new payload —
+    ///   insertion **replaces** any prior status, mirroring the production
+    ///   `OAuthStateStore::insert_state_sync` (`HashMap::insert` replace
+    ///   semantics). The model previously rejected re-insertion of live keys,
+    ///   diverging from production (independent review finding M3); this
+    ///   corrected model is the refinement target.
+    /// - **Returns**: `true` (insertion never fails for non-empty ids).
     pub fn insert(
         &mut self,
         state_id: &str,
@@ -182,34 +187,22 @@ impl OAuthStateTransitionModel {
             return false;
         }
 
-        let current_status = self
-            .states
-            .get(state_id)
-            .copied()
-            .unwrap_or(StateTransitionStatus::Uninitialized);
-
-        match current_status {
-            StateTransitionStatus::Uninitialized => {
-                let entry = ModelStoredEntry {
-                    state_id: state_id.to_string(),
-                    client_id: client_id.to_string(),
-                    created_at_tick: current_tick,
-                    ttl_ticks,
-                };
-                self.states.insert(
-                    state_id.to_string(),
-                    StateTransitionStatus::Pending {
-                        created_at_tick: current_tick,
-                        ttl_ticks,
-                    },
-                );
-                self.payloads.insert(state_id.to_string(), entry);
-                true
-            }
-            StateTransitionStatus::Pending { .. }
-            | StateTransitionStatus::Consumed { .. }
-            | StateTransitionStatus::Expired { .. } => false,
-        }
+        let entry = ModelStoredEntry {
+            state_id: state_id.to_string(),
+            client_id: client_id.to_string(),
+            created_at_tick: current_tick,
+            ttl_ticks,
+        };
+        self.states.insert(
+            state_id.to_string(),
+            StateTransitionStatus::Pending {
+                created_at_tick: current_tick,
+                ttl_ticks,
+            },
+        );
+        self.payloads.insert(state_id.to_string(), entry);
+        self.consumption_counts.remove(state_id);
+        true
     }
 
     /// Formal contract for atomic state consumption (`take_state`).
@@ -581,7 +574,9 @@ mod tests {
         assert!(model.insert(state, "client_1", 100, 10));
         assert!(model.verify_global_store_invariants());
 
-        assert!(!model.insert(state, "client_1", 100, 15));
+        // Corrected replace semantics (mirrors production store): re-inserting
+        // a live key replaces the pending record rather than being rejected.
+        assert!(model.insert(state, "client_1", 100, 15));
 
         let entry = model.take_state(state, 20);
         assert!(entry.is_some());

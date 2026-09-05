@@ -49,13 +49,21 @@ fn test_formal_state_machine_transition_invariants() {
     ));
     assert!(model.verify_global_store_invariants());
 
-    assert!(!model.insert(state, "client_app_duplicate", 100, 15));
-
+    // Corrected replace semantics (mirrors production store): re-insertion
+    // replaces the live pending record with the new payload/timestamps.
+    assert!(model.insert(state, "client_app_duplicate", 100, 15));
+    assert!(matches!(
+        model.states.get(state),
+        Some(StateTransitionStatus::Pending {
+            created_at_tick: 15,
+            ttl_ticks: 100
+        })
+    ));
     let entry = model.take_state(state, 50);
     assert!(entry.is_some());
     let entry = entry.unwrap();
     assert_eq!(entry.state_id, state);
-    assert_eq!(entry.client_id, "client_app");
+    assert_eq!(entry.client_id, "client_app_duplicate");
     assert!(matches!(
         model.states.get(state),
         Some(StateTransitionStatus::Consumed {

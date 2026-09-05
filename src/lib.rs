@@ -122,6 +122,7 @@ pub mod dpop;
 pub mod error;
 pub mod identity;
 pub mod integrations;
+pub mod kernels;
 pub mod par;
 pub mod pkce;
 pub mod session;

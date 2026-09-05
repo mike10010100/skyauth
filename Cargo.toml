@@ -2,7 +2,7 @@
 name = "skyauth"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.81"
+rust-version = "1.88"
 authors = ["Mike <mike@example.com>"]
 description = "High-assurance, formally verified OAuth 2.1 and RFC 9449 DPoP authentication engine for the AT Protocol (Bluesky)"
 license = "MIT OR Apache-2.0"
