@@ -305,8 +305,8 @@ async fn test_identity_resolver_ambiguous_dns_records_rejected() {
     mock_dns.register_multiple_records(
         "alice.bsky.social",
         vec![
-            "did=did:plc:alice111111111111111111".to_string(),
-            "did=did:plc:imposter222222222222222".to_string(),
+            "did=did:plc:alice1111111111111111111".to_string(),
+            "did=did:plc:imposter2222222222222222".to_string(),
         ],
     );
 

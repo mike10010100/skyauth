@@ -281,22 +281,56 @@ pub fn validate_did_syntax(did: &str) -> Result<DidMethod, IdentityError> {
         )));
     }
 
+    // Method-name grammar per the DID core spec: [a-z0-9]+ (already matched
+    // implicitly by the match arms below; unknown methods are rejected).
     match parts[1] {
         "plc" => {
+            // ATProto DID PLC grammar: exactly 24 lowercase alphanumeric chars
+            // (base32-sorted suffix; see did:plc registry). Previously only a
+            // minimum length was checked (review L2/#4), allowing traversal
+            // payloads like `did:plc:x/../../admin` through URL construction.
             let hash = parts[2];
-            if hash.len() < 8 {
+            let valid = hash.len() == 24
+                && hash
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+            if !valid {
                 return Err(IdentityError::InvalidDidSyntax(format!(
-                    "did:plc identifier '{hash}' is too short"
+                    "did:plc identifier must be exactly 24 lowercase alphanumeric characters, got '{hash}'"
                 )));
             }
             Ok(DidMethod::Plc)
         }
         "web" => {
+            // did:web: the identifier is a domain optionally followed by
+            // ':'-separated path segments. It must NOT contain userinfo ('@'),
+            // ports, empty segments, or characters that URL parsing would
+            // reinterpret (review L2: `trusted.example@evil.example` previously
+            // passed and re-targeted the host during URL construction).
             let domain = parts[2];
-            if domain.is_empty() {
-                return Err(IdentityError::InvalidDidSyntax(
-                    "did:web domain identifier cannot be empty".to_string(),
-                ));
+            // did:web grammar (W3C did:web): first segment is a domain; any
+            // further ':'-separated segments are URL path components. Every
+            // segment must be non-empty, free of '@' (userinfo re-parsing —
+            // review L2), raw ':' or '/' (structural characters), and only
+            // alphanumeric/'.'/'-'/'%' characters.
+            let segments: Vec<&str> = trimmed
+                .strip_prefix("did:web:")
+                .unwrap_or(domain)
+                .split(':')
+                .collect();
+            let valid = !domain.is_empty()
+                && !domain.contains('@')
+                && segments.iter().all(|seg| {
+                    !seg.is_empty()
+                        && !seg.contains('@')
+                        && seg
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '%')
+                });
+            if !valid {
+                return Err(IdentityError::InvalidDidSyntax(format!(
+                    "did:web identifier '{domain}' is not a valid domain (no userinfo, ports, empty segments, or non-domain characters)"
+                )));
             }
             Ok(DidMethod::Web)
         }
