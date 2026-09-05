@@ -91,26 +91,72 @@ where
 pub fn client_metadata_response(
     metadata: &OAuthClientMetadata,
 ) -> Result<Response, IntegrationError> {
-    let redirect_uris = vec![metadata.redirect_uri.clone()];
-    let grant_types = vec![
+    let redirect_uris = [metadata.redirect_uri.clone()];
+    let grant_types = [
         "authorization_code".to_string(),
         "refresh_token".to_string(),
     ];
-    let response_types = vec!["code".to_string()];
+    let response_types = ["code".to_string()];
 
-    let payload = json!({
-        "client_id": metadata.client_id,
-        "client_name": metadata.client_name,
-        "client_uri": metadata.client_id,
-        "redirect_uris": redirect_uris,
-        "grant_types": grant_types,
-        "response_types": response_types,
-        "scope": metadata.scope,
-        // ATProto OAuth profile: only public clients (`none`) are supported;
-        // confidential clients use private_key_jwt, not shared secrets (review H1).
-        "token_endpoint_auth_method": "none",
-        "dpop_bound_access_tokens": true
-    });
+    // Review M7: absent optional fields must be OMITTED (not serialized as
+    // JSON null, which fails the client-metadata schema).
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "client_id".to_string(),
+        serde_json::Value::String(metadata.client_id.clone()),
+    );
+    if let Some(name) = &metadata.client_name {
+        payload.insert(
+            "client_name".to_string(),
+            serde_json::Value::String(name.clone()),
+        );
+    }
+    payload.insert(
+        "client_uri".to_string(),
+        serde_json::Value::String(metadata.client_id.clone()),
+    );
+    payload.insert(
+        "redirect_uris".to_string(),
+        serde_json::Value::Array(
+            redirect_uris
+                .iter()
+                .map(|u| serde_json::Value::String(u.clone()))
+                .collect(),
+        ),
+    );
+    payload.insert(
+        "grant_types".to_string(),
+        serde_json::Value::Array(
+            grant_types
+                .iter()
+                .map(|g| serde_json::Value::String(g.clone()))
+                .collect(),
+        ),
+    );
+    payload.insert(
+        "response_types".to_string(),
+        serde_json::Value::Array(
+            response_types
+                .iter()
+                .map(|r| serde_json::Value::String(r.clone()))
+                .collect(),
+        ),
+    );
+    payload.insert(
+        "scope".to_string(),
+        serde_json::Value::String(metadata.scope.clone()),
+    );
+    // ATProto OAuth profile: only public clients (`none`) are supported;
+    // confidential clients use private_key_jwt, not shared secrets (review H1).
+    payload.insert(
+        "token_endpoint_auth_method".to_string(),
+        serde_json::Value::String("none".to_string()),
+    );
+    payload.insert(
+        "dpop_bound_access_tokens".to_string(),
+        serde_json::Value::Bool(true),
+    );
+    let payload = serde_json::Value::Object(payload);
 
     let json_bytes = serde_json::to_vec(&payload).map_err(|e| {
         IntegrationError::Internal(format!("Failed to serialize client metadata: {e}"))
