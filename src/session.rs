@@ -23,7 +23,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 /// credentials (`access_token` and `refresh_token`) from memory on destruction. As a consequence
 /// of Rust's [`Drop`] safety rules (E0509), partial moves of individual fields out of
 /// this struct are prohibited; callers should borrow fields or clone the structure.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct OAuthSession {
     /// Authenticated subject DID (e.g. `did:plc:...`).
     pub sub: String,
@@ -47,6 +47,72 @@ pub struct OAuthSession {
     pub token_endpoint: Option<String>,
     /// Timestamp when this session was initially created or exchanged.
     pub created_at: SystemTime,
+}
+
+impl<'de> Deserialize<'de> for OAuthSession {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawSession {
+            sub: String,
+            access_token: String,
+            #[serde(default)]
+            refresh_token: Option<String>,
+            token_type: String,
+            #[serde(default)]
+            scope: Option<String>,
+            #[serde(default)]
+            expires_at: Option<SystemTime>,
+            dpop_key: DPoPKey,
+            #[serde(default)]
+            pds_endpoint: Option<String>,
+            #[serde(default)]
+            auth_server_issuer: Option<String>,
+            #[serde(default)]
+            token_endpoint: Option<String>,
+            created_at: SystemTime,
+        }
+
+        let raw = RawSession::deserialize(deserializer)?;
+
+        // Fail closed on the constructor contract (review #1/L1): any persisted
+        // round-trip must re-apply the same validation as `OAuthSession::new`.
+        // Previously `derive(Deserialize)` bypassed it entirely, so a tampered
+        // persistence layer could produce `token_type: "Bearer"` (DPoP binding
+        // silently disabled) or empty credentials.
+        if !raw.token_type.eq_ignore_ascii_case("DPoP") {
+            return Err(serde::de::Error::custom(format!(
+                "OAuthSession deserialization rejected: token_type must be 'DPoP', got '{}'",
+                raw.token_type
+            )));
+        }
+        if raw.sub.trim().is_empty() {
+            return Err(serde::de::Error::custom(
+                "OAuthSession deserialization rejected: `sub` must be a non-empty DID",
+            ));
+        }
+        if raw.access_token.trim().is_empty() {
+            return Err(serde::de::Error::custom(
+                "OAuthSession deserialization rejected: `access_token` must be non-empty",
+            ));
+        }
+
+        Ok(OAuthSession {
+            sub: raw.sub,
+            access_token: raw.access_token,
+            refresh_token: raw.refresh_token,
+            token_type: raw.token_type,
+            scope: raw.scope,
+            expires_at: raw.expires_at,
+            dpop_key: raw.dpop_key,
+            pds_endpoint: raw.pds_endpoint,
+            auth_server_issuer: raw.auth_server_issuer,
+            token_endpoint: raw.token_endpoint,
+            created_at: raw.created_at,
+        })
+    }
 }
 
 impl std::fmt::Debug for OAuthSession {
@@ -439,5 +505,91 @@ mod tests {
         assert_eq!(claims.htm, "GET");
         assert_eq!(claims.ath.as_deref(), Some(expected_ath.as_str()));
         assert_eq!(jwk.thumbprint(), key.jwk_thumbprint());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
+mod deserialization_tests {
+    use super::*;
+
+    fn sample_session_json(token_type: &str, sub: &str, access_token: &str) -> String {
+        let key = DPoPKey::generate();
+        let session = OAuthSession::new(
+            sub,
+            access_token,
+            Some("rt_sample".to_string()),
+            token_type,
+            Some("atproto".to_string()),
+            Some(3600),
+            key,
+            Some("https://pds.example.com".to_string()),
+            Some("https://as.example.com".to_string()),
+            Some("https://as.example.com/token".to_string()),
+        )
+        .unwrap();
+        serde_json::to_string(&session).unwrap()
+    }
+
+    #[test]
+    fn test_roundtrip_preserves_valid_session() {
+        let json = sample_session_json("DPoP", "did:plc:alice123", "at_token");
+        let deserialized: OAuthSession = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.sub, "did:plc:alice123");
+        assert_eq!(deserialized.access_token, "at_token");
+        assert_eq!(deserialized.token_type, "DPoP");
+        assert_eq!(deserialized.refresh_token(), Some("rt_sample"));
+    }
+
+    #[test]
+    fn test_deserialize_rejects_bearer_token_type() {
+        // Review #1: derive(Deserialize) bypassed the constructor contract, so a
+        // tampered persistence layer could produce `token_type: "Bearer"` and
+        // silently disable the DPoP binding. Deserialization must fail closed.
+        // (Built by hand: the constructor itself already rejects "Bearer".)
+        let key = DPoPKey::generate();
+        let bearer_session = OAuthSession::new(
+            "did:plc:alice123",
+            "at_token",
+            Some("rt_sample".to_string()),
+            "DPoP",
+            Some("atproto".to_string()),
+            Some(3600),
+            key,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let mut value = serde_json::to_value(&bearer_session).unwrap();
+        value["token_type"] = serde_json::Value::String("Bearer".to_string());
+        let json = serde_json::to_string(&value).unwrap();
+        assert!(serde_json::from_str::<OAuthSession>(&json).is_err());
+    }
+
+    #[test]
+    fn test_deserialize_rejects_empty_sub() {
+        let json = sample_session_json("DPoP", "", "at_token");
+        assert!(serde_json::from_str::<OAuthSession>(&json).is_err());
+    }
+
+    #[test]
+    fn test_deserialize_rejects_whitespace_only_sub() {
+        let json = sample_session_json("DPoP", "   ", "at_token");
+        assert!(serde_json::from_str::<OAuthSession>(&json).is_err());
+    }
+
+    #[test]
+    fn test_deserialize_rejects_empty_access_token() {
+        let json = sample_session_json("DPoP", "did:plc:alice123", "");
+        assert!(serde_json::from_str::<OAuthSession>(&json).is_err());
+    }
+
+    #[test]
+    fn test_deserialize_rejects_missing_fields() {
+        // A struct missing mandatory fields must not deserialize into a
+        // half-valid session.
+        let json = r#"{"sub":"did:plc:alice123","access_token":"at"}"#;
+        assert!(serde_json::from_str::<OAuthSession>(json).is_err());
     }
 }
