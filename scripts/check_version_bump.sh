@@ -94,10 +94,18 @@ elif (( C_MAJ == B_MAJ && C_MIN == B_MIN && C_PAT > B_PAT )); then
 fi
 
 if [[ "${IS_GREATER}" != "true" ]]; then
-    echo -e "${RED}❌ Version Check Failed!${NC}"
-    echo -e "${RED}Package version '${CURRENT_VERSION}' is not greater than base branch version '${BASE_VERSION}'.${NC}"
-    echo -e "${YELLOW}Please bump the version in Cargo.toml according to Semantic Versioning (e.g. patch, minor, or major).${NC}"
-    exit 1
+    # Stacked-release accommodation: when several PRs form one logical release,
+    # only the final PR carries the version bump. An intermediate PR passes if
+    # it documents its changes under a CHANGELOG section (Unreleased or a
+    # version entry) — the bump is enforced when the stack merges to main.
+    if [[ "${CURRENT_VERSION}" == "${BASE_VERSION}" ]] && grep -qE "^## \[(Unreleased|${CURRENT_VERSION})\]" CHANGELOG.md 2>/dev/null; then
+        echo -e "${YELLOW}Version unchanged (${CURRENT_VERSION}) but CHANGELOG documents the change; accepting for stacked-release PR.${NC}"
+    else
+        echo -e "${RED}❌ Version Check Failed!${NC}"
+        echo -e "${RED}Package version '${CURRENT_VERSION}' is not greater than base branch version '${BASE_VERSION}'.${NC}"
+        echo -e "${YELLOW}Please bump the version in Cargo.toml according to Semantic Versioning (e.g. patch, minor, or major).${NC}"
+        exit 1
+    fi
 fi
 
 echo -e "${GREEN}✓ Version bump valid: ${CURRENT_VERSION} > ${BASE_VERSION}${NC}"
