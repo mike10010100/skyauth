@@ -63,6 +63,7 @@ async fn test_par_1hop_auto_nonce_challenge_success() {
         .respond_with(
             ResponseTemplate::new(201)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "par-fresh-nonce-1hop") // ATProto profile (H2)
                 .set_body_json(json!({
                     "request_uri": "urn:ietf:params:oauth:request_uri:req-par-1hop-success",
                     "expires_in": 60
@@ -255,6 +256,7 @@ async fn test_par_padded_nonce_header_trimmed_and_succeeds() {
         .respond_with(
             ResponseTemplate::new(201)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "clean_padded_nonce_123") // ATProto profile (H2)
                 .set_body_json(json!({
                     "request_uri": "urn:ietf:params:oauth:request_uri:req-padded-nonce-ok",
                     "expires_in": 90
@@ -317,6 +319,7 @@ async fn test_par_special_characters_in_nonce_succeeds() {
         .respond_with(
             ResponseTemplate::new(201)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "nonce.ABC-123_xyz~+/==") // ATProto profile (H2)
                 .set_body_json(json!({
                     "request_uri": "urn:ietf:params:oauth:request_uri:req-special-nonce-ok",
                     "expires_in": 90
@@ -379,6 +382,7 @@ async fn test_par_huge_nonce_stress_no_overflow() {
         .respond_with(
             ResponseTemplate::new(201)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", &huge_nonce) // ATProto profile (H2)
                 .set_body_json(json!({
                     "request_uri": "urn:ietf:params:oauth:request_uri:req-huge-nonce-ok",
                     "expires_in": 90
@@ -454,9 +458,11 @@ async fn test_token_exchange_1hop_auto_nonce_challenge_success() {
     assert_eq!(session.sub(), TEST_ALICE_DID);
     assert_eq!(session.access_token(), access_token);
     assert_eq!(session.refresh_token(), Some(refresh_token));
+    // The success response's nonce (from the profile-compliant fixture, review H2)
+    // is the freshest cached value.
     assert_eq!(
         client.nonce_cache().get_nonce(&env.auth_server.uri()),
-        Some("token-exchange-fresh-nonce-1hop".to_string())
+        Some("as-token-nonce".to_string())
     );
 }
 
@@ -550,19 +556,14 @@ async fn test_token_exchange_missing_dpop_nonce_header_on_use_dpop_nonce_fails_c
         .exchange_code("code_missing_nonce_hdr", &stored_state)
         .await;
 
+    // The PAR success response now carries a DPoP-Nonce (profile-compliant fixture,
+    // review H2), so the nonce cache is populated before the token request. The
+    // challenge without a nonce header therefore leads to a retry (using the cached
+    // PAR nonce), and the second challenge trips the retry limit — the correct
+    // fail-clean behavior without infinite loops.
     match res {
-        Err(AtprotoOAuthError::Token(TokenError::RequestFailed {
-            status,
-            error,
-            description,
-        })) => {
-            assert_eq!(status, 400);
-            assert_eq!(error, "use_dpop_nonce");
-            assert!(description
-                .unwrap_or_default()
-                .contains("Missing DPoP-Nonce header"));
-        }
-        other => panic!("Expected TokenError::RequestFailed with missing nonce, got {other:?}"),
+        Err(AtprotoOAuthError::DPoP(DPoPError::NonceRetryLimitExceeded)) => {}
+        other => panic!("Expected NonceRetryLimitExceeded, got {other:?}"),
     }
 }
 
@@ -582,6 +583,7 @@ async fn test_token_refresh_1hop_auto_nonce_challenge_success() {
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "as-token-nonce") // ATProto profile (H2)
                 .set_body_json(json!({
                     "access_token": initial_at,
                     "token_type": "DPoP",
@@ -628,9 +630,11 @@ async fn test_token_refresh_1hop_auto_nonce_challenge_success() {
     client.refresh_session(&mut session).await.unwrap();
     assert_eq!(session.access_token(), rotated_at);
     assert_eq!(session.refresh_token(), Some(rotated_rt));
+    // The success response's nonce (from the profile-compliant fixture, review H2)
+    // is the freshest cached value.
     assert_eq!(
         client.nonce_cache().get_nonce(&env.auth_server.uri()),
-        Some("refresh-fresh-nonce-turn-2".to_string())
+        Some("as-token-nonce".to_string())
     );
 }
 
@@ -689,6 +693,7 @@ async fn test_xrpc_send_dpop_request_1hop_auto_nonce_challenge_success() {
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "pds-xrpc-fresh-nonce-1") // ATProto profile (H2)
                 .set_body_json(json!({"preferences": []})),
         )
         .mount(&env.pds.server)
@@ -799,6 +804,7 @@ async fn test_xrpc_body_only_nonce_challenge_retries_with_fresh_nonce() {
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "body-only-nonce") // ATProto profile (H2)
                 .set_body_json(json!({"preferences": []})),
         )
         .mount(&mock_pds)
@@ -1021,6 +1027,7 @@ async fn test_par_error_empty_request_uri_in_201_response() {
         .respond_with(
             ResponseTemplate::new(201)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "test-par-success-nonce") // ATProto profile (H2)
                 .set_body_json(json!({
                     "request_uri": "   ",
                     "expires_in": 90
@@ -1058,6 +1065,7 @@ async fn test_par_error_missing_expires_in_field() {
         .respond_with(
             ResponseTemplate::new(201)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "test-par-success-nonce") // ATProto profile (H2)
                 .set_body_json(json!({
                     "request_uri": "urn:ietf:params:oauth:request_uri:req-test-missing-exp"
                 })),
@@ -1337,4 +1345,52 @@ proptest! {
         prop_assert!(query.contains("client_id="));
         prop_assert!(query.contains("request_uri="));
     }
+}
+
+#[tokio::test]
+async fn test_h2_success_response_without_nonce_rejected() {
+    // Review H2 (client side): a success response to a DPoP-authenticated request
+    // WITHOUT the DPoP-Nonce header violates the ATProto profile — the client
+    // must refuse to continue (fail-closed) rather than silently proceeding
+    // with degraded replay protection.
+    let mock_pds = MockServer::start().await;
+    let key = DPoPKey::generate();
+
+    let xrpc_path = "/xrpc/app.bsky.actor.getPreferences";
+    Mock::given(method("GET"))
+        .and(path(xrpc_path))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                // Deliberately NO dpop-nonce header (profile violation).
+                .set_body_json(json!({"preferences": []})),
+        )
+        .mount(&mock_pds)
+        .await;
+
+    let client = AtprotoOAuthClient::builder()
+        .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
+        .allow_insecure_localhost(true)
+        .build()
+        .unwrap();
+
+    let xrpc_url = format!("{}{xrpc_path}", mock_pds.uri());
+    let res = client
+        .send_dpop_request(
+            &key,
+            reqwest::Method::GET,
+            &xrpc_url,
+            Some("at"),
+            None,
+            None,
+        )
+        .await;
+
+    assert!(
+        matches!(
+            res,
+            Err(AtprotoOAuthError::DPoP(DPoPError::ResponseMissingDpopNonce))
+        ),
+        "nonce-less success response must be rejected with ResponseMissingDpopNonce"
+    );
 }

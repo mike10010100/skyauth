@@ -660,6 +660,25 @@ pub fn compute_access_token_hash(access_token: &str) -> String {
     base64url_encode(&digest)
 }
 
+/// Enforces the ATProto OAuth profile requirement that a response to a
+/// DPoP-authenticated request carries the `DPoP-Nonce` header (review H2).
+///
+/// # Errors
+///
+/// Returns [`DPoPError::ResponseMissingDpopNonce`] when the header is absent.
+pub fn require_dpop_nonce(headers: &reqwest::header::HeaderMap) -> Result<(), DPoPError> {
+    let present = headers
+        .get("dpop-nonce")
+        .and_then(|h| h.to_str().ok())
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    if present {
+        Ok(())
+    } else {
+        Err(DPoPError::ResponseMissingDpopNonce)
+    }
+}
+
 /// Normalizes an HTTP target URI (`htu`) according to RFC 9449 § 4.2.
 ///
 /// Transformation rules:

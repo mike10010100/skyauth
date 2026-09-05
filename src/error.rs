@@ -199,6 +199,14 @@ pub enum DPoPError {
     #[error("Missing server-required DPoP nonce")]
     MissingNonce,
 
+    /// A DPoP-authenticated response was accepted without the `DPoP-Nonce`
+    /// header that the ATProto OAuth profile mandates on every such response
+    /// (review H2). The client refuses to continue with a server that
+    /// violates the nonce contract, since nonce-less responses defeat replay
+    /// protection for subsequent requests.
+    #[error("DPoP-authenticated response missing mandatory DPoP-Nonce header (ATProto profile violation)")]
+    ResponseMissingDpopNonce,
+
     /// The access token hash (`ath`) claim does not match the SHA-256 hash of the presented access token.
     #[error("Access token hash (ath) mismatch: expected '{expected}', got '{actual}'")]
     AthMismatch {

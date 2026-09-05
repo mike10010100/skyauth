@@ -86,6 +86,7 @@ impl Respond for StatefulRefreshTokenResponder {
                 *lock = next_rt.clone();
 
                 ResponseTemplate::new(200)
+                    .insert_header("dpop-nonce", "rotation-as-nonce") // ATProto profile (H2)
                     .insert_header("content-type", "application/json")
                     .set_body_json(json!({
                         "access_token": next_at,
@@ -160,6 +161,7 @@ impl Respond for SingleUseCodeResponder {
                     *lock = true;
                     ResponseTemplate::new(200)
                         .insert_header("content-type", "application/json")
+                        .insert_header("dpop-nonce", "rotation-as-nonce") // ATProto profile (H2)
                         .set_body_json(json!({
                             "access_token": "at_single_use_success",
                             "token_type": "DPoP",
@@ -444,6 +446,7 @@ async fn test_refresh_token_omitted_by_server_sets_none() {
         .and(path("/oauth/token"))
         .respond_with(
             ResponseTemplate::new(200)
+                .insert_header("dpop-nonce", "rotation-as-nonce") // ATProto profile (H2)
                 .insert_header("content-type", "application/json")
                 .set_body_json(json!({
                     "access_token": "at_new_without_rt",
@@ -780,6 +783,7 @@ async fn test_token_response_sub_mismatch_and_empty_did_variants() {
             .and(path("/oauth/token"))
             .respond_with(
                 ResponseTemplate::new(200)
+                    .insert_header("dpop-nonce", "rotation-as-nonce") // ATProto profile (H2)
                     .insert_header("content-type", "application/json")
                     .set_body_json(json!({
                         "access_token": "at_test",
@@ -839,6 +843,7 @@ async fn test_token_response_sub_tampering_during_refresh() {
         .and(path("/oauth/token"))
         .respond_with(
             ResponseTemplate::new(200)
+                .insert_header("dpop-nonce", "rotation-as-nonce") // ATProto profile (H2)
                 .insert_header("content-type", "application/json")
                 .set_body_json(json!({
                     "access_token": "at_bob_tampered",
@@ -915,6 +920,7 @@ async fn test_token_response_token_type_tampering_exhaustive() {
             .and(path("/oauth/token"))
             .respond_with(
                 ResponseTemplate::new(200)
+                    .insert_header("dpop-nonce", "rotation-as-nonce") // ATProto profile (H2)
                     .insert_header("content-type", "application/json")
                     .set_body_json(json!({
                         "access_token": "at_valid",
@@ -957,6 +963,7 @@ async fn test_token_response_token_type_tampering_exhaustive() {
             .and(path("/oauth/token"))
             .respond_with(
                 ResponseTemplate::new(200)
+                    .insert_header("dpop-nonce", "rotation-as-nonce") // ATProto profile (H2)
                     .insert_header("content-type", "application/json")
                     .set_body_json(json!({
                         "access_token": "at_invalid",
@@ -1022,6 +1029,7 @@ async fn test_token_response_missing_atproto_scope_variants() {
             .and(path("/oauth/token"))
             .respond_with(
                 ResponseTemplate::new(200)
+                    .insert_header("dpop-nonce", "rotation-as-nonce") // ATProto profile (H2)
                     .insert_header("content-type", "application/json")
                     .set_body_json(json!({
                         "access_token": "at_scope_test",
@@ -1066,6 +1074,7 @@ async fn test_token_response_missing_atproto_scope_variants() {
         .and(path("/oauth/token"))
         .respond_with(
             ResponseTemplate::new(200)
+                .insert_header("dpop-nonce", "rotation-as-nonce") // ATProto profile (H2)
                 .insert_header("content-type", "application/json")
                 .set_body_json(json!({
                     "access_token": "at_missing_scope",
@@ -1118,6 +1127,7 @@ async fn test_token_response_missing_atproto_scope_variants() {
             .and(path("/oauth/token"))
             .respond_with(
                 ResponseTemplate::new(200)
+                    .insert_header("dpop-nonce", "rotation-as-nonce") // ATProto profile (H2)
                     .insert_header("content-type", "application/json")
                     .set_body_json(json!({
                         "access_token": "at_valid_scope",
@@ -1179,6 +1189,7 @@ async fn test_token_response_corrupted_json_and_wrong_types() {
             .and(path("/oauth/token"))
             .respond_with(
                 ResponseTemplate::new(200)
+                    .insert_header("dpop-nonce", "rotation-as-nonce") // ATProto profile (H2)
                     .insert_header("content-type", "application/json")
                     .set_body_raw(payload.as_bytes(), "application/json"),
             )

@@ -466,6 +466,7 @@ where
         let access_token_owned = access_token.to_string();
         let mut inner = self.inner.clone();
 
+        let nonce_source_for_response = self.nonce_source.clone();
         Box::pin(async move {
             let user = match validator
                 .validate_access_token(&access_token_owned, &dpop_thumbprint)
@@ -482,7 +483,42 @@ where
             req.extensions_mut().insert(ext);
             req.extensions_mut().insert(user);
 
-            inner.call(req).await
+            let res = inner.call(req).await;
+            // ATProto profile (review H2): attach a fresh `DPoP-Nonce` to every
+            // response to a DPoP-authenticated request — including successes —
+            // so conforming clients (which now enforce its presence) can rotate
+            // their nonce and keep replay protection primed for the next request.
+            match res {
+                Ok(response) if response.status().is_success() => {
+                    match nonce_source_for_response
+                        .as_ref()
+                        .map(|s| s.generate_nonce())
+                    {
+                        Some(Ok(nonce)) => {
+                            let mut response = response;
+                            if let Ok(val) = HeaderValue::from_str(&nonce) {
+                                if let Ok(hdr) =
+                                    http::header::HeaderName::from_lowercase(b"dpop-nonce")
+                                {
+                                    response.headers_mut().insert(hdr, val);
+                                }
+                            }
+                            Ok(response)
+                        }
+                        Some(Err(err)) => {
+                            // Nonce-source saturation is a server-side capacity
+                            // condition: fail closed with 503 (consistent with the
+                            // replay-cache saturation mapping).
+                            tracing::debug!(
+                                "Server nonce source exhausted in Tower middleware: {err}"
+                            );
+                            Ok(service_unavailable_response())
+                        }
+                        None => Ok(response),
+                    }
+                }
+                other => other,
+            }
         })
     }
 }
@@ -1261,6 +1297,130 @@ mod tests {
             resp.status(),
             StatusCode::UNAUTHORIZED,
             "path-only URI must not authenticate even with a Host header present"
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
+mod nonce_enforcement_tests {
+    use super::*;
+    use crate::dpop::{DPoPKey, DPoPVerifier, InMemoryServerNonceSource};
+    use crate::integrations::validator::JwtAccessTokenClaims;
+    use p256::ecdsa::SigningKey;
+    use rand::thread_rng;
+    use std::convert::Infallible;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tower::service_fn;
+    use tower_service::Service;
+
+    #[tokio::test]
+    async fn test_tower_attaches_nonce_to_success_response() {
+        // Review H2 (server side): with a nonce source configured, every success
+        // response to a DPoP-authenticated request MUST carry a DPoP-Nonce so
+        // conforming clients can rotate their nonce.
+        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_verifying_key = *auth_key.verifying_key();
+
+        let client_key = DPoPKey::generate();
+        let uri = "https://pds.example.com/xrpc/app.bsky.actor.getProfile";
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let claims = JwtAccessTokenClaims {
+            iss: "https://auth.example.com".to_string(),
+            sub: "did:plc:alice123".to_string(),
+            aud: Some(serde_json::Value::String(
+                "https://pds.example.com".to_string(),
+            )),
+            exp: now + 3600,
+            nbf: None,
+            iat: Some(now),
+            jti: Some(format!("jti_server_nonce_attach_{now}")),
+            scope: Some("atproto".to_string()),
+            cnf: crate::integrations::validator::CnfClaim {
+                jkt: client_key.jwk_thumbprint(),
+            },
+        };
+        let access_token = claims.sign_jwt(&auth_key, None).unwrap();
+        let ath = compute_access_token_hash(&access_token);
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let token_validator = JwtAccessTokenValidator::new()
+            .with_verifying_key(auth_verifying_key)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
+
+        let nonce_source = Arc::new(InMemoryServerNonceSource::new(
+            std::time::Duration::from_secs(60),
+        ));
+        let layer = OAuthAuthLayer::from_jwt_validator(verifier, token_validator)
+            .with_nonce_source(nonce_source.clone());
+
+        let inner_service = service_fn(|_req: Request<()>| async move {
+            Ok::<Response<String>, Infallible>(Response::new("OK".to_string()))
+        });
+
+        let mut service = layer.layer(inner_service);
+
+        // First-contact: the server challenges with a fresh nonce (H2 flow).
+        let first = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {access_token}"))
+            .header(
+                "DPoP",
+                client_key
+                    .create_proof("GET", uri, None, Some(&ath))
+                    .unwrap(),
+            )
+            .body(())
+            .unwrap();
+        let challenge = service.call(first).await.unwrap();
+        assert_eq!(challenge.status(), StatusCode::UNAUTHORIZED);
+        let server_nonce = challenge
+            .headers()
+            .get("dpop-nonce")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(!server_nonce.is_empty(), "challenge must carry a nonce");
+
+        // Retry with the server-issued nonce.
+        let proof = client_key
+            .create_proof("GET", uri, Some(&server_nonce), Some(&ath))
+            .unwrap();
+        let req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {access_token}"))
+            .header("DPoP", proof)
+            .body(())
+            .unwrap();
+
+        let resp = service.call(req).await.unwrap();
+        if resp.status() != StatusCode::OK {
+            let www = resp
+                .headers()
+                .get("www-authenticate")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            panic!(
+                "expected 200, got {}; WWW-Authenticate: {www}",
+                resp.status()
+            );
+        }
+        let nonce = resp
+            .headers()
+            .get("dpop-nonce")
+            .and_then(|v| v.to_str().ok());
+        assert!(
+            nonce.map(|n| !n.trim().is_empty()).unwrap_or(false),
+            "success response must carry a fresh DPoP-Nonce (review H2 server side)"
         );
     }
 }
