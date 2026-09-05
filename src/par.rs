@@ -103,19 +103,6 @@ impl ParParameters {
         self
     }
 
-    /// Serializes the parameters into standard `application/x-www-form-urlencoded` format
-    /// with additional credential parameters appended (e.g. `client_secret` for
-    /// confidential-client token endpoint authentication).
-    #[must_use]
-    pub fn to_form_urlencoded_with_credentials(&self, extra: &[(&str, &str)]) -> String {
-        let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-        self.encode_pairs(&mut serializer);
-        for (key, value) in extra {
-            serializer.append_pair(key, value);
-        }
-        serializer.finish()
-    }
-
     /// Single source of truth for the PAR parameter set. Any new RFC 9126 field
     /// must be added here exactly once, so the two public serializers cannot drift.
     fn encode_pairs<'a>(&'a self, serializer: &mut url::form_urlencoded::Serializer<'a, String>) {
@@ -208,32 +195,6 @@ pub async fn execute_par_request(
     dpop_key: &DPoPKey,
     nonce_cache: &DPoPNonceCache,
 ) -> Result<ParResponse, AtprotoOAuthError> {
-    execute_par_request_with_credentials(
-        ssrf_filter,
-        par_endpoint,
-        params,
-        dpop_key,
-        nonce_cache,
-        &[],
-    )
-    .await
-}
-
-/// Executes an RFC 9126 PAR request with DPoP signing, transparent auto-nonce retry,
-/// and additional credential form parameters (e.g. `client_secret`).
-///
-/// # Errors
-///
-/// Returns [`AtprotoOAuthError`] if SSRF validation, DPoP signing, HTTP transport,
-/// or response parsing fails.
-pub async fn execute_par_request_with_credentials(
-    ssrf_filter: &SsrfFilter,
-    par_endpoint: &str,
-    params: &ParParameters,
-    dpop_key: &DPoPKey,
-    nonce_cache: &DPoPNonceCache,
-    extra_credentials: &[(&str, &str)],
-) -> Result<ParResponse, AtprotoOAuthError> {
     let parsed_url = Url::parse(par_endpoint).map_err(|e| {
         ParError::InvalidEndpoint(format!("Invalid PAR endpoint URL '{par_endpoint}': {e}"))
     })?;
@@ -245,11 +206,7 @@ pub async fn execute_par_request_with_credentials(
 
     let server_origin = parsed_url.origin().ascii_serialization();
 
-    let form_body = if extra_credentials.is_empty() {
-        params.to_form_urlencoded()
-    } else {
-        params.to_form_urlencoded_with_credentials(extra_credentials)
-    };
+    let form_body = params.to_form_urlencoded();
 
     let initial_nonce = nonce_cache.get_nonce(&server_origin);
     let proof = dpop_key.create_proof("POST", par_endpoint, initial_nonce.as_deref(), None)?;

@@ -301,7 +301,7 @@ Opt-in via a builder knob; keep the current per-request behavior as the default 
 
 ### 7.3 Confidential-Client `private_key_jwt`
 
-Client metadata advertises `private_key_jwt` support (per the ATProto profile), and `ParParameters::with_client_assertion` carries the assertion fields, but the client never mints/attaches a signed client-assertion JWT automatically for confidential clients beyond `client_secret_post`. Auto-assertion generation (ES256-signed `client_assertion` bound to a registered JWKS) is a candidate for a 0.3.0 milestone.
+Client metadata advertises `private_key_jwt` support (per the ATProto profile). The static `client_secret` path (`client_secret_post`) was **removed** in the 0.2.x security remediation (review H1: a user-selected authorization server receives the static secret in the first PAR request — an unconditional credential-disclosure path with no place in the ATProto protocol). Auto-assertion generation (ES256-signed `client_assertion` bound to a registered JWKS) is a candidate for a 0.3.0 milestone.
 
 ---
 

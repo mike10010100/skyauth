@@ -13,10 +13,7 @@ use crate::crypto::base64url_encode;
 use crate::dpop::{compute_access_token_hash, extract_dpop_nonce, DPoPKey, DPoPNonceCache};
 use crate::error::{AtprotoOAuthError, DPoPError, ParError, TokenError};
 use crate::identity::{IdentityResolver, IdentityResolverBuilder};
-use crate::par::{
-    build_authorization_url, execute_par_request, execute_par_request_with_credentials,
-    ParParameters,
-};
+use crate::par::{build_authorization_url, execute_par_request, ParParameters};
 use crate::pkce::PkcePair;
 use crate::session::OAuthSession;
 use crate::ssrf::{read_bounded_body, SsrfFilter, MAX_OAUTH_RESPONSE_BYTES};
@@ -35,8 +32,6 @@ pub struct OAuthClientMetadata {
     pub scope: String,
     /// Optional human-readable client display name.
     pub client_name: Option<String>,
-    /// Optional client secret for confidential client authentication.
-    pub client_secret: Option<String>,
 }
 
 impl std::fmt::Debug for OAuthClientMetadata {
@@ -46,10 +41,6 @@ impl std::fmt::Debug for OAuthClientMetadata {
             .field("redirect_uri", &self.redirect_uri)
             .field("scope", &self.scope)
             .field("client_name", &self.client_name)
-            .field(
-                "client_secret",
-                &self.client_secret.as_ref().map(|_| "[REDACTED]"),
-            )
             .finish()
     }
 }
@@ -63,7 +54,6 @@ impl OAuthClientMetadata {
             redirect_uri: redirect_uri.into(),
             scope: "atproto".to_string(),
             client_name: None,
-            client_secret: None,
         }
     }
 
@@ -78,13 +68,6 @@ impl OAuthClientMetadata {
     #[must_use]
     pub fn with_client_name(mut self, name: impl Into<String>) -> Self {
         self.client_name = Some(name.into());
-        self
-    }
-
-    /// Sets the optional client secret.
-    #[must_use]
-    pub fn with_client_secret(mut self, secret: impl Into<String>) -> Self {
-        self.client_secret = Some(secret.into());
         self
     }
 }
@@ -567,26 +550,14 @@ impl AtprotoOAuthClient {
             params = params.with_login_hint(&endpoints.did);
         }
 
-        let par_res = if let Some(ref secret) = self.metadata.client_secret {
-            execute_par_request_with_credentials(
-                &self.ssrf_filter,
-                &endpoints.par_endpoint,
-                &params,
-                &dpop_key,
-                &self.nonce_cache,
-                &[("client_secret", secret.as_str())],
-            )
-            .await?
-        } else {
-            execute_par_request(
-                &self.ssrf_filter,
-                &endpoints.par_endpoint,
-                &params,
-                &dpop_key,
-                &self.nonce_cache,
-            )
-            .await?
-        };
+        let par_res = execute_par_request(
+            &self.ssrf_filter,
+            &endpoints.par_endpoint,
+            &params,
+            &dpop_key,
+            &self.nonce_cache,
+        )
+        .await?;
 
         let auth_url = build_authorization_url(
             &endpoints.authorization_endpoint,
@@ -643,18 +614,13 @@ impl AtprotoOAuthClient {
         code: &str,
         state_entry: &StoredStateEntry,
     ) -> Result<OAuthSession, AtprotoOAuthError> {
-        let mut form_pairs: Vec<(&str, &str)> = vec![
+        let form_pairs: Vec<(&str, &str)> = vec![
             ("grant_type", "authorization_code"),
             ("code", code),
             ("redirect_uri", state_entry.redirect_uri.as_str()),
             ("client_id", state_entry.client_id.as_str()),
             ("code_verifier", state_entry.code_verifier.as_str()),
         ];
-
-        // Confidential-client authentication (RFC 6749 § 2.3.1, client_secret_post)
-        if let Some(ref secret) = self.metadata.client_secret {
-            form_pairs.push(("client_secret", secret.as_str()));
-        }
 
         let form_body =
             serde_urlencoded::to_string(form_pairs).map_err(|e| TokenError::Http(e.to_string()))?;
@@ -806,16 +772,11 @@ impl AtprotoOAuthClient {
             .ok_or(TokenError::MissingField("token_endpoint"))?
             .to_string();
 
-        let mut form_pairs: Vec<(&str, &str)> = vec![
+        let form_pairs: Vec<(&str, &str)> = vec![
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
             ("client_id", self.metadata.client_id.as_str()),
         ];
-
-        // Confidential-client authentication (RFC 6749 § 2.3.1, client_secret_post)
-        if let Some(ref secret) = self.metadata.client_secret {
-            form_pairs.push(("client_secret", secret.as_str()));
-        }
 
         let form_body =
             serde_urlencoded::to_string(form_pairs).map_err(|e| TokenError::Http(e.to_string()))?;
