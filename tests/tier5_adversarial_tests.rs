@@ -633,6 +633,56 @@ fn test_dpop_payload_jti_validation() {
 }
 
 #[test]
+fn test_dpop_payload_jti_length_cap_boundary() {
+    // Regression coverage for the memory-amplification defense: `jti` becomes a
+    // replay-cache key, so it is bounded at `MAX_JTI_LENGTH` (fail-closed).
+    let key = DPoPKey::generate();
+    let verifier = DPoPVerifier::new();
+    let header = serde_json::json!({ "typ": "dpop+jwt", "alg": "ES256", "jwk": key.public_jwk() });
+
+    let verify = |jti: &str| {
+        let payload = serde_json::json!({
+            "jti": jti,
+            "htm": "POST",
+            "htu": "https://example.com/token",
+            "iat": 1000
+        });
+        let jwt = sign_raw_json(&key, &header, &payload);
+        verifier.verify_proof(
+            &jwt,
+            "POST",
+            "https://example.com/token",
+            None,
+            None,
+            Some(UNIX_EPOCH + Duration::from_secs(1000)),
+        )
+    };
+
+    // At-cap (256 bytes) must be admitted.
+    let at_cap = "a".repeat(skyauth::dpop::MAX_JTI_LENGTH);
+    assert!(verify(&at_cap).is_ok(), "256-byte jti must be admitted");
+
+    // Over-cap (257 bytes) must be rejected with the dedicated variant.
+    let over_cap = "a".repeat(skyauth::dpop::MAX_JTI_LENGTH + 1);
+    let res = verify(&over_cap);
+    assert!(
+        matches!(
+            &res,
+            Err(DPoPError::JtiTooLong {
+                max: j,
+                actual: a
+            }) if *j == skyauth::dpop::MAX_JTI_LENGTH
+                && *a == skyauth::dpop::MAX_JTI_LENGTH + 1
+        ),
+        "257-byte jti must be rejected with JtiTooLong (got {res:?})"
+    );
+
+    // Absurd multi-KB jti must be rejected (the memory-amplification case).
+    let absurd = "a".repeat(16_384);
+    assert!(matches!(verify(&absurd), Err(DPoPError::JtiTooLong { .. })));
+}
+
+#[test]
 fn test_dpop_htm_method_mismatches() {
     let key = DPoPKey::generate();
     let methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"];

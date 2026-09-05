@@ -17,100 +17,16 @@
 //! 4. **Response Size Capping**: Limits stream reads to prevent memory exhaustion
 //!    or decompression bombs.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
+#[cfg(test)]
+use std::net::{Ipv4Addr, Ipv6Addr};
 use url::Url;
 
 use crate::error::SsrfError;
-
-/// Determines if an IPv4 address belongs to a restricted, private, or special-purpose range.
-///
-/// # Filtered Ranges (RFC Compliance):
-/// - `0.0.0.0/8`: Current network / broadcast ("This host") (RFC 1122)
-/// - `10.0.0.0/8`: Private-Use (RFC 1918)
-/// - `100.64.0.0/10`: Shared Address Space / CGNAT (RFC 6598)
-/// - `127.0.0.0/8`: Loopback (RFC 1122)
-/// - `169.254.0.0/16`: Link-Local, includes AWS/GCP/Azure metadata `169.254.169.254` (RFC 3927)
-/// - `172.16.0.0/12`: Private-Use (RFC 1918: `172.16.0.0` - `172.31.255.255`)
-/// - `192.0.0.0/24`: IETF Protocol Assignments (RFC 6890)
-/// - `192.0.2.0/24`: Documentation TEST-NET-1 (RFC 5737)
-/// - `192.88.99.0/24`: 6to4 Relay Anycast (RFC 7526)
-/// - `192.168.0.0/16`: Private-Use (RFC 1918)
-/// - `198.18.0.0/15`: Benchmarking (RFC 2544: `198.18.0.0` - `198.19.255.255`)
-/// - `198.51.100.0/24`: Documentation TEST-NET-2 (RFC 5737)
-/// - `203.0.113.0/24`: Documentation TEST-NET-3 (RFC 5737)
-/// - `224.0.0.0/4`: Multicast (RFC 5771)
-/// - `240.0.0.0/4`: Reserved / Class E, includes limited broadcast `255.255.255.255` (RFC 1112)
-#[must_use]
-pub fn is_restricted_ipv4(ip: &Ipv4Addr) -> bool {
-    let octets = ip.octets();
-    octets[0] == 0
-        || octets[0] == 10
-        || (octets[0] == 100 && (octets[1] & 0xC0) == 64)
-        || octets[0] == 127
-        || (octets[0] == 169 && octets[1] == 254)
-        || (octets[0] == 172 && (16..=31).contains(&octets[1]))
-        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
-        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
-        || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)
-        || (octets[0] == 192 && octets[1] == 168)
-        || (octets[0] == 198 && (octets[1] == 18 || octets[1] == 19))
-        || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
-        || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113)
-        || (octets[0] >= 224 && octets[0] <= 239)
-        || (octets[0] >= 240)
-}
-
-/// Determines if an IPv6 address belongs to a restricted, private, or special-purpose range.
-///
-/// # Filtered Ranges (RFC Compliance):
-/// - `::/128`: Unspecified address (RFC 4291)
-/// - `::1/128`: Loopback address (RFC 4291)
-/// - `::ffff:0:0/96`: IPv4-mapped IPv6 (RFC 4291) — unpacked and re-evaluated via [`is_restricted_ipv4`]
-/// - `::ffff:0:0:0/96`: IPv4-translated (RFC 6052)
-/// - `64:ff9b::/96`: Well-Known IPv4/IPv6 translation prefix (RFC 6052)
-/// - `2001:db8::/32`: Documentation prefix (RFC 3849)
-/// - `2001::/32`: Teredo tunneling (RFC 4380, deprecated per RFC 8194), unconditionally blocked
-/// - `2002::/16`: 6to4 tunneling (RFC 7526, deprecated) with embedded IPv4 re-evaluated via [`is_restricted_ipv4`]
-/// - `fc00::/7`: Unique Local Address (ULA) (RFC 4193: `fc00::/8`, `fd00::/8`)
-/// - `fe80::/10`: Link-Local Unicast (RFC 4291)
-/// - `fec0::/10`: Deprecated Site-Local Unicast (RFC 3879)
-/// - `ff00::/8`: Multicast (RFC 4291)
-#[must_use]
-pub fn is_restricted_ipv6(ip: &Ipv6Addr) -> bool {
-    let seg = ip.segments();
-
-    ip.is_unspecified()
-    || ip.is_loopback()
-    || if let Some(mapped) = ip.to_ipv4_mapped() {
-        is_restricted_ipv4(&mapped)
-    } else {
-        false
-    }
-    || (seg[0] == 0 && seg[1] == 0 && seg[2] == 0 && seg[3] == 0 && seg[4] == 0xffff && seg[5] == 0)
-    || (seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2] == 0 && seg[3] == 0 && seg[4] == 0 && seg[5] == 0)
-    || (seg[0] == 0x2001 && seg[1] == 0x0db8)
-    // Teredo's embedded IPv4 is XOR-0xffff obfuscated, so the whole prefix is blocked rather than re-evaluated.
-    || (seg[0] == 0x2001 && seg[1] == 0)
-    || (seg[0] == 0x2002 && is_restricted_ipv4(&Ipv4Addr::new(
-        ((seg[1] >> 8) & 0xff) as u8,
-        (seg[1] & 0xff) as u8,
-        ((seg[2] >> 8) & 0xff) as u8,
-        (seg[2] & 0xff) as u8,
-    )))
-    || ((seg[0] & 0xfe00) == 0xfc00)
-    || ((seg[0] & 0xffc0) == 0xfe80)
-    || ((seg[0] & 0xffc0) == 0xfec0)
-    || ((seg[0] & 0xff00) == 0xff00)
-}
-
-/// Determines if an IP address (IPv4 or IPv6) belongs to a restricted/private range.
-#[must_use]
-pub fn is_restricted_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => is_restricted_ipv4(&v4),
-        IpAddr::V6(v6) => is_restricted_ipv6(&v6),
-    }
-}
+pub use crate::kernels::ip_filter::{
+    is_restricted_ip, is_restricted_ipv4, is_restricted_ipv4_octets, is_restricted_ipv6,
+    is_restricted_ipv6_segments,
+};
 
 /// Checks if a hostname matches any cloud metadata or internal hostnames.
 ///

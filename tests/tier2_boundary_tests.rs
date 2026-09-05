@@ -1176,6 +1176,54 @@ fn test_b24_04_session_timeout_calculation() {
 }
 
 #[test]
+fn test_b24_06_session_expires_in_overflow_fails_closed() {
+    // Regression: an overflowing `expires_in` previously produced
+    // `expires_at: None` = "never expires locally" (fail-open). It must be
+    // rejected outright in `new`, and `rotate_tokens` must clamp to expired.
+    let dpop_key = DPoPKey::generate();
+    let huge = u64::MAX;
+
+    // Constructor: overflow is refused, not silently turned into no-expiry.
+    let res = skyauth::session::OAuthSession::new(
+        "did:plc:overflow",
+        "access_tok",
+        Some("refresh_tok".to_string()),
+        "DPoP",
+        Some("atproto".to_string()),
+        Some(huge),
+        dpop_key.clone(),
+        Some("https://pds.example.com".parse().expect("url")),
+        Some("https://as.example.com".to_string()),
+        Some("https://as.example.com/token".to_string()),
+    );
+    assert!(
+        res.is_err(),
+        "overflowing expires_in must fail closed in OAuthSession::new"
+    );
+
+    // Rotation: overflow clamps to already-expired rather than never-expiring.
+    let mut session = skyauth::session::OAuthSession::new(
+        "did:plc:overflow",
+        "access_tok",
+        Some("refresh_tok".to_string()),
+        "DPoP",
+        Some("atproto".to_string()),
+        Some(600),
+        dpop_key,
+        Some("https://pds.example.com".parse().expect("url")),
+        Some("https://as.example.com".to_string()),
+        Some("https://as.example.com/token".to_string()),
+    )
+    .expect("valid session");
+    assert!(!session.is_expired());
+    session.rotate_tokens("at_new", Some("rt_new".to_string()), Some(huge));
+    assert!(
+        session.is_expired(),
+        "overflowing rotate_tokens expires_in must clamp to expired (fail-closed)"
+    );
+}
+
+#[test]
 fn test_b24_05_mock_environment_cleanup() {
     let dns = MockDnsResolver::new();
     dns.register_handle_did("temp.user", "did:plc:temp");

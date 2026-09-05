@@ -983,43 +983,14 @@ impl AtprotoOAuthClient {
     /// letter, and the final name segment is `alpha *( alpha / number )` — letters
     /// and digits only, no hyphens, no leading digit.
     fn validate_xrpc_nsid(nsid: &str) -> Result<(), TokenError> {
-        let trimmed = nsid.trim_start_matches('/');
-        if trimmed.is_empty() || trimmed.len() > 317 {
-            return Err(TokenError::InvalidNsid(nsid.to_string()));
+        // Delegates the grammar decision to the provable kernel; this wrapper
+        // only maps the boolean onto the typed error. Logic previously inline
+        // here moved verbatim to `kernels::nsid_bytes::is_valid_nsid`.
+        if crate::kernels::nsid_bytes::is_valid_nsid(nsid) {
+            Ok(())
+        } else {
+            Err(TokenError::InvalidNsid(nsid.to_string()))
         }
-        if trimmed.contains("..") || trimmed.contains('\\') || trimmed.contains('%') {
-            return Err(TokenError::InvalidNsid(nsid.to_string()));
-        }
-        let segments: Vec<&str> = trimmed.split('.').collect();
-        if segments.len() < 3 {
-            return Err(TokenError::InvalidNsid(nsid.to_string()));
-        }
-        for seg in &segments {
-            if seg.is_empty()
-                || seg.len() > 63
-                || seg.starts_with('-')
-                || seg.ends_with('-')
-                || !seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-            {
-                return Err(TokenError::InvalidNsid(nsid.to_string()));
-            }
-        }
-        // First authority segment must start with a letter.
-        if !segments[0]
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic())
-        {
-            return Err(TokenError::InvalidNsid(nsid.to_string()));
-        }
-        // Name segment: starts with a letter, then letters/digits only (no hyphens).
-        let name = segments[segments.len() - 1];
-        let name_chars: Vec<char> = name.chars().collect();
-        let starts_with_letter = name_chars.first().is_some_and(|c| c.is_ascii_alphabetic());
-        if !starts_with_letter || name_chars.iter().any(|c| !c.is_ascii_alphanumeric()) {
-            return Err(TokenError::InvalidNsid(nsid.to_string()));
-        }
-        Ok(())
     }
 
     /// Executes an authenticated XRPC request against the session's PDS endpoint with DPoP signing and auto-nonce retry.

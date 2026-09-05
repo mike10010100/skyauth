@@ -11,29 +11,9 @@ use hmac::{Hmac, Mac};
 use p256::ecdsa::signature::{Signer, Verifier};
 use p256::ecdsa::{Signature, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
 
 use crate::error::CryptoError;
-
-/// Compares two byte slices in constant time to eliminate timing side-channels.
-///
-/// Returns `true` if and only if both slices have identical length and equal contents.
-///
-/// # Examples
-///
-/// ```
-/// use skyauth::crypto::constant_time_eq;
-///
-/// assert!(constant_time_eq(b"secret_token", b"secret_token"));
-/// assert!(!constant_time_eq(b"secret_token", b"wrong_token_"));
-/// ```
-#[must_use]
-pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.ct_eq(b).into()
-}
+pub use crate::kernels::ct_eq::constant_time_eq;
 
 /// Computes the 256-bit SHA-256 cryptographic digest of arbitrary input data.
 ///

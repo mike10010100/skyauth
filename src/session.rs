@@ -112,8 +112,20 @@ impl OAuthSession {
         }
 
         let now = SystemTime::now();
+        // Fail closed on overflow: if `now + expires_in` overflows `SystemTime`
+        // (possible for absurd `expires_in` values from a compromised/malicious
+        // AS), treat the session as already expired rather than never-expiring
+        // (`None` previously meant "no local expiry", an attacker-usable
+        // fail-open; independent review finding L3).
         let expires_at =
             expires_in_secs.and_then(|secs| now.checked_add(Duration::from_secs(secs)));
+        if expires_in_secs.is_some() && expires_at.is_none() {
+            return Err(TokenError::Http(
+                "expires_in value overflows session expiry timestamp; refusing to issue a never-expiring session (fail-closed)"
+                    .to_string(),
+            )
+            .into());
+        }
 
         Ok(Self {
             sub: sub.into(),
@@ -173,8 +185,18 @@ impl OAuthSession {
         self.access_token = access_token.into();
         self.refresh_token = refresh_token;
         let now = SystemTime::now();
-        self.expires_at =
+        // Fail closed on overflow (same rationale as `new`): an overflowing
+        // `expires_in` must not yield a never-expiring session.
+        let expires_at =
             expires_in_secs.and_then(|secs| now.checked_add(Duration::from_secs(secs)));
+        if expires_in_secs.is_some() && expires_at.is_none() {
+            // Overflow: mark the session expired at `now` (fail-closed) — the
+            // rotation itself has already zeroized and replaced the tokens, so
+            // surfacing the anomaly here keeps local expiry semantics safe.
+            self.expires_at = Some(now);
+            return;
+        }
+        self.expires_at = expires_at;
     }
 
     /// Generates a signed RFC 9449 DPoP proof for this session, bound to the current access token.
