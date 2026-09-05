@@ -184,7 +184,9 @@ jobs:
         uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
         with:
           command: 'cargo-kani'
-          args: '--harness proof_ --coverage | tee kani_output.txt'
+          # `--coverage` is an unstable Kani option (verified locally): it requires
+          # `-Z source-coverage` to be enabled.
+          args: '-Z source-coverage --harness proof_ --coverage | tee kani_output.txt'
 
       - name: Gate on Kani cover satisfaction (anti-vacuity, fail-closed)
         run: |
