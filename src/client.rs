@@ -1012,6 +1012,8 @@ impl AtprotoOAuthClient {
                     // Unrelated 400/401 (e.g. `invalid_token`): NO retry — return the
                     // original response rebuilt from the buffered body (identical
                     // status, headers, body) so the caller can handle the error.
+                    // (No DPoP-Nonce enforcement here: error responses are not the
+                    // success-path profile target; the caller inspects the failure.)
                     let mut builder = http::Response::builder().status(status);
                     for (name, value) in resp_headers.iter() {
                         builder = builder.header(name.clone(), value.clone());
@@ -1105,10 +1107,21 @@ impl AtprotoOAuthClient {
                     return Ok(reqwest::Response::from(rebuilt));
                 }
 
+                if retry_status.is_success() {
+                    // ATProto profile (review H2): enforce DPoP-Nonce on the retry
+                    // response too.
+                    crate::dpop::require_dpop_nonce(retry_resp.headers())
+                        .map_err(AtprotoOAuthError::from)?;
+                }
+
                 return Ok(retry_resp);
             }
         }
 
+        // ATProto profile (review H2): an RS response to a DPoP-authenticated
+        // request MUST carry a DPoP-Nonce; refuse to continue with a server
+        // that omits it.
+        crate::dpop::require_dpop_nonce(resp.headers()).map_err(AtprotoOAuthError::from)?;
         Ok(resp)
     }
 
@@ -1360,6 +1373,8 @@ async fn send_dpop_token_request_inner(
             }
 
             if retry_status.is_success() {
+                // Same profile enforcement on the retry response (review H2).
+                crate::dpop::require_dpop_nonce(retry_resp.headers()).map_err(TokenError::from)?;
                 let bytes = read_bounded_body(retry_resp, MAX_OAUTH_RESPONSE_BYTES)
                     .await
                     .map_err(|e| TokenError::Http(e.to_string()))?;
@@ -1401,6 +1416,10 @@ async fn send_dpop_token_request_inner(
         }
         .into());
     }
+
+    // ATProto profile (review H2): a token response to a DPoP-authenticated request
+    // MUST carry a DPoP-Nonce; refuse to continue with a server that omits it.
+    crate::dpop::require_dpop_nonce(resp.headers()).map_err(TokenError::from)?;
 
     let bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
         .await

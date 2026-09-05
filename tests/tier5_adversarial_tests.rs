@@ -3038,6 +3038,7 @@ async fn test_m7_adv_wiremock_discovery_and_par_scenarios() {
         .respond_with(
             ResponseTemplate::new(201)
                 .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "server_challenge_nonce_xyz") // ATProto profile (H2)
                 .set_body_json(serde_json::json!({
                     "request_uri": "urn:ietf:params:oauth:request_uri:req12345678",
                     "expires_in": 90

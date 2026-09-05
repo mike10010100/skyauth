@@ -182,9 +182,11 @@ async fn test_par_auto_nonce_retry_success() {
 
     let (auth_req, _) = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
     assert_eq!(auth_req.request_uri, request_uri);
+    // After the successful PAR (profile-compliant fixture, review H2), the success
+    // response's nonce is the freshest cached value.
     assert_eq!(
         client.nonce_cache().get_nonce(&env.auth_server.uri()),
-        Some("fresh-par-nonce-turn-1".to_string())
+        Some("as-par-nonce".to_string())
     );
 }
 
@@ -257,7 +259,7 @@ async fn test_token_exchange_auto_nonce_retry_success() {
     assert_eq!(session.access_token(), access_token);
     assert_eq!(
         client.nonce_cache().get_nonce(&env.auth_server.uri()),
-        Some("token-fresh-nonce-99".to_string())
+        Some("as-token-nonce".to_string())
     );
 }
 
@@ -272,6 +274,7 @@ async fn test_token_exchange_invalid_token_type_rejected() {
         .and(path("/oauth/token"))
         .respond_with(
             ResponseTemplate::new(200)
+                .insert_header("dpop-nonce", "ptx-success-nonce") // ATProto profile (H2)
                 .insert_header("content-type", "application/json")
                 .set_body_json(serde_json::json!({
                     "access_token": "bearer_token_123",
@@ -358,6 +361,7 @@ async fn test_token_exchange_missing_atproto_scope_rejected() {
         .and(path("/oauth/token"))
         .respond_with(
             ResponseTemplate::new(200)
+                .insert_header("dpop-nonce", "ptx-success-nonce") // ATProto profile (H2)
                 .insert_header("content-type", "application/json")
                 .set_body_json(serde_json::json!({
                     "access_token": "at_123",
@@ -484,7 +488,7 @@ async fn test_refresh_session_nonce_retry_success() {
     assert_eq!(session.refresh_token(), Some(rotated_refresh_token));
     assert_eq!(
         client.nonce_cache().get_nonce(&auth_server.uri()),
-        Some("refresh-challenge-nonce-88".to_string())
+        Some("as-token-nonce".to_string())
     );
 }
 
@@ -556,7 +560,7 @@ async fn test_send_dpop_request_for_xrpc_with_nonce_challenge_recovery() {
     assert_eq!(profile["handle"], TEST_ALICE_HANDLE);
     assert_eq!(
         client.nonce_cache().get_nonce(&pds.uri()),
-        Some("pds-xrpc-nonce-challenge-55".to_string())
+        Some("pds-profile-nonce".to_string())
     );
 }
 
@@ -697,6 +701,7 @@ async fn test_h4_refresh_empty_sub_rejected() {
         .and(header_exists("dpop"))
         .respond_with(
             ResponseTemplate::new(200)
+                .insert_header("dpop-nonce", "ptx-success-nonce") // ATProto profile (H2)
                 .insert_header("content-type", "application/json")
                 .set_body_json(serde_json::json!({
                     "access_token": "at_evil",
@@ -747,6 +752,7 @@ async fn test_h4_refresh_scope_expansion_rejected() {
         .and(header_exists("dpop"))
         .respond_with(
             ResponseTemplate::new(200)
+                .insert_header("dpop-nonce", "ptx-success-nonce") // ATProto profile (H2)
                 .insert_header("content-type", "application/json")
                 .set_body_json(serde_json::json!({
                     "access_token": "at_expanded",
@@ -804,6 +810,7 @@ async fn test_h4_refresh_scope_persisted_atomically() {
         .and(header_exists("dpop"))
         .respond_with(
             ResponseTemplate::new(200)
+                .insert_header("dpop-nonce", "ptx-success-nonce") // ATProto profile (H2)
                 .insert_header("content-type", "application/json")
                 .set_body_json(serde_json::json!({
                     "access_token": "at_persisted",
@@ -853,6 +860,7 @@ async fn test_h4_refresh_single_flight_serializes_per_subject() {
             std::thread::sleep(std::time::Duration::from_millis(50));
             in_flight_clone.fetch_sub(1, Ordering::SeqCst);
             ResponseTemplate::new(200)
+                .insert_header("dpop-nonce", "ptx-success-nonce") // ATProto profile (H2)
                 .insert_header("content-type", "application/json")
                 .set_body_json(serde_json::json!({
                     "access_token": "at_serialized",
