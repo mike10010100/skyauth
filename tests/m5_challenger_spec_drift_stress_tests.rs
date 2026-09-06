@@ -78,7 +78,12 @@ impl Sandbox {
 
     fn run_script(&self, args: &[&str], envs: &[(&str, &str)]) -> std::process::Output {
         let script_path = self.root.join("scripts").join("sync_specs.sh");
-        let mut cmd = Command::new(&script_path);
+        // Review M11: executing a freshly-copied script directly races the page
+        // cache on some platforms (ETXTBSY / ExecutableFileBusy under parallel
+        // test execution). Invoking it through `bash` sidesteps the exec-bit
+        // write race entirely and is behaviorally identical.
+        let mut cmd = Command::new("bash");
+        cmd.arg(&script_path);
         cmd.args(args);
         cmd.current_dir(&self.root);
         for (k, v) in envs {
