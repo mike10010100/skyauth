@@ -33,6 +33,15 @@ pub const DEFAULT_MAX_PROOF_AGE: Duration = Duration::from_secs(300);
 /// Default allowed clock skew leeway window (60 seconds).
 pub const DEFAULT_CLOCK_SKEW_LEEWAY: Duration = Duration::from_secs(60);
 
+/// Maximum admissible `jti` claim length in bytes.
+///
+/// The `jti` becomes a replay-cache key (`(jkt, jti)` composite); without a cap,
+/// an attacker minting self-signed proofs with multi-kilobyte `jti` values
+/// amplifies memory cost per request ~1:1 with bytes sent (independent review
+/// finding). 256 bytes comfortably accommodates standard UUID (36) and
+/// base64url-of-16-byte (24) identifiers while bounding adversarial keys.
+pub const MAX_JTI_LENGTH: usize = 256;
+
 /// Elliptic Curve P-256 JSON Web Key (RFC 7517 / RFC 9449 § 4.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JwkEc {
@@ -528,6 +537,16 @@ impl DPoPVerifier {
             return Err(DPoPError::MissingClaim("jti"));
         }
 
+        // Fail closed on oversized `jti`: it would become a replay-cache key,
+        // so its length must be bounded before admission (memory-amplification
+        // defense; see [`MAX_JTI_LENGTH`]).
+        if claims.jti.len() > MAX_JTI_LENGTH {
+            return Err(DPoPError::JtiTooLong {
+                max: MAX_JTI_LENGTH,
+                actual: claims.jti.len(),
+            });
+        }
+
         if !claims.htm.eq_ignore_ascii_case(expected_htm) {
             return Err(DPoPError::MethodMismatch {
                 expected: expected_htm.to_uppercase(),
@@ -664,27 +683,38 @@ pub fn normalize_htu(uri_str: &str) -> Result<String, DPoPError> {
     let parsed = Url::parse(trimmed)
         .map_err(|e| DPoPError::InvalidUri(format!("Malformed URI '{trimmed}': {e}")))?;
 
-    let scheme = parsed.scheme().to_ascii_lowercase();
-    if scheme != "http" && scheme != "https" {
-        return Err(DPoPError::InvalidUri(format!(
-            "URI scheme must be 'http' or 'https', got '{scheme}'"
-        )));
-    }
+    let scheme =
+        crate::kernels::htu_components::HtuScheme::parse(parsed.scheme()).ok_or_else(|| {
+            DPoPError::InvalidUri(format!(
+                "URI scheme must be 'http' or 'https', got '{}'",
+                parsed.scheme()
+            ))
+        })?;
 
     let host = parsed
         .host_str()
         .ok_or_else(|| DPoPError::InvalidUri("URI is missing host".to_string()))?
         .to_ascii_lowercase();
 
-    let port_str = match (scheme.as_str(), parsed.port()) {
-        ("http", Some(80)) | ("https", Some(443)) | (_, None) => String::new(),
-        (_, Some(p)) => format!(":{p}"),
-    };
-
+    let port = parsed.port();
     let path = parsed.path();
     let normalized_path = if path.is_empty() { "/" } else { path };
 
-    Ok(format!("{scheme}://{host}{port_str}{normalized_path}"))
+    let normalized =
+        crate::kernels::htu_components::build_normalized_htu(scheme, &host, port, normalized_path);
+
+    debug_assert!(
+        crate::kernels::htu_components::invariants_hold(
+            scheme,
+            &host,
+            port,
+            normalized_path,
+            &normalized
+        ),
+        "normalized htu violated kernel invariants"
+    );
+
+    Ok(normalized)
 }
 
 /// Extracts a server-issued challenge nonce from an optional header string.
@@ -843,7 +873,9 @@ impl DPoPReplayCache {
         }
 
         let admissions = self.prune_hints[shard_idx].fetch_add(1, Ordering::Relaxed);
-        if guard.len() > REPLAY_PRUNE_THRESHOLD && admissions % REPLAY_PRUNE_HINT_INTERVAL == 0 {
+        if guard.len() > REPLAY_PRUNE_THRESHOLD
+            && admissions.is_multiple_of(REPLAY_PRUNE_HINT_INTERVAL)
+        {
             guard.retain(|_, &mut exp| exp > now_secs);
         }
 

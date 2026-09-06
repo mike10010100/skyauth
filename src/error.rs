@@ -121,6 +121,18 @@ pub enum DPoPError {
     #[error("Missing required DPoP claim: {0}")]
     MissingClaim(&'static str),
 
+    /// The `jti` claim exceeds the maximum admissible length
+    /// ([`crate::dpop::MAX_JTI_LENGTH`]). Unbounded `jti` values would become
+    /// replay-cache keys, enabling memory-amplification attacks on the verifier
+    /// (independent review finding; bounded fail-closed).
+    #[error("DPoP jti claim exceeds maximum length of {max} bytes (got {actual})")]
+    JtiTooLong {
+        /// The maximum permitted `jti` length in bytes.
+        max: usize,
+        /// The actual `jti` length in bytes.
+        actual: usize,
+    },
+
     /// The HTTP method in the `htm` claim does not match the actual HTTP request method.
     #[error("HTTP method mismatch: expected '{expected}', got '{actual}'")]
     MethodMismatch {

@@ -142,35 +142,29 @@ pub fn derive_s256_challenge(verifier: &str) -> String {
 /// - Length must be between 43 and 128 characters inclusive.
 /// - Characters must belong to the unreserved set `[A-Za-z0-9-._~]`.
 ///
+/// Delegates to the byte-level kernel
+/// [`crate::kernels::pkce_bytes::validate_verifier_bytes`] — the same decision
+/// logic exercised by the Kani refinement harness over symbolic bytes.
+///
 /// # Errors
 ///
 /// Returns [`PkceError::InvalidVerifierLength`] or [`PkceError::InvalidVerifierCharacter`].
 pub fn validate_verifier(verifier: &str) -> Result<(), PkceError> {
-    let len = verifier.len();
-    if !(43..=128).contains(&len) {
-        return Err(PkceError::InvalidVerifierLength {
+    use crate::kernels::pkce_bytes::{validate_verifier_bytes, VerifierByteError};
+    match validate_verifier_bytes(verifier.as_bytes()) {
+        Ok(()) => Ok(()),
+        Err(VerifierByteError::InvalidLength(len)) => Err(PkceError::InvalidVerifierLength {
             len,
-            min: 43,
-            max: 128,
-        });
-    }
-
-    for (position, byte) in verifier.bytes().enumerate() {
-        let is_unreserved = byte.is_ascii_alphanumeric()
-            || byte == b'-'
-            || byte == b'.'
-            || byte == b'_'
-            || byte == b'~';
-
-        if !is_unreserved {
-            return Err(PkceError::InvalidVerifierCharacter {
+            min: crate::kernels::pkce_bytes::VERIFIER_MIN_LENGTH,
+            max: crate::kernels::pkce_bytes::VERIFIER_MAX_LENGTH,
+        }),
+        Err(VerifierByteError::InvalidCharacter { byte, position }) => {
+            Err(PkceError::InvalidVerifierCharacter {
                 char: byte as char,
                 position,
-            });
+            })
         }
     }
-
-    Ok(())
 }
 
 /// Verifies a code verifier against an expected S256 code challenge in constant time.
