@@ -313,6 +313,22 @@ where
                 }
             },
             None => {
+                // Review H5: bare unauthenticated traffic (no DPoP proof AND no
+                // Authorization header) must not be able to allocate fresh nonce
+                // state per request. Only requests mid-handshake (they present an
+                // Authorization header but lack the proof) receive a challenge
+                // nonce; everything else gets a static 401.
+                let has_authorization = req
+                    .headers()
+                    .get(header::AUTHORIZATION)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| !v.trim().is_empty())
+                    .unwrap_or(false);
+                if !has_authorization {
+                    return Box::pin(async {
+                        Ok(unauthorized_response("missing_dpop_proof", None, None))
+                    });
+                }
                 let fresh_nonce = self.nonce_source.as_ref().map(|s| s.generate_nonce());
                 match fresh_nonce {
                     Some(Ok(nonce)) => {
@@ -377,9 +393,9 @@ where
 
         let verification_result =
             self.verifier
-                .verify_proof(dpop_header, htm, &htu, None, ath.as_deref(), None);
+                .verify_proof_deferred(dpop_header, htm, &htu, None, ath.as_deref(), None);
 
-        let (claims, jwk) = match verification_result {
+        let (claims, jwk, replay_admission) = match verification_result {
             Ok(res) => res,
             Err(DPoPError::ReplayDetected { jti }) => {
                 tracing::debug!("DPoP proof replay detected in Tower middleware for jti: {jti}");
@@ -467,6 +483,7 @@ where
         let mut inner = self.inner.clone();
 
         let nonce_source_for_response = self.nonce_source.clone();
+        let dpop_verifier_for_commit = Arc::clone(&self.verifier);
         Box::pin(async move {
             let user = match validator
                 .validate_access_token(&access_token_owned, &dpop_thumbprint)
@@ -478,6 +495,35 @@ where
                     return Ok(unauthorized_response("invalid_token", None, None));
                 }
             };
+
+            // Review H5: durable replay-cache state is committed only after the
+            // server nonce and access-token validation succeeded, so
+            // attacker-minted proofs cannot consume replay-cache capacity before
+            // their own validation.
+            if let Err(err) = dpop_verifier_for_commit.commit_replay_admission(&replay_admission) {
+                match err {
+                    DPoPError::ReplayDetected { jti } => {
+                        tracing::debug!("DPoP replay detected at commit time for jti: {jti}");
+                        return Ok(unauthorized_response(
+                            "invalid_dpop_proof",
+                            Some("DPoP proof replay detected"),
+                            None,
+                        ));
+                    }
+                    DPoPError::ReplayCacheSaturated => {
+                        tracing::warn!("DPoP replay cache saturated at commit time; returning 503");
+                        return Ok(service_unavailable_response());
+                    }
+                    other => {
+                        tracing::debug!("DPoP replay admission failed: {other}");
+                        return Ok(unauthorized_response(
+                            "invalid_dpop_proof",
+                            Some("DPoP proof replay detected"),
+                            None,
+                        ));
+                    }
+                }
+            }
 
             let ext = OAuthSessionExtension::new(user.clone());
             req.extensions_mut().insert(ext);
@@ -1422,5 +1468,140 @@ mod nonce_enforcement_tests {
             nonce.map(|n| !n.trim().is_empty()).unwrap_or(false),
             "success response must carry a fresh DPoP-Nonce (review H2 server side)"
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
+mod h5_exhaustion_defense_tests {
+    use super::*;
+    use crate::dpop::{DPoPKey, DPoPReplayCache, DPoPVerifier};
+    use crate::integrations::validator::JwtAccessTokenClaims;
+    use p256::ecdsa::SigningKey;
+    use rand::thread_rng;
+    use std::convert::Infallible;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tower::service_fn;
+    use tower_service::Service;
+
+    #[tokio::test]
+    async fn test_h5_invalid_proofs_do_not_consume_replay_cache() {
+        // Review H5: replay-cache admission must happen only after nonce and
+        // token validation succeed. An attacker minting validly-signed proofs
+        // for INVENTED access tokens fails token validation — the cache must
+        // remain untouched.
+        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_verifying_key = *auth_key.verifying_key();
+
+        let client_key = DPoPKey::generate();
+        let uri = "https://pds.example.com/xrpc/test";
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let claims = JwtAccessTokenClaims {
+            iss: "https://auth.example.com".to_string(),
+            sub: "did:plc:alice123".to_string(),
+            aud: Some(serde_json::Value::String(
+                "https://pds.example.com".to_string(),
+            )),
+            exp: now + 3600,
+            nbf: None,
+            iat: Some(now),
+            jti: Some(format!("jti_h5_{}", now)),
+            scope: Some("atproto".to_string()),
+            cnf: crate::integrations::validator::CnfClaim {
+                jkt: client_key.jwk_thumbprint(),
+            },
+        };
+        let valid_token = claims.sign_jwt(&auth_key, None).unwrap();
+        let ath = compute_access_token_hash(&valid_token);
+
+        let cache = DPoPReplayCache::new();
+        let verifier = Arc::new(DPoPVerifier::new().with_replay_cache(cache.clone()));
+        let token_validator = JwtAccessTokenValidator::new()
+            .with_verifying_key(auth_verifying_key)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
+
+        let layer = OAuthAuthLayer::from_jwt_validator(verifier, token_validator);
+        let inner_service = service_fn(|_req: Request<()>| async move {
+            Ok::<Response<String>, Infallible>(Response::new("OK".to_string()))
+        });
+        let mut service = layer.layer(inner_service);
+
+        // Flood with proofs for an INVENTED token (fails at token validation).
+        let invented_token = "invented_token_not_registered".to_string();
+        let invented_ath = compute_access_token_hash(&invented_token);
+        for i in 0..32 {
+            let proof = client_key
+                .create_proof("GET", uri, None, Some(&invented_ath))
+                .unwrap();
+            let req = Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("DPoP {invented_token}"))
+                .header("DPoP", proof)
+                .header("x-probe", i.to_string())
+                .body(())
+                .unwrap();
+            let resp = service.call(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        }
+        assert_eq!(
+            cache.len(),
+            0,
+            "failed token validation must not admit anything into the replay cache (H5)"
+        );
+
+        // Control: a legitimate request still works and commits exactly one entry.
+        let proof = client_key
+            .create_proof("GET", uri, None, Some(&ath))
+            .unwrap();
+        let req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {valid_token}"))
+            .header("DPoP", proof)
+            .body(())
+            .unwrap();
+        let resp = service.call(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            cache.len(),
+            1,
+            "the legitimate request commits exactly one replay entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_h5_bare_unauthenticated_request_gets_no_nonce_allocation() {
+        // Review H5: bare unauthenticated traffic (no proof, no Authorization)
+        // must receive a static 401 WITHOUT allocating fresh nonce state.
+        let verifier = Arc::new(DPoPVerifier::new());
+        let token_validator = JwtAccessTokenValidator::new();
+        let layer = OAuthAuthLayer::from_jwt_validator(verifier, token_validator)
+            .with_nonce_source(Arc::new(crate::dpop::InMemoryServerNonceSource::new(
+                std::time::Duration::from_secs(60),
+            )));
+        let inner_service = service_fn(|_req: Request<()>| async move {
+            Ok::<Response<String>, Infallible>(Response::new("OK".to_string()))
+        });
+        let mut service = layer.layer(inner_service);
+
+        for _ in 0..8 {
+            let req = Request::builder()
+                .method("GET")
+                .uri("https://pds.example.com/xrpc/test")
+                .body(())
+                .unwrap();
+            let resp = service.call(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+            assert!(
+                resp.headers().get("dpop-nonce").is_none(),
+                "bare unauthenticated requests must not receive fresh challenge nonces (H5)"
+            );
+        }
     }
 }

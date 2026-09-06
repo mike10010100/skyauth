@@ -468,6 +468,44 @@ impl DPoPVerifier {
         expected_ath: Option<&str>,
         now_override: Option<SystemTime>,
     ) -> Result<(DPoPProofClaims, JwkEc), DPoPError> {
+        let (claims, jwk) = self.verify_proof_no_replay(
+            proof_jwt,
+            expected_htm,
+            expected_htu,
+            expected_nonce,
+            expected_ath,
+            now_override,
+        )?;
+        // Immediate single-phase admission (default path; servers needing two-phase
+        // admission use `verify_proof_deferred` + `commit_replay_admission`).
+        let jkt = jwk.thumbprint();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| DPoPError::ClockSkew(e.to_string()))?
+            .as_secs();
+        let expires_at = now
+            .saturating_add(self.max_proof_age.as_secs())
+            .saturating_add(self.max_clock_skew.as_secs());
+        if let Some(ref cache) = self.replay_cache {
+            cache.check_and_record(&jkt, &claims.jti, expires_at, now)?;
+        }
+        Ok((claims, jwk))
+    }
+
+    /// Validates a DPoP proof without touching the replay cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns a specific [`DPoPError`] variant if any validation step fails.
+    pub fn verify_proof_no_replay(
+        &self,
+        proof_jwt: &str,
+        expected_htm: &str,
+        expected_htu: &str,
+        expected_nonce: Option<&str>,
+        expected_ath: Option<&str>,
+        now_override: Option<SystemTime>,
+    ) -> Result<(DPoPProofClaims, JwkEc), DPoPError> {
         let parts: Vec<&str> = proof_jwt.trim().split('.').collect();
         if parts.len() != 3 {
             return Err(DPoPError::MalformedJwt(format!(
@@ -627,19 +665,105 @@ impl DPoPVerifier {
             }
         }
 
-        // Anti-Replay Check (RFC 9449 § 4.3 item 4 & § 11.1)
-        if let Some(ref cache) = self.replay_cache {
-            let jkt = jwk.thumbprint();
-            // Expire entries on the server's acceptance window, NEVER the attacker-controlled `exp` claim: a far-future `exp` would create immortal cache entries (DoS).
-            let expires_at = now.saturating_add(max_age_secs).saturating_add(skew_secs);
-
-            cache.check_and_record(&jkt, &claims.jti, expires_at, now)?;
-        }
-
         Ok((claims, jwk))
     }
 }
 
+/// Deferred replay-cache admission handle returned by
+/// [`DPoPVerifier::verify_proof_deferred`].
+///
+/// Committing writes the `(jkt, jti)` pair into the replay cache. Servers that
+/// must complete nonce and access-token validation before recording durable
+/// state (review H5: attacker-minted proofs must not consume replay-cache
+/// capacity before their own validation) use this two-phase API.
+#[derive(Debug, Clone)]
+pub struct ReplayAdmission {
+    jkt: String,
+    jti: String,
+    expires_at: u64,
+    now: u64,
+}
+
+impl std::fmt::Display for ReplayAdmission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print the raw jti (attacker-influenced); only a bounded prefix of jkt.
+        write!(
+            f,
+            "ReplayAdmission(jkt={}…)",
+            &self.jkt[..self.jkt.len().min(8)]
+        )
+    }
+}
+
+impl DPoPVerifier {
+    /// Validates a DPoP proof **without** recording it in the replay cache.
+    ///
+    /// Identical to [`Self::verify_proof`] except that the anti-replay check is
+    /// *deferred*: the returned [`ReplayAdmission`] must be committed via
+    /// [`Self::commit_replay_admission`] after the caller's remaining validation
+    /// (server nonce, access token) succeeds. If a replay is detected at commit
+    /// time — the same proof raced through another path between verification and
+    /// commit — [`DPoPError::ReplayDetected`] is returned and the caller must
+    /// treat the request as failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a specific [`DPoPError`] variant if any validation step fails.
+    pub fn verify_proof_deferred(
+        &self,
+        proof_jwt: &str,
+        expected_htm: &str,
+        expected_htu: &str,
+        expected_nonce: Option<&str>,
+        expected_ath: Option<&str>,
+        now_override: Option<SystemTime>,
+    ) -> Result<(DPoPProofClaims, JwkEc, ReplayAdmission), DPoPError> {
+        // Reuse the shared validation logic by calling verify_proof with the
+        // replay cache temporarily bypassed is not possible (immutable self), so
+        // this replicates the final step: everything up to replay admission.
+        let (claims, jwk) = self.verify_proof_no_replay(
+            proof_jwt,
+            expected_htm,
+            expected_htu,
+            expected_nonce,
+            expected_ath,
+            now_override,
+        )?;
+        let jkt = jwk.thumbprint();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| DPoPError::ClockSkew(e.to_string()))?
+            .as_secs();
+        let expires_at = now
+            .saturating_add(self.max_proof_age.as_secs())
+            .saturating_add(self.max_clock_skew.as_secs());
+        let admission = ReplayAdmission {
+            jkt,
+            jti: claims.jti.clone(),
+            expires_at,
+            now,
+        };
+        Ok((claims, jwk, admission))
+    }
+
+    /// Commits a deferred replay admission. See [`Self::verify_proof_deferred`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DPoPError::ReplayDetected`] if the proof was already consumed
+    /// by a concurrent request between verification and commit.
+    pub fn commit_replay_admission(&self, admission: &ReplayAdmission) -> Result<(), DPoPError> {
+        if let Some(ref cache) = self.replay_cache {
+            cache.check_and_record(
+                &admission.jkt,
+                &admission.jti,
+                admission.expires_at,
+                admission.now,
+            )?;
+        }
+        Ok(())
+    }
+}
 /// Computes the RFC 9449 Access Token Hash (`ath`) claim.
 ///
 /// `ath` is the unpadded URL-safe Base64 encoding of the SHA-256 hash of the ASCII access token.
@@ -976,12 +1100,25 @@ impl<T: DPoPServerNonceSource + ?Sized> DPoPServerNonceSource for Arc<T> {
 }
 
 /// In-memory implementation of [`DPoPServerNonceSource`] tracking nonces with time-to-live.
+///
+/// Includes a **challenge-issuance rate limiter** (review H5): unauthenticated
+/// traffic must not be able to allocate unbounded nonce state. At most
+/// [`CHALLENGE_ISSUANCE_RATE_LIMIT`] fresh nonces are minted per one-second
+/// window; further requests receive [`DPoPError::NonceCacheSaturated`] (mapped
+/// to 503 by the middleware), bounding the cost of an unauthenticated flood
+/// without displacing nonces for legitimate clients.
 #[derive(Debug, Clone)]
 pub struct InMemoryServerNonceSource {
     nonces: Arc<RwLock<HashMap<String, u64>>>,
     ttl: Duration,
     single_use: bool,
+    issuance_window_secs: Arc<RwLock<u64>>,
+    issuance_count_in_window: Arc<RwLock<u32>>,
+    issuance_rate_limit: u32,
 }
+
+/// Maximum fresh challenge nonces minted per one-second window (review H5).
+pub const CHALLENGE_ISSUANCE_RATE_LIMIT: u32 = 64;
 
 impl InMemoryServerNonceSource {
     /// Creates a new `InMemoryServerNonceSource` with the specified nonce time-to-live.
@@ -995,7 +1132,21 @@ impl InMemoryServerNonceSource {
             nonces: Arc::new(RwLock::new(HashMap::new())),
             ttl,
             single_use: false,
+            issuance_window_secs: Arc::new(RwLock::new(0)),
+            issuance_count_in_window: Arc::new(RwLock::new(0)),
+            issuance_rate_limit: CHALLENGE_ISSUANCE_RATE_LIMIT,
         }
+    }
+
+    /// Overrides the per-second challenge-issuance rate limit (review H5).
+    ///
+    /// Tests and high-throughput deployments can raise it; the default
+    /// [`CHALLENGE_ISSUANCE_RATE_LIMIT`] bounds unauthenticated challenge
+    /// flooding in typical deployments.
+    #[must_use]
+    pub fn with_issuance_rate_limit(mut self, per_second: u32) -> Self {
+        self.issuance_rate_limit = per_second;
+        self
     }
 
     /// Enables strict single-use semantics: each nonce is consumed on first successful
@@ -1015,14 +1166,30 @@ impl InMemoryServerNonceSource {
 
 impl DPoPServerNonceSource for InMemoryServerNonceSource {
     fn generate_nonce(&self) -> Result<String, DPoPError> {
-        let mut raw = [0u8; 24];
-        rand::thread_rng().fill_bytes(&mut raw);
-        let nonce = base64url_encode(&raw);
-
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
+
+        // Challenge-issuance rate limiter (review H5): bound fresh nonces per
+        // one-second window. The limiter state is a separate lock from `nonces`
+        // (held only synchronously, never across an await).
+        {
+            let mut window = self.issuance_window_secs.write();
+            let mut count = self.issuance_count_in_window.write();
+            if *window != now_secs {
+                *window = now_secs;
+                *count = 0;
+            }
+            if *count >= self.issuance_rate_limit {
+                return Err(DPoPError::NonceCacheSaturated);
+            }
+            *count += 1;
+        }
+
+        let mut raw = [0u8; 24];
+        rand::thread_rng().fill_bytes(&mut raw);
+        let nonce = base64url_encode(&raw);
         let exp = now_secs.saturating_add(self.ttl.as_secs());
 
         let mut guard = self.nonces.write();
@@ -1327,7 +1494,10 @@ mod tests {
 
     #[test]
     fn test_in_memory_server_nonce_source_saturation_fails_closed() {
-        let source = InMemoryServerNonceSource::new(Duration::from_secs(3600));
+        let source = InMemoryServerNonceSource::new(Duration::from_secs(3600))
+            // Bypass the challenge rate limiter: this test exercises CACHE
+            // saturation specifically (the limiter has its own test below).
+            .with_issuance_rate_limit(u32::MAX);
         let mut i = 0;
         while source.nonces.read().len() < NONCE_CACHE_CAPACITY {
             assert!(source.generate_nonce().is_ok());
@@ -1377,5 +1547,30 @@ mod tests {
                 "live replay entry was evicted under saturation: jti={jti}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
+mod challenge_rate_limiter_tests {
+    use super::*;
+
+    #[test]
+    fn test_challenge_issuance_rate_limiter_bounds_unauthenticated_flood() {
+        // Review H5: unauthenticated requests must not allocate unbounded nonce
+        // state. The limiter mints at most `issuance_rate_limit` fresh nonces per
+        // one-second window, then fails closed.
+        let source =
+            InMemoryServerNonceSource::new(Duration::from_secs(60)).with_issuance_rate_limit(4);
+        for _ in 0..4 {
+            assert!(
+                source.generate_nonce().is_ok(),
+                "first 4 issuances in window must succeed"
+            );
+        }
+        assert!(
+            matches!(source.generate_nonce(), Err(DPoPError::NonceCacheSaturated)),
+            "5th issuance within the same second must fail closed"
+        );
     }
 }
