@@ -552,12 +552,23 @@ impl DPoPHtuFormalSpec {
     }
 
     /// Invariant: Default ports (`http:80` and `https:443`) must be omitted.
+    ///
+    /// Scheme-aware (review-driven fix): a naive string scan cannot distinguish
+    /// `https://host:80/…` — a *custom* port that MUST be preserved — from the
+    /// http default. The predicate inspects the scheme prefix before checking
+    /// the port suffix.
     #[must_use]
     pub fn spec_no_default_ports(normalized_uri: &str) -> bool {
-        !normalized_uri.contains(":80/")
-            && !normalized_uri.ends_with(":80")
-            && !normalized_uri.contains(":443/")
-            && !normalized_uri.ends_with(":443")
+        let is_https = normalized_uri.starts_with("https://");
+        let is_http = normalized_uri.starts_with("http://");
+        if is_https {
+            !normalized_uri.contains(":443/") && !normalized_uri.ends_with(":443")
+        } else if is_http {
+            !normalized_uri.contains(":80/") && !normalized_uri.ends_with(":80")
+        } else {
+            // Non-HTTP(S) URIs are rejected earlier; treat as conforming here.
+            true
+        }
     }
 }
 
