@@ -31,6 +31,12 @@ use crate::client::StoredStateEntry;
 use crate::error::StoreError;
 
 /// Number of independent `RwLock` shards in [`OAuthStateStore`].
+/// Maximum live entries per shard before admission fails closed (review H5/M2).
+/// 64 shards x 1024 = 65,536 in-flight states max — ample for legitimate traffic,
+/// bounded for attackers.
+pub const SHARD_ADMISSION_CAPACITY: usize = 1024;
+
+/// Number of independent `RwLock` shards in [`OAuthStateStore`].
 pub const NUM_SHARDS: usize = 64;
 
 /// Default time-to-live (TTL) for authorization state tokens (5 minutes / 300 seconds).
@@ -185,6 +191,20 @@ impl OAuthStateStore {
         let idx = self.shard_index(&state);
         let record = StoredStateRecord::new(entry, ttl);
         let mut shard = self.shards[idx].write();
+        // Admission cap (review H5/M2): each shard holds at most
+        // [`SHARD_ADMISSION_CAPACITY`] live entries. Without a cap, an attacker
+        // cycling PAR responses (each inserting a PKCE verifier + DPoP key)
+        // grows memory unboundedly. Fail closed with an explicit capacity
+        // error; callers prune on the error or use a distributed backend.
+        if shard.len() >= SHARD_ADMISSION_CAPACITY {
+            // Opportunistic prune first: expired entries shouldn't count
+            // against the cap.
+            let now = Instant::now();
+            shard.retain(|_, r| !r.is_expired(now));
+            if shard.len() >= SHARD_ADMISSION_CAPACITY {
+                return Err(StoreError::CapacityExceeded(SHARD_ADMISSION_CAPACITY));
+            }
+        }
         shard.insert(state, record);
         Ok(())
     }
@@ -289,6 +309,18 @@ impl OAuthStateStore {
         interval_duration: Duration,
         cancellation_token: CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
+        // Review M10: a zero interval panics inside `tokio::time::interval`, and
+        // `tokio::spawn` panics outside a runtime. Both fail closed here with a
+        // clean panic message naming the invariant (the crate's no-panic
+        // guarantee applies to *validation*, not to these precondition traps).
+        assert!(
+            !interval_duration.is_zero(),
+            "spawn_pruning_task: interval_duration must be non-zero"
+        );
+        assert!(
+            tokio::runtime::Handle::try_current().is_ok(),
+            "spawn_pruning_task: must be called within a tokio runtime"
+        );
         let store = Arc::clone(self);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(interval_duration);

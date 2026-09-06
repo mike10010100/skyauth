@@ -1268,3 +1268,61 @@ fn test_b25_05_dpop_header_private_key_d_rejection() {
     });
     assert!(jwk_with_private_key.get("d").is_some());
 }
+
+#[test]
+fn test_h5_m2_state_store_admission_capacity_fails_closed() {
+    // Review H5/M2: each shard admits at most SHARD_ADMISSION_CAPACITY live
+    // entries; beyond that, insertion fails closed with CapacityExceeded
+    // (after an opportunistic expired-entry prune) instead of growing
+    // memory unboundedly under a PAR flood.
+    use skyauth::client::StoredStateEntry;
+    use skyauth::dpop::DPoPKey;
+    use skyauth::error::StoreError;
+
+    let store = skyauth::store::OAuthStateStore::new(Duration::from_secs(300));
+    // One shared key: ECDSA keygen x65k would dominate runtime; the entry
+    // payload shape (not key uniqueness) is what the cap bounds.
+    let shared_key = DPoPKey::generate();
+    let mut inserted = 0usize;
+    let mut overflow = false;
+
+    for i in 0..200_000u64 {
+        let entry = StoredStateEntry {
+            state: format!("state_{i}"),
+            client_id: "https://app.example.com/client-metadata.json".to_string(),
+            code_verifier: "v".repeat(43),
+            dpop_key: shared_key.clone(),
+            issuer: "https://auth.example.com".to_string(),
+            did: None,
+            handle: None,
+            redirect_uri: "https://app.example.com/callback".to_string(),
+            pds_endpoint: "https://pds.example.com".to_string(),
+            token_endpoint: "https://auth.example.com/token".to_string(),
+            scopes: "atproto".to_string(),
+            created_at: SystemTime::now(),
+            expires_in_secs: 300,
+        };
+        match store.insert_state_sync(format!("state_{i}"), entry, Duration::from_secs(300)) {
+            Ok(()) => inserted += 1,
+            Err(StoreError::CapacityExceeded(cap)) => {
+                assert_eq!(cap, skyauth::store::SHARD_ADMISSION_CAPACITY);
+                overflow = true;
+                break;
+            }
+            Err(e) => panic!("unexpected store error: {e}"),
+        }
+        assert!(inserted <= 200_000);
+    }
+
+    assert!(
+        overflow,
+        "admission cap must be reached within 200k inserts"
+    );
+    // All keys hash to one of 64 shards; total live entries must be bounded by
+    // 64 * SHARD_ADMISSION_CAPACITY regardless of distribution.
+    let total_capacity = 64 * skyauth::store::SHARD_ADMISSION_CAPACITY;
+    assert!(
+        inserted <= total_capacity,
+        "inserted {inserted} must not exceed total capacity {total_capacity}"
+    );
+}
