@@ -659,13 +659,16 @@ proptest! {
         let res = model.take_state(&state, query_tick);
         if query_tick < 100 {
             prop_assert!(res.is_some());
-            prop_assert_eq!(model.states.get(&state), Some(&StateTransitionStatus::Consumed { consumed_at_tick: query_tick }));
+            let expected_status = StateTransitionStatus::Consumed { consumed_at_tick: query_tick };
+            prop_assert_eq!(model.states.get(&state), Some(&expected_status));
         } else if query_tick.saturating_sub(100) < ttl {
             prop_assert!(res.is_some());
-            prop_assert_eq!(model.states.get(&state), Some(&StateTransitionStatus::Consumed { consumed_at_tick: query_tick }));
+            let expected_status = StateTransitionStatus::Consumed { consumed_at_tick: query_tick };
+            prop_assert_eq!(model.states.get(&state), Some(&expected_status));
         } else {
             prop_assert!(res.is_none());
-            prop_assert_eq!(model.states.get(&state), Some(&StateTransitionStatus::Expired { expired_at_tick: query_tick }));
+            let expected_status = StateTransitionStatus::Expired { expired_at_tick: query_tick };
+            prop_assert_eq!(model.states.get(&state), Some(&expected_status));
         }
 
         prop_assert!(model.verify_single_use_invariant(&state));

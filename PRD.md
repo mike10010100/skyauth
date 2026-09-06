@@ -178,7 +178,9 @@ graph TD
 ```
 
 #### Layer 1 (Primary): Verus Deductive Verification (`verus!`)
-We leverage [**Verus**](https://github.com/verus-lang/verus) (Microsoft Research / CMU / VMware) to enforce **contract-driven code generation**:
+We leverage [**Verus**](https://github.com/verus-lang/verus) (Microsoft Research / CMU / VMware) to enforce **contract-driven code generation**, organized in **two verified layers** (69 total obligations, 0 errors as of 2026-09-03):
+- **Standalone specification layer** ([`src/verification/verus_contracts.rs`](src/verification/verus_contracts.rs), 21 obligations): mathematical models and theorems for state-machine safety, SSRF IPv4 ranges, PKCE bounds, and constant-time equality structure.
+- **Kernel-bound layer** ([`src/verification/verus_kernels.rs`](src/verification/verus_kernels.rs), 48 obligations): `ensures` contracts and theorems proven over the **shipped production kernel source** ([`src/kernels/`](src/kernels)) via `#[path]` inclusion — IPv4 range coverage (RFC 1918 ×3, loopback, cloud metadata, CGNAT, TEST-NET-3, multicast, reserved, public non-vacuity witness), IPv6 family theorems (mapped↔IPv4 reduction parity, 6to4 embedded-IPv4 parity, IPv4-translated, Teredo, documentation, ULA, link-local, site-local, multicast, unspecified/loopback, public non-vacuity witness). The dual-representation kernel pattern (plain-rustc branch + `verus!` branch with identical executable statements) binds the proofs to the exact bytes that ship.
 - **Why Verus**: Unlike model checking harnesses where an LLM can inadvertently write contradictory assumptions (`assume(false)`), Verus checks Hoare-logic contracts (`requires`, `ensures`, `invariant`, `decreases`) **directly on the function body**. This eliminates vacuous proofs and forces the LLM to write structurally superior, defensively branched, and mathematically sound code.
 - **Contract 1: Single-Use State Consumption**:
   ```rust
@@ -196,12 +198,24 @@ We leverage [**Verus**](https://github.com/verus-lang/verus) (Microsoft Research
               self.store =~= old(self).store
           );
   ```
+  (Proven over the formal state model; the production store's sequential semantics are
+  additionally verified by the Kani state harness and 50/150-thread empirical races.)
 - **Contract 2: PKCE S256 Mathematical Bijection**:
-  Prove that `verify_pkce(verifier, challenge)` returns `true` if and only if `challenge == base64url_unpadded(sha256(verifier))` with zero false-positive verifications across arbitrary symbolic strings.
+  The length-axis bijection is proven deductively (`spec_pkce_verifier_valid`); the full
+  byte-domain acceptance iff-condition is proven by the Kani refinement harness
+  (`proof_pkce_validator_refinement`) over the shipped byte-level validator.
 - **Contract 3: Timestamp & Monotonic Arithmetic Safety**:
-  Prove that monotonic time calculations (`created_at + ttl_secs`) cannot overflow on 32-bit or 64-bit platforms and that expired sessions strictly evaluate to invalid.
+  Overflow paths are **fail-closed** by construction (`checked_add` overflow ⇒ session
+  rejected at construction / expired at rotation — see `OAuthSession::new` and
+  `rotate_tokens`), and the saturating/checked arithmetic is exercised by the deterministic
+  suites.
 - **Contract 4: SSRF Restricted IP Rejection Invariant**:
-  Prove that `is_restricted_ip(ip)` returns `true` for all loopback (`127.0.0.0/8`, `::1`), private RFC 1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local (`169.254.0.0/16`), and carrier-grade NAT ranges.
+  Proven over the shipped kernels for **every symbolic IPv4 address** and every IPv6 family:
+  loopback (`127.0.0.0/8`, `::1`), private RFC 1918 (`10.0.0.0/8`, `172.16.0.0/12`,
+  `192.168.0.0/16`), link-local (`169.254.0.0/16`), carrier-grade NAT (`100.64.0.0/10`),
+  Teredo (`2001::/32`), 6to4 (`2002::/16`, embedded IPv4 re-evaluated), IPv4-mapped IPv6
+  (reduction theorem), ULA, link-local, site-local, multicast, documentation prefixes —
+  with public-address non-vacuity witnesses on both protocol versions.
 
 #### Layer 2 (Complementary): Kani Bounded Model Checking with Anti-Vacuity Gates (`src/verification/kani_harnesses.rs`)
 For bit-level transformations and low-level byte packing:

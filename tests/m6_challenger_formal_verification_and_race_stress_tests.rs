@@ -42,7 +42,8 @@ use skyauth::verification::formal_models::{
 };
 use skyauth::verification::kani_harnesses::{
     global_coverage, proof_constant_time_eq_soundness, proof_dpop_htu_normalization_invariants,
-    proof_pkce_s256_verifier_bounds, proof_single_use_state_consumption,
+    proof_ipv6_adapter_refinement, proof_jti_admission_bound, proof_pkce_s256_verifier_bounds,
+    proof_pkce_validator_refinement, proof_single_use_state_consumption,
     proof_ssrf_restricted_ip_rejection,
 };
 
@@ -426,6 +427,9 @@ fn test_challenge_anti_vacuity_gate_coverage_verification() {
     proof_pkce_s256_verifier_bounds();
     proof_constant_time_eq_soundness();
     proof_dpop_htu_normalization_invariants();
+    proof_pkce_validator_refinement();
+    proof_ipv6_adapter_refinement();
+    proof_jti_admission_bound();
 
     let all_required_tags = [
         "uninitialized_state_rejected",
@@ -464,6 +468,27 @@ fn test_challenge_anti_vacuity_gate_coverage_verification() {
         "custom_port_preserved_success",
         "uppercase_host_lowercased_success",
         "invalid_scheme_rejected",
+        "absent_port_omitted",
+        "other_custom_port_preserved",
+        "valid_min_length_43_refined",
+        "valid_max_length_128_refined",
+        "short_below_min_rejected",
+        "long_above_max_rejected",
+        "invalid_byte_rejected",
+        "valid_byte_admitted_at_pos",
+        "ipv6_mapped_private_embedded",
+        "ipv6_mapped_public_embedded",
+        "ipv6_ula_hit",
+        "ipv6_link_local_hit",
+        "ipv6_multicast_hit",
+        "ipv6_teredo_hit",
+        "ipv6_6to4_hit",
+        "ipv6_documentation_hit",
+        "ipv6_nat64_hit",
+        "ipv6_public_allowed",
+        "jti_at_cap_admitted",
+        "jti_over_cap_rejected",
+        "jti_empty_rejected",
     ];
 
     global_coverage().assert_all_covered(&all_required_tags);
