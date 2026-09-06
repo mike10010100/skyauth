@@ -331,6 +331,12 @@ impl DnsTxtResolver for StandardDnsResolver {
                 format!("https://cloudflare-dns.com/dns-query?name={query_name}&type=TXT");
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(4))
+                // DoH bootstrap must not be transparently routed through
+                // environment proxies: a proxied resolver's answers are a
+                // different trust domain (and the DoH host would be
+                // proxy-resolved, bypassing the SSRF pinning model used
+                // everywhere else — review H6/L5).
+                .no_proxy()
                 .build()
                 .map_err(|e| IdentityError::Dns(e.to_string()))?;
 
