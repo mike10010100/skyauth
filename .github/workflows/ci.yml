@@ -232,6 +232,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
+      checks: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -275,13 +276,17 @@ jobs:
           contexts=("CodeQL Static Security Scan (rust)" "CodeQL Static Security Scan (actions)")
           deadline=$(( $(date +%s) + 900 ))
           while :; do
-            json=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/status")
+            # M8 fix: CodeQL creates CHECK RUNS, not commit statuses — the status
+            # endpoint was always empty for these contexts (verified during the
+            # review: status endpoint returned none while the Checks API showed
+            # both jobs). Poll check-runs instead.
+            json=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs"               -H "Accept: application/vnd.github+json")
             all_ok=true
             for c in "${contexts[@]}"; do
-              state=$(jq -r --arg c "$c" '[.statuses[] | select(.context == $c)][0].state // "missing"' <<<"$json")
+              state=$(jq -r --arg c "$c"                 '[.check_runs[] | select(.name == $c)][0].conclusion // "missing"' <<<"$json")
               case "$state" in
                 success) ;;
-                missing|pending|expected) all_ok=false ;;
+                missing|pending|null) all_ok=false ;;
                 *)
                   echo "::error::Required check '${c}' concluded with state '${state}'; refusing to publish"
                   exit 1
@@ -328,6 +333,7 @@ jobs:
           if ! gh release view "${TAG_NAME}" >/dev/null 2>&1; then
             echo "Creating GitHub Release ${TAG_NAME}..."
             gh release create "${TAG_NAME}" \
+              --target "${GITHUB_SHA}" \
               --title "${TAG_NAME} - Production Release" \
               --notes-file CHANGELOG.md
           else

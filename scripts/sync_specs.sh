@@ -195,6 +195,17 @@ verify_specs() {
         return 1
     fi
 
+    # Review M4: enforce a one-to-one manifest — every managed file MUST have a
+    # manifest entry, otherwise deleting a manifest line silently excludes that
+    # file from drift verification.
+    log_info "Checking manifest coverage (one-to-one)..."
+    while IFS= read -r rel_path; do
+        if ! grep -qF "${rel_path}" "${MANIFEST_FILE}"; then
+            log_error "Managed file missing from checksum manifest: ${rel_path}"
+            drift_detected=1
+        fi
+    done < <(get_managed_files)
+
     log_info "Verifying SHA-256 checksums against local manifest..."
     while IFS= read -r line; do
         [[ -z "${line}" || "${line}" =~ ^# ]] && continue
@@ -258,7 +269,12 @@ verify_specs() {
                     echo -e "  [UPSTREAM MATCH] ${rel_path} matches upstream canonical source."
                 fi
             else
-                log_warn "Upstream returned non-JSON payload for ${rel_path}."
+                # Review M4: a successful HTTP response with a non-JSON payload is
+                # an INVALID upstream state (proxy error page, HTML interstitial) —
+                # never report it as verified. Count it so strict verification
+                # fails (same as an unreachable endpoint).
+                log_error "  [INVALID PAYLOAD] Upstream returned non-JSON payload for ${rel_path}; upstream drift status UNVERIFIED."
+                fetch_failed=$((fetch_failed + 1))
             fi
             rm -f "${tmp_upstream}"
         else
@@ -288,7 +304,7 @@ verify_specs() {
         return 3
     fi
 
-    log_success "All canonical Lexicons and RFC schemas match manifest and upstream. Zero drift detected."
+    log_success "All managed specs verified: 3 canonical ATProto lexicons match upstream; RFC/client-metadata schemas match the project manifest (project-authored artifacts, no upstream)."
     return 0
 }
 

@@ -373,9 +373,15 @@ where
                 match default_htu_from_uri(&scheme, req.uri()) {
                     Some(htu) => htu,
                     None => {
+                        // Origin-form URIs (normal HTTP/1.1 server requests) carry no
+                        // authority; deriving htu from the Host header would trust a
+                        // spoofable input, so this fails closed by design (review
+                        // M9). Deployment fix: configure `with_htu_override` with a
+                        // trusted external origin, or construct the service behind a
+                        // proxy that presents absolute-form URIs.
                         tracing::debug!(
                             "DPoP htu derivation failed: request URI '{}' has no usable authority \
-                             (origin-form requests must carry a Host header)",
+                             (origin-form request; configure with_htu_override with a trusted external origin)",
                             req.uri()
                         );
                         return Box::pin(async {
@@ -1379,13 +1385,14 @@ mod nonce_enforcement_tests {
         let claims = JwtAccessTokenClaims {
             iss: "https://auth.example.com".to_string(),
             sub: "did:plc:alice123".to_string(),
+            client_id: "https://app.example.com/client-metadata.json".to_string(),
             aud: Some(serde_json::Value::String(
                 "https://pds.example.com".to_string(),
             )),
             exp: now + 3600,
             nbf: None,
-            iat: Some(now),
-            jti: Some(format!("jti_server_nonce_attach_{now}")),
+            iat: now,
+            jti: format!("jti_server_nonce_attach_{now}"),
             scope: Some("atproto".to_string()),
             cnf: crate::integrations::validator::CnfClaim {
                 jkt: client_key.jwk_thumbprint(),
@@ -1503,13 +1510,14 @@ mod h5_exhaustion_defense_tests {
         let claims = JwtAccessTokenClaims {
             iss: "https://auth.example.com".to_string(),
             sub: "did:plc:alice123".to_string(),
+            client_id: "https://app.example.com/client-metadata.json".to_string(),
             aud: Some(serde_json::Value::String(
                 "https://pds.example.com".to_string(),
             )),
             exp: now + 3600,
             nbf: None,
-            iat: Some(now),
-            jti: Some(format!("jti_h5_{}", now)),
+            iat: now,
+            jti: format!("jti_h5_{}", now),
             scope: Some("atproto".to_string()),
             cnf: crate::integrations::validator::CnfClaim {
                 jkt: client_key.jwk_thumbprint(),
