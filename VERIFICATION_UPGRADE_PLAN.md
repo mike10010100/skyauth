@@ -315,3 +315,27 @@ Deliberately NOT claimed (honesty ledger):
 - HTU harness remains deterministic-only (CBMC `String` heap model cost measured and documented; concrete domain is exhaustive).
 - Timing-independence of `constant_time_eq` rests on `subtle` upstream, not on proofs.
 - Lock linearizability of the 64-shard store remains empirically verified (races), not proven.
+
+---
+
+## Review-Response Completion Note (2026-09-03)
+
+Beyond the verification upgrade itself, the full set of findings from the independent fork
+reviews (GLM 5.3 / GPT 5.6) was dispositioned across stacked PRs #3–#14:
+
+| Finding | Disposition |
+|---|---|
+| H1 static client_secret | **Removed** (PR #10); `private_key_jwt` planned for 0.3.0 |
+| H2 nonce enforcement | **Implemented both sides** (PR #9) |
+| H3 retry classification | **Fixed** (PR #6) |
+| H4 refresh invariants + single-flight | **Fixed** (PR #7) |
+| H5 cache exhaustion | **Fixed** (deferred replay admission, no-nonce-for-bare-traffic, issuance rate limiter — PR #11) |
+| H6 proxy bypass | **Fixed** (`no_proxy` + bounded DNS — PR #5) |
+| M2–M12 | **Fixed** across PRs #3, #7, #11, #12, #13 (store cap + default pruning, RFC 9068 claims, metadata null, publish poll, spec-verify hardening, DID grammar, HTTPS endpoints, spawn-pruning assertions, origin-form HTU diagnostics) |
+| L1–L12 | **Fixed** across PRs #8, #10, #14 (session deserialize validation, no secret surface, TokenResponse hygiene, DoH hardening, dead variants, packaging slimming, PAR dedup) |
+
+Deliberate non-items (recorded, not silently skipped):
+- **Timing-independence**: rests on `subtle` upstream; SMT tools cannot prove it (claim corrected in docs).
+- **Async/lock linearizability** of the 64-shard store: no practical SMT path; empirical races remain the moat.
+- **`private_key_jwt`**: 0.3.0 milestone (requires client JWKS registration design).
+- **Tower middleware as default-ready RS**: origin-form HTU remains fail-closed by design (Host spoofable); `with_htu_override` is the configuration path, now named in diagnostics.

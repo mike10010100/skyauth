@@ -163,3 +163,12 @@ bash scripts/run_verus.sh
 Dual-licensed under either:
 - **MIT License** ([LICENSE-MIT](LICENSE-MIT))
 - **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE))
+
+---
+
+## Packaging Note
+
+`skyauth` ships with **empty default features** (`default = []`): the core client library
+compiles without any web-framework dependency. Framework integrations are opt-in
+(`axum`, `actix`, `tower`). The `tokio` dependency is minimal (runtime, net, time, sync,
+macros) rather than `full`.

@@ -1,6 +1,6 @@
 [package]
 name = "skyauth"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.88"
 authors = ["Mike <mike@example.com>"]
@@ -38,7 +38,7 @@ url = { version = "2.5", features = ["serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # Concurrency & Async
-tokio = { version = "1.40", features = ["full"] }
+tokio = { version = "1.40", default-features = false, features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
 tokio-util = "0.7"
 parking_lot = "0.12"
 ahash = "0.8"
@@ -56,7 +56,7 @@ tower-service = { version = "0.3", optional = true }
 tower-layer = { version = "0.3", optional = true }
 
 [features]
-default = ["axum", "actix", "tower"]
+default = []
 axum = ["dep:axum"]
 actix = ["dep:actix-web"]
 tower = ["dep:tower", "dep:tower-service", "dep:tower-layer"]

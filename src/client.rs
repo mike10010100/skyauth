@@ -209,7 +209,11 @@ impl CallbackParams {
 }
 
 /// Raw parsed token endpoint response representation.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+///
+/// Secret hygiene (review L8): tokens live in this struct only transiently on
+/// the exchange path — `Debug` redacts the credentials and the strings are
+/// zeroized on drop, matching the session hygiene applied everywhere else.
+#[derive(Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct TokenResponse {
     /// Access token string.
     pub access_token: String,
@@ -226,6 +230,73 @@ pub struct TokenResponse {
     pub scope: Option<String>,
     /// Authenticated subject DID.
     pub sub: String,
+}
+
+impl std::fmt::Debug for TokenResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenResponse")
+            .field("access_token", &"[REDACTED]")
+            .field("token_type", &self.token_type)
+            .field("expires_in", &self.expires_in)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("scope", &self.scope)
+            .field("sub", &self.sub)
+            .finish()
+    }
+}
+
+impl zeroize::Zeroize for TokenResponse {
+    fn zeroize(&mut self) {
+        self.access_token.zeroize();
+        if let Some(ref mut rt) = self.refresh_token {
+            rt.zeroize();
+        }
+    }
+}
+
+impl Drop for TokenResponse {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for TokenResponse {}
+
+impl TokenResponse {
+    /// Consumes the response, returning the fields by value.
+    ///
+    /// Provided because the [`Drop`] implementation (zeroization) forbids
+    /// moving fields directly out of the struct (E0509), mirroring the
+    /// [`crate::integrations::AuthenticatedUser`] owned-accessor pattern.
+    #[must_use]
+    pub fn into_parts(
+        mut self,
+    ) -> (
+        String,         // sub
+        String,         // access_token
+        Option<String>, // refresh_token
+        String,         // token_type
+        Option<String>, // scope
+        Option<u64>,    // expires_in
+    ) {
+        let sub = std::mem::take(&mut self.sub);
+        let access_token = std::mem::take(&mut self.access_token);
+        let refresh_token = self.refresh_token.take();
+        let token_type = std::mem::take(&mut self.token_type);
+        let scope = self.scope.take();
+        let expires_in = self.expires_in;
+        (
+            sub,
+            access_token,
+            refresh_token,
+            token_type,
+            scope,
+            expires_in,
+        )
+    }
 }
 
 /// Builder for constructing an [`AtprotoOAuthClient`].
@@ -661,14 +732,14 @@ impl AtprotoOAuthClient {
             .await?;
 
         if !resp_json.token_type.eq_ignore_ascii_case("DPoP") {
-            return Err(TokenError::InvalidTokenType(resp_json.token_type).into());
+            return Err(TokenError::InvalidTokenType(resp_json.token_type.clone()).into());
         }
 
         if resp_json.sub.trim().is_empty() {
             return Err(TokenError::MissingDid.into());
         }
         if let Some(ref expected_did) = state_entry.did {
-            if &resp_json.sub != expected_did {
+            if resp_json.sub != *expected_did {
                 return Err(TokenError::SubMismatch {
                     expected: expected_did.clone(),
                     actual: resp_json.sub.clone(),
@@ -677,20 +748,28 @@ impl AtprotoOAuthClient {
             }
         }
 
-        let scope_str = resp_json.scope.as_deref().ok_or(TokenError::MissingScope)?;
+        let scope_str = resp_json
+            .scope
+            .as_deref()
+            .ok_or(TokenError::MissingScope)?
+            .to_string();
 
         let has_atproto = scope_str.split_whitespace().any(|s| s == "atproto");
         if !has_atproto {
-            return Err(TokenError::MissingAtprotoScope(scope_str.to_string()).into());
+            return Err(TokenError::MissingAtprotoScope(scope_str.clone()).into());
         }
 
+        // Consume by value (E0509-safe owned accessors; see TokenResponse::into_parts).
+        let (sub, access_token, refresh_token, token_type, scope, expires_in) =
+            resp_json.into_parts();
+
         OAuthSession::new(
-            resp_json.sub,
-            resp_json.access_token,
-            resp_json.refresh_token,
-            resp_json.token_type,
-            resp_json.scope,
-            resp_json.expires_in,
+            sub,
+            access_token,
+            refresh_token,
+            token_type,
+            scope,
+            expires_in,
             state_entry.dpop_key.clone(),
             Some(state_entry.pds_endpoint.clone()),
             Some(state_entry.issuer.clone()),
@@ -813,7 +892,7 @@ impl AtprotoOAuthClient {
             .await?;
 
         if !resp_json.token_type.eq_ignore_ascii_case("DPoP") {
-            return Err(TokenError::InvalidTokenType(resp_json.token_type).into());
+            return Err(TokenError::InvalidTokenType(resp_json.token_type.clone()).into());
         }
 
         // Identity invariant (review H4): the refresh response's `sub` MUST be
@@ -834,7 +913,7 @@ impl AtprotoOAuthClient {
         if resp_json.sub != session.sub() {
             return Err(TokenError::SubMismatch {
                 expected: session.sub().to_string(),
-                actual: resp_json.sub,
+                actual: resp_json.sub.clone(),
             }
             .into());
         }
@@ -869,12 +948,11 @@ impl AtprotoOAuthClient {
             }
         }
 
-        session.rotate_tokens_with_scope(
-            resp_json.access_token,
-            resp_json.refresh_token,
-            resp_json.expires_in,
-            resp_json.scope,
-        );
+        // Consume by value (E0509-safe owned accessors; see TokenResponse::into_parts).
+        let (_sub, access_token, refresh_token, _token_type, scope, expires_in) =
+            resp_json.into_parts();
+
+        session.rotate_tokens_with_scope(access_token, refresh_token, expires_in, scope);
 
         Ok(())
     }
