@@ -895,13 +895,51 @@ impl AtprotoOAuthClient {
         let status = resp.status();
         if status == reqwest::StatusCode::BAD_REQUEST || status == reqwest::StatusCode::UNAUTHORIZED
         {
-            let is_nonce_challenge = resp
-                .headers()
-                .get("dpop-nonce")
-                .and_then(|h| h.to_str().ok())
-                .is_some();
+            // Retry ONLY on an explicit `use_dpop_nonce` challenge per RFC 9449 § 8.4.
+            // A Resource Server signals the challenge via
+            // `WWW-Authenticate: DPoP error="use_dpop_nonce"`, with the JSON error body
+            // accepted as a secondary signal (mirroring the reference client's
+            // dual-check). Retrying any 400/401 that merely carries a `DPoP-Nonce`
+            // header (conforming RS responses always carry one — review H3) would
+            // replay non-idempotent request bodies on unrelated errors like
+            // `invalid_token`.
+            //
+            // Classification strategy: the WWW-Authenticate check is non-destructive.
+            // Only when it does not match, the (bounded) body is buffered to check the
+            // JSON error field; in the non-challenge case the response is reconstructed
+            // from the buffer so the caller still receives the identical status,
+            // headers, and body.
+            // Capture headers before any body read (the read consumes `resp`).
+            // Capture headers before any body read (the read consumes `resp`).
+            let resp_headers = resp.headers().clone();
+            if !is_rs_dpop_nonce_challenge(&resp_headers) {
+                // WWW-Authenticate did not signal a challenge; check the JSON error
+                // body (bounded read — the read consumes the response, so the
+                // non-challenge path reconstructs it from the buffered bytes).
+                let bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
+                    .await
+                    .map_err(|e| TokenError::Http(e.to_string()))?;
+                let body_is_challenge =
+                    is_use_dpop_nonce_error(serde_json::from_slice(&bytes).ok().as_ref());
+                if !body_is_challenge {
+                    // Unrelated 400/401 (e.g. `invalid_token`): NO retry — return the
+                    // original response rebuilt from the buffered body (identical
+                    // status, headers, body) so the caller can handle the error.
+                    let mut builder = http::Response::builder().status(status);
+                    for (name, value) in resp_headers.iter() {
+                        builder = builder.header(name.clone(), value.clone());
+                    }
+                    let rebuilt = builder.body(bytes).map_err(|e| {
+                        TokenError::Http(format!("Failed to rebuild response: {e}"))
+                    })?;
+                    return Ok(reqwest::Response::from(rebuilt));
+                }
+                // Body confirmed the challenge; fall through to the retry block.
+            }
 
-            if is_nonce_challenge {
+            // Reaching here means either WWW-Authenticate or the buffered JSON body
+            // confirmed the `use_dpop_nonce` challenge; perform the single retry.
+            {
                 let fresh_nonce = self.nonce_cache.get_nonce(&server_origin).ok_or_else(|| {
                     TokenError::RequestFailed {
                         status: status.as_u16(),
@@ -956,14 +994,28 @@ impl AtprotoOAuthClient {
                 if retry_status == reqwest::StatusCode::BAD_REQUEST
                     || retry_status == reqwest::StatusCode::UNAUTHORIZED
                 {
-                    let retry_is_nonce = retry_resp
-                        .headers()
-                        .get("dpop-nonce")
-                        .and_then(|h| h.to_str().ok())
-                        .is_some();
-                    if retry_is_nonce {
+                    let retry_headers = retry_resp.headers().clone();
+                    if is_rs_dpop_nonce_challenge(&retry_headers) {
                         return Err(DPoPError::NonceRetryLimitExceeded.into());
                     }
+                    // Mirror the initial-path classification: a challenge may also be
+                    // signalled by the JSON error body alone. If the body does NOT
+                    // signal a challenge, rebuild and return the response so the
+                    // caller sees the original error intact.
+                    let bytes = read_bounded_body(retry_resp, MAX_OAUTH_RESPONSE_BYTES)
+                        .await
+                        .map_err(|e| TokenError::Http(e.to_string()))?;
+                    if is_use_dpop_nonce_error(serde_json::from_slice(&bytes).ok().as_ref()) {
+                        return Err(DPoPError::NonceRetryLimitExceeded.into());
+                    }
+                    let mut builder = http::Response::builder().status(retry_status);
+                    for (name, value) in retry_headers.iter() {
+                        builder = builder.header(name.clone(), value.clone());
+                    }
+                    let rebuilt = builder.body(bytes).map_err(|e| {
+                        TokenError::Http(format!("Failed to rebuild response: {e}"))
+                    })?;
+                    return Ok(reqwest::Response::from(rebuilt));
                 }
 
                 return Ok(retry_resp);
@@ -1056,6 +1108,45 @@ fn parse_oauth_error_fields(json: Option<&serde_json::Value>) -> (String, Option
 /// Checks whether a parsed JSON body is a `use_dpop_nonce` DPoP challenge.
 fn is_use_dpop_nonce_error(json: Option<&serde_json::Value>) -> bool {
     json.and_then(|j| j.get("error")).and_then(|e| e.as_str()) == Some("use_dpop_nonce")
+}
+
+/// Checks whether a Resource Server response signals a `use_dpop_nonce` DPoP
+/// nonce challenge via `WWW-Authenticate: DPoP error="use_dpop_nonce"`
+/// (RFC 9449 § 8.4; RFC 6750 § 3 challenge parameter syntax).
+///
+/// Returns `true` only when the `WWW-Authenticate` header's scheme is `DPoP`
+/// (case-insensitive) AND carries `error="use_dpop_nonce"`. A bare `DPoP-Nonce`
+/// response header is NOT sufficient — conforming RS responses carry it on
+/// every DPoP-authenticated response (review H3).
+fn is_rs_dpop_nonce_challenge(headers: &reqwest::header::HeaderMap) -> bool {
+    headers
+        .get_all(reqwest::header::WWW_AUTHENTICATE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|challenge| {
+            let challenge = challenge.trim();
+            // Scheme must be DPoP (case-insensitive), followed by params.
+            let Some(space) = challenge.find(' ') else {
+                return false;
+            };
+            let (scheme, rest) = challenge.split_at(space);
+            if !scheme.eq_ignore_ascii_case("DPoP") {
+                return false;
+            }
+            let rest = rest.trim_start();
+            rest.split(',').any(|param| {
+                let param = param.trim();
+                let Some((key, value)) = param.split_once('=') else {
+                    return false;
+                };
+                let key = key.trim();
+                if !key.eq_ignore_ascii_case("error") {
+                    return false;
+                }
+                let value = value.trim().trim_matches('"');
+                value.eq_ignore_ascii_case("use_dpop_nonce")
+            })
+        })
 }
 
 /// Reads a bounded body and parses it as lenient JSON, returning `None` on non-JSON bodies.
@@ -1236,6 +1327,65 @@ async fn send_dpop_token_request_inner(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
 mod tests {
     use super::*;
+    use reqwest::header::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn test_rs_dpop_nonce_challenge_parsing() {
+        // Exact RFC 9449 § 8.4 challenge.
+        let mut h = HeaderMap::new();
+        h.insert(
+            reqwest::header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("DPoP algs=\"ES256\", error=\"use_dpop_nonce\""),
+        );
+        assert!(is_rs_dpop_nonce_challenge(&h));
+
+        // Case-insensitive scheme + value.
+        let mut h2 = HeaderMap::new();
+        h2.insert(
+            reqwest::header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("dpop error=\"USE_DPOP_NONCE\""),
+        );
+        assert!(is_rs_dpop_nonce_challenge(&h2));
+
+        // Multiple challenge headers, one matching.
+        let mut h3 = HeaderMap::new();
+        h3.insert(
+            reqwest::header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("Bearer realm=\"x\""),
+        );
+        h3.append(
+            reqwest::header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("DPoP error=\"use_dpop_nonce\""),
+        );
+        assert!(is_rs_dpop_nonce_challenge(&h3));
+
+        // Wrong scheme.
+        let mut h4 = HeaderMap::new();
+        h4.insert(
+            reqwest::header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("Bearer error=\"use_dpop_nonce\""),
+        );
+        assert!(!is_rs_dpop_nonce_challenge(&h4));
+
+        // DPoP scheme but different error (the H3 case: must NOT retry).
+        let mut h5 = HeaderMap::new();
+        h5.insert(
+            reqwest::header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("DPoP error=\"invalid_token\""),
+        );
+        assert!(!is_rs_dpop_nonce_challenge(&h5));
+
+        // DPoP scheme with no error parameter (plain 401 challenge).
+        let mut h6 = HeaderMap::new();
+        h6.insert(
+            reqwest::header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("DPoP algs=\"ES256\""),
+        );
+        assert!(!is_rs_dpop_nonce_challenge(&h6));
+
+        // No WWW-Authenticate at all.
+        assert!(!is_rs_dpop_nonce_challenge(&HeaderMap::new()));
+    }
 
     #[test]
     fn test_client_builder_and_metadata() {

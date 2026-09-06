@@ -715,6 +715,117 @@ async fn test_xrpc_send_dpop_request_1hop_auto_nonce_challenge_success() {
 }
 
 #[tokio::test]
+async fn test_xrpc_unrelated_401_with_nonce_header_does_not_replay_body() {
+    // H3 regression: a 401 carrying a `DPoP-Nonce` header but an UNRELATED error
+    // (`invalid_token`) must NOT trigger the auto-retry — a POST body would
+    // otherwise be executed twice (non-idempotent replay).
+    let mock_pds = MockServer::start().await;
+    let key = DPoPKey::generate();
+    let hit_count = Arc::new(AtomicUsize::new(0));
+    let count_clone = hit_count.clone();
+
+    let xrpc_path = "/xrpc/com.atproto.repo.createRecord";
+    Mock::given(method("POST"))
+        .and(path(xrpc_path))
+        .respond_with(move |_: &wiremock::Request| {
+            count_clone.fetch_add(1, Ordering::SeqCst);
+            // Conforming-RS shape: nonce header present on every DPoP response,
+            // but the failure is an unrelated token error.
+            ResponseTemplate::new(401)
+                .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "pds-nonce-present")
+                .set_body_json(json!({"error": "invalid_token", "message": "token expired"}))
+        })
+        .mount(&mock_pds)
+        .await;
+
+    let client = AtprotoOAuthClient::builder()
+        .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
+        .allow_insecure_localhost(true)
+        .build()
+        .unwrap();
+
+    let xrpc_url = format!("{}{xrpc_path}", mock_pds.uri());
+    let body =
+        serde_json::to_vec(&json!({"repo": "alice", "collection": "app.bsky.feed.post"})).unwrap();
+    let res = client
+        .send_dpop_request(
+            &key,
+            reqwest::Method::POST,
+            &xrpc_url,
+            Some("dummy_access_token"),
+            Some(body),
+            Some("application/json"),
+        )
+        .await;
+
+    let resp = res.expect("response must be returned, not retried");
+    assert_eq!(resp.status(), 401);
+    let bytes = skyauth::ssrf::read_bounded_body(resp, 1_048_576)
+        .await
+        .unwrap();
+    let body_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body_json["error"], "invalid_token");
+    assert_eq!(
+        hit_count.load(Ordering::SeqCst),
+        1,
+        "exactly one upstream request — no body replay"
+    );
+}
+
+#[tokio::test]
+async fn test_xrpc_body_only_nonce_challenge_retries_with_fresh_nonce() {
+    // Compat surface (mirrors the reference client's dual-check): a challenge
+    // signalled ONLY via the JSON error body (no WWW-Authenticate header) must
+    // still trigger the single auto-retry with the fresh nonce.
+    let mock_pds = MockServer::start().await;
+    let key = DPoPKey::generate();
+
+    let xrpc_path = "/xrpc/app.bsky.actor.getPreferences";
+    Mock::given(method("GET"))
+        .and(path(xrpc_path))
+        .respond_with(
+            ResponseTemplate::new(401)
+                .insert_header("content-type", "application/json")
+                .insert_header("dpop-nonce", "body-only-nonce")
+                .set_body_json(json!({"error": "use_dpop_nonce"})),
+        )
+        .up_to_n_times(1)
+        .mount(&mock_pds)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(xrpc_path))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({"preferences": []})),
+        )
+        .mount(&mock_pds)
+        .await;
+
+    let client = AtprotoOAuthClient::builder()
+        .client_metadata(OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI))
+        .allow_insecure_localhost(true)
+        .build()
+        .unwrap();
+
+    let xrpc_url = format!("{}{xrpc_path}", mock_pds.uri());
+    let resp = client
+        .send_dpop_request(
+            &key,
+            reqwest::Method::GET,
+            &xrpc_url,
+            Some("at"),
+            None,
+            None,
+        )
+        .await
+        .expect("body-only challenge must retry and succeed");
+    assert!(resp.status().is_success());
+}
+
+#[tokio::test]
 async fn test_xrpc_2hop_nonce_challenge_fails_without_infinite_loop() {
     let mock_pds = MockServer::start().await;
     let key = DPoPKey::generate();
