@@ -351,6 +351,8 @@ pub async fn execute_par_request_with_credentials(
             }
 
             if retry_status.is_success() {
+                // Same profile enforcement on the retry response (review H2).
+                crate::dpop::require_dpop_nonce(retry_resp.headers()).map_err(ParError::from)?;
                 let body_bytes = read_bounded_body(retry_resp, MAX_OAUTH_RESPONSE_BYTES)
                     .await
                     .map_err(|e| ParError::Http(e.to_string()))?;
@@ -434,6 +436,10 @@ pub async fn execute_par_request_with_credentials(
         }
         .into());
     }
+
+    // ATProto profile (review H2): a PAR response to a DPoP-authenticated request
+    // MUST carry a DPoP-Nonce; refuse to continue with a server that omits it.
+    crate::dpop::require_dpop_nonce(resp.headers()).map_err(ParError::from)?;
 
     let body_bytes = read_bounded_body(resp, MAX_OAUTH_RESPONSE_BYTES)
         .await

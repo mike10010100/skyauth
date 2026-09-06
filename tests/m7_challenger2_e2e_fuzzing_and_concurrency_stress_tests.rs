@@ -410,6 +410,7 @@ async fn test_adv_concurrent_50_tasks_racing_exact_same_code_and_state() {
         .and(path("/oauth/token"))
         .respond_with(
             ResponseTemplate::new(200)
+                .insert_header("dpop-nonce", "m7-success-nonce") // ATProto profile (H2)
                 .insert_header("content-type", "application/json")
                 .set_body_json(json!({
                     "access_token": "at-unique-token-xyz",
@@ -544,6 +545,7 @@ async fn test_adv_code_replay_after_successful_exchange() {
         .and(path("/oauth/token"))
         .respond_with(
             ResponseTemplate::new(200)
+                .insert_header("dpop-nonce", "m7-success-nonce") // ATProto profile (H2)
                 .insert_header("content-type", "application/json")
                 .set_body_json(json!({
                     "access_token": "at-initial-123",
@@ -786,6 +788,7 @@ async fn test_adv_refresh_token_replay_attack() {
         .and(path("/oauth/token"))
         .respond_with(
             ResponseTemplate::new(200)
+                .insert_header("dpop-nonce", "m7-success-nonce") // ATProto profile (H2)
                 .insert_header("content-type", "application/json")
                 .set_body_json(json!({
                     "access_token": "at-rotated-v1",
@@ -867,6 +870,7 @@ async fn test_adv_concurrent_50_tasks_racing_same_refresh_token() {
         .and(path("/oauth/token"))
         .respond_with(
             ResponseTemplate::new(200)
+                .insert_header("dpop-nonce", "m7-success-nonce") // ATProto profile (H2)
                 .insert_header("content-type", "application/json")
                 .set_body_json(json!({
                     "access_token": "at-race-winner",
@@ -962,6 +966,7 @@ async fn test_adv_refresh_sub_did_tampering_rejection() {
         .and(path("/oauth/token"))
         .respond_with(
             ResponseTemplate::new(200)
+                .insert_header("dpop-nonce", "m7-success-nonce") // ATProto profile (H2)
                 .insert_header("content-type", "application/json")
                 .set_body_json(json!({
                     "access_token": "at-tampered",
@@ -1069,6 +1074,7 @@ async fn test_adv_malformed_discovery_protected_resource_json() {
             .and(path("/.well-known/oauth-protected-resource"))
             .respond_with(
                 ResponseTemplate::new(200)
+                    .insert_header("dpop-nonce", "m7-success-nonce") // ATProto profile (H2)
                     .insert_header("content-type", "application/json")
                     .set_body_string(body.to_string()),
             )
@@ -1102,6 +1108,7 @@ async fn test_adv_malformed_discovery_auth_server_json() {
             .and(path("/.well-known/oauth-authorization-server"))
             .respond_with(
                 ResponseTemplate::new(200)
+                    .insert_header("dpop-nonce", "m7-success-nonce") // ATProto profile (H2)
                     .insert_header("content-type", "application/json")
                     .set_body_string(body),
             )
@@ -1159,6 +1166,7 @@ async fn test_adv_malformed_par_response_json() {
             .and(path("/oauth/par"))
             .respond_with(
                 ResponseTemplate::new(201)
+                    .insert_header("dpop-nonce", "m7-success-nonce") // ATProto profile (H2)
                     .insert_header("content-type", "application/json")
                     .set_body_string(body.to_string()),
             )
@@ -1206,6 +1214,7 @@ async fn test_adv_malformed_token_response_json() {
             .and(path("/oauth/token"))
             .respond_with(
                 ResponseTemplate::new(200)
+                    .insert_header("dpop-nonce", "m7-success-nonce") // ATProto profile (H2)
                     .insert_header("content-type", "application/json")
                     .set_body_string(body),
             )
@@ -1241,6 +1250,7 @@ async fn test_adv_malformed_plc_did_document_json() {
             .and(path(format!("/{TEST_ALICE_DID}")))
             .respond_with(
                 ResponseTemplate::new(200)
+                    .insert_header("dpop-nonce", "m7-success-nonce") // ATProto profile (H2)
                     .insert_header("content-type", "application/json")
                     .set_body_string(body),
             )

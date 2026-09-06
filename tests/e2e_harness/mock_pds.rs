@@ -78,6 +78,9 @@ impl MockPds {
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "application/json")
+                    // ATProto profile: every DPoP-authenticated response MUST carry a
+                    // DPoP-Nonce (review H2; client enforces).
+                    .insert_header("dpop-nonce", "pds-profile-nonce")
                     .set_body_json(profile_response),
             )
             .mount(&self.server)
