@@ -16,25 +16,21 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
 
-use std::convert::Infallible;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context, Poll};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+// Imports are intentionally module-local in this file: every test module is
+// feature-gated, and top-level imports would be dead under other feature
+// combinations (CI enforces `cargo test --all-targets` with `-D warnings`).
 
-use http::{header, Request, Response, StatusCode};
-use p256::pkcs8::DecodePrivateKey;
+#[cfg(any(feature = "axum", feature = "actix"))]
+use std::time::SystemTime;
+
+#[cfg(any(feature = "axum", feature = "actix"))]
 use skyauth::client::{AuthorizationRequest, OAuthClientMetadata, StoredStateEntry};
-use skyauth::crypto::base64url_encode;
-use skyauth::dpop::{compute_access_token_hash, DPoPKey, DPoPVerifier};
-use skyauth::error::IntegrationError;
-use skyauth::integrations::{AuthenticatedUser, OAuthCallbackQuery, OAuthSessionExtension};
-#[cfg(feature = "tower")]
-use tower_layer::Layer;
-#[cfg(feature = "tower")]
-use tower_service::Service;
+#[cfg(any(feature = "axum", feature = "actix"))]
+use skyauth::dpop::DPoPKey;
+#[cfg(any(feature = "axum", feature = "actix"))]
 use url::Url;
 
+#[cfg(any(feature = "axum", feature = "actix"))]
 fn mock_authorization_request() -> AuthorizationRequest {
     let url = Url::parse("https://auth.bsky.social/oauth/authorize?client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json&request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3Apar_999").unwrap();
     let stored_state = StoredStateEntry {
@@ -62,6 +58,7 @@ fn mock_authorization_request() -> AuthorizationRequest {
     }
 }
 
+#[cfg(any(feature = "axum", feature = "actix"))]
 fn mock_client_metadata() -> OAuthClientMetadata {
     OAuthClientMetadata::new(
         "https://app.example.com/oauth/client-metadata.json",
@@ -73,8 +70,20 @@ fn mock_client_metadata() -> OAuthClientMetadata {
 
 #[cfg(feature = "tower")]
 mod tower_adversarial_tests {
-    use super::*;
+    use std::convert::Infallible;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::task::{Context, Poll};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use http::{header, Request, Response, StatusCode};
+    use p256::pkcs8::DecodePrivateKey;
+    use skyauth::crypto::base64url_encode;
+    use skyauth::dpop::{compute_access_token_hash, DPoPKey, DPoPVerifier};
     use skyauth::integrations::tower::OAuthAuthLayer;
+    use skyauth::integrations::{AuthenticatedUser, OAuthSessionExtension};
+    use tower_layer::Layer;
+    use tower_service::Service;
 
     #[derive(Clone)]
     struct MockService;
@@ -1088,9 +1097,12 @@ mod tower_adversarial_tests {
 
 #[cfg(feature = "axum")]
 mod axum_adversarial_tests {
-    use super::*;
+    use super::{mock_authorization_request, mock_client_metadata};
     use axum::extract::FromRequestParts;
+    use http::{header, Request, StatusCode};
+    use skyauth::error::IntegrationError;
     use skyauth::integrations::axum::{client_metadata_response, redirect_to_authorization};
+    use skyauth::integrations::{AuthenticatedUser, OAuthCallbackQuery};
 
     #[tokio::test]
     async fn test_axum_missing_code_and_state_parameters() {
@@ -1257,15 +1269,17 @@ mod axum_adversarial_tests {
 
 #[cfg(feature = "actix")]
 mod actix_adversarial_tests {
-    use super::*;
+    use super::{mock_authorization_request, mock_client_metadata};
     use actix_web::dev::Payload;
     use actix_web::http::header as actix_header;
     use actix_web::http::StatusCode as ActixStatusCode;
     use actix_web::test::TestRequest;
     use actix_web::FromRequest;
+    use skyauth::error::IntegrationError;
     use skyauth::integrations::actix::{
         client_metadata_http_response, redirect_to_authorization_http_response,
     };
+    use skyauth::integrations::{AuthenticatedUser, OAuthCallbackQuery};
 
     #[tokio::test]
     async fn test_actix_missing_code_and_state_parameters() {
