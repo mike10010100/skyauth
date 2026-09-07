@@ -6,3 +6,4 @@
 cargo-mutants output
 mutants.out/
 mutants.out.old/
+mutants.out.*/

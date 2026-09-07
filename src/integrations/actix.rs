@@ -49,7 +49,13 @@ impl FromRequest for AuthenticatedUser {
 
         if let Some(auth_header) = req.headers().get(header::AUTHORIZATION) {
             if let Ok(auth_str) = auth_header.to_str() {
-                if !auth_str.starts_with("DPoP ") && !auth_str.starts_with("dpop ") {
+                // RFC 7235 § 2.1: the auth-scheme token is case-insensitive.
+                // (Mutation-killer: the previous exact-prefix check rejected
+                // e.g. `DpOp <token>`, which the Tower middleware accepts.)
+                let scheme_ok = auth_str
+                    .split_once(' ')
+                    .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("DPoP"));
+                if !scheme_ok {
                     return ready(Err(ErrorUnauthorized(
                         "Invalid Authorization scheme: expected 'DPoP'",
                     )));
@@ -251,6 +257,67 @@ mod tests {
                 .to_str()
                 .unwrap(),
             url.as_str()
+        );
+    }
+}
+
+/// Mutation-killer regression tests (2026-09-07 mutation sweep: `&&`-to-`||`
+/// and `delete !` mutants in the scheme check survived — no test presented a
+/// lowercase `dpop ` Authorization header, which those mutants reject).
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
+mod mutation_killer_tests {
+    use super::*;
+    use actix_web::test::TestRequest;
+
+    #[tokio::test]
+    async fn killer_lowercase_dpop_scheme_is_accepted() {
+        // A lowercase `dpop ` scheme (RFC 7235: auth-scheme is
+        // case-insensitive) with no extension must NOT be rejected as an
+        // invalid scheme. The actix extractor's error body is the generic
+        // unauthorized message, distinct from the invalid-scheme message.
+        let req = TestRequest::get()
+            .uri("/api/profile")
+            .insert_header(("Authorization", "dpop some_token"))
+            .to_http_request();
+        let mut payload = Payload::None;
+        let err = AuthenticatedUser::from_request(&req, &mut payload)
+            .await
+            .unwrap_err();
+        let body = format!("{err}");
+        assert!(
+            !body.contains("Invalid Authorization scheme"),
+            "lowercase dpop scheme must pass the scheme check (got: {body})"
+        );
+
+        // Mixed case must also pass.
+        let req_mixed = TestRequest::get()
+            .uri("/api/profile")
+            .insert_header(("Authorization", "DpOp some_token"))
+            .to_http_request();
+        let mut payload2 = Payload::None;
+        let err2 = AuthenticatedUser::from_request(&req_mixed, &mut payload2)
+            .await
+            .unwrap_err();
+        let body2 = format!("{err2}");
+        assert!(
+            !body2.contains("Invalid Authorization scheme"),
+            "mixed-case dpop scheme must pass the scheme check (got: {body2})"
+        );
+
+        // Sanity: a Bearer header IS rejected as an invalid scheme.
+        let req_bearer = TestRequest::get()
+            .uri("/api/profile")
+            .insert_header(("Authorization", "Bearer tok"))
+            .to_http_request();
+        let mut payload3 = Payload::None;
+        let err3 = AuthenticatedUser::from_request(&req_bearer, &mut payload3)
+            .await
+            .unwrap_err();
+        let body3 = format!("{err3}");
+        assert!(
+            body3.contains("Invalid Authorization scheme"),
+            "Bearer must be rejected as an invalid scheme"
         );
     }
 }

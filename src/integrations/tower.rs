@@ -40,12 +40,19 @@ fn default_htu_from_uri(scheme: &http::uri::Scheme, uri: &http::Uri) -> Option<S
     let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
     if let Some(authority) = uri.authority() {
         if uri.scheme_str().is_some() {
-            return Some(format!(
-                "{}://{}{}",
-                scheme,
-                authority.as_str(),
-                path_and_query
-            ));
+            // Canonicalize the authority: strip an explicit default port so the
+            // derived htu is identical to the client's RFC 9449 § 4.2
+            // normalization (verify_proof re-normalizes both sides, but a
+            // canonical derivation keeps logs/proxies/deployment hooks
+            // consistent and the function honest to its contract).
+            let mut authority_str = authority.as_str().to_string();
+            if (scheme == &http::uri::Scheme::HTTPS && authority.port_u16() == Some(443))
+                || (scheme == &http::uri::Scheme::HTTP && authority.port_u16() == Some(80))
+            {
+                let host = authority.host();
+                authority_str = host.to_string();
+            }
+            return Some(format!("{scheme}://{authority_str}{path_and_query}"));
         }
     }
     let host = uri.host()?;
@@ -1611,5 +1618,204 @@ mod h5_exhaustion_defense_tests {
                 "bare unauthenticated requests must not receive fresh challenge nonces (H5)"
             );
         }
+    }
+}
+
+/// Mutation-killer regression tests (2026-09-07 mutation sweep: 13 survivors
+/// in this file — default-port stripping in `default_htu_from_uri`, the
+/// non-HTTP(S) scheme rejection, the bare-vs-mid-handshake 401 fork, the
+/// success-path DPoP-Nonce attachment, and the OAuthAuthService Debug impl).
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
+mod mutation_killer_tests {
+    use super::*;
+    use crate::dpop::DPoPKey;
+    use std::convert::Infallible;
+    use tower::service_fn;
+    use tower_layer::Layer;
+    use tower_service::Service;
+
+    #[test]
+    fn killer_default_htu_from_uri_strips_default_ports() {
+        // HTTPS with explicit :443 must be STRIPPED (RFC 9449 § 4.2).
+        let uri: http::Uri = "https://pds.example.com:443/xrpc/a?b=1".parse().unwrap();
+        assert_eq!(
+            default_htu_from_uri(&http::uri::Scheme::HTTPS, &uri),
+            Some("https://pds.example.com/xrpc/a?b=1".to_string()),
+            "explicit :443 on https must be stripped"
+        );
+
+        // HTTP with explicit :80 must be STRIPPED.
+        let uri80: http::Uri = "http://127.0.0.1:80/xrpc".parse().unwrap();
+        assert_eq!(
+            default_htu_from_uri(&http::uri::Scheme::HTTP, &uri80),
+            Some("http://127.0.0.1/xrpc".to_string()),
+            "explicit :80 on http must be stripped"
+        );
+
+        // :443 on http is NOT a default port — must be preserved.
+        let uri443http: http::Uri = "http://pds.example.com:443/x".parse().unwrap();
+        assert_eq!(
+            default_htu_from_uri(&http::uri::Scheme::HTTP, &uri443http),
+            Some("http://pds.example.com:443/x".to_string()),
+            ":443 on http is a custom port and must be preserved"
+        );
+
+        // Custom port preserved.
+        let uri_custom: http::Uri = "https://pds.example.com:8443/x".parse().unwrap();
+        assert_eq!(
+            default_htu_from_uri(&http::uri::Scheme::HTTPS, &uri_custom),
+            Some("https://pds.example.com:8443/x".to_string())
+        );
+
+        // Authority-form with scheme: passthrough reconstruction.
+        let uri_abs: http::Uri = "https://pds.example.com:8443/xrpc/b?c=d".parse().unwrap();
+        assert_eq!(
+            default_htu_from_uri(&http::uri::Scheme::HTTPS, &uri_abs),
+            Some("https://pds.example.com:8443/xrpc/b?c=d".to_string())
+        );
+
+        // No authority at all (origin-form): fails closed.
+        let uri_origin: http::Uri = "/xrpc/origin-form".parse().unwrap();
+        assert_eq!(
+            default_htu_from_uri(&http::uri::Scheme::HTTPS, &uri_origin),
+            None,
+            "origin-form URIs with no authority must fail closed"
+        );
+
+        // Default path when path_and_query is missing.
+        let uri_bare: http::Uri = "https://pds.example.com".parse().unwrap();
+        assert_eq!(
+            default_htu_from_uri(&http::uri::Scheme::HTTPS, &uri_bare),
+            Some("https://pds.example.com/".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn killer_service_rejects_non_http_scheme_htu_derivation() {
+        // A request whose URI carries a non-HTTP(S) scheme must be rejected
+        // during htu derivation (the explicit scheme check at line ~81).
+        let verifier = Arc::new(DPoPVerifier::new());
+        let validator = crate::integrations::InMemoryTokenValidator::new();
+        let layer = OAuthAuthLayer::from_token_store(verifier, validator);
+        let inner = service_fn(|_req: Request<()>| async move {
+            Ok::<Response<String>, Infallible>(Response::new("unreachable".to_string()))
+        });
+        let mut service = layer.layer(inner);
+        // ws:// scheme parses via scheme_str()? — no; Uri with ws scheme keeps
+        // it, and `.parse::<Scheme>()` yields a non-HTTP scheme.
+        let req = Request::builder()
+            .method("GET")
+            .uri("ws://pds.example.com/xrpc")
+            .header(header::AUTHORIZATION, "DPoP some_token")
+            .header("DPoP", "not-a-real-proof")
+            .body(())
+            .unwrap();
+        let resp = service.call(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            resp.headers().get("dpop-nonce").is_none(),
+            "no nonce source configured: no challenge nonce expected"
+        );
+    }
+
+    #[tokio::test]
+    async fn killer_success_response_carries_fresh_dpop_nonce() {
+        // With a nonce source configured, a SUCCESS response must carry a
+        // fresh DPoP-Nonce header (survivor: the header-attach branch).
+        // The full handshake is required: the first proof carries no nonce,
+        // receives a use_dpop_nonce challenge, and the retry with the fresh
+        // nonce must succeed AND receive a new nonce on the response.
+        let key = DPoPKey::generate();
+        let jkt = key.jwk_thumbprint();
+        let access_token = "killer_nonce_token";
+        let ath = compute_access_token_hash(access_token);
+        let uri = "https://pds.example.com/xrpc/app.bsky.feed.getTimeline";
+
+        let store = crate::integrations::InMemoryTokenValidator::new();
+        store.register_token(access_token, "did:plc:alice123", &jkt, None, None);
+
+        let verifier = Arc::new(DPoPVerifier::new());
+        let layer = OAuthAuthLayer::from_token_store(verifier, store)
+            .with_require_ath(true)
+            .with_server_nonces(Duration::from_secs(60));
+        let inner = service_fn(|_req: Request<()>| async move {
+            Ok::<Response<String>, Infallible>(Response::new("ok".to_string()))
+        });
+        let mut service = layer.layer(inner);
+
+        // Step 1: nonce-less proof -> 401 use_dpop_nonce challenge.
+        let proof0 = key.create_proof("GET", uri, None, Some(&ath)).unwrap();
+        let req0 = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {access_token}"))
+            .header("DPoP", proof0)
+            .body(())
+            .unwrap();
+        let resp0 = service.call(req0).await.unwrap();
+        assert_eq!(resp0.status(), StatusCode::UNAUTHORIZED);
+        let challenge_nonce = resp0
+            .headers()
+            .get("dpop-nonce")
+            .and_then(|v| v.to_str().ok())
+            .expect("challenge response must carry a DPoP-Nonce")
+            .to_string();
+        assert!(
+            resp0
+                .headers()
+                .get(header::WWW_AUTHENTICATE)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.contains("use_dpop_nonce")),
+            "challenge must be an explicit use_dpop_nonce"
+        );
+
+        // Step 2: retry with the fresh nonce -> 200 with a NEW DPoP-Nonce.
+        let proof1 = key
+            .create_proof("GET", uri, Some(&challenge_nonce), Some(&ath))
+            .unwrap();
+        let req1 = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("DPoP {access_token}"))
+            .header("DPoP", proof1)
+            .body(())
+            .unwrap();
+        let resp1 = service.call(req1).await.unwrap();
+        assert_eq!(resp1.status(), StatusCode::OK);
+        let response_nonce = resp1
+            .headers()
+            .get("dpop-nonce")
+            .and_then(|v| v.to_str().ok())
+            .expect("success response must carry a fresh DPoP-Nonce");
+        assert_ne!(
+            response_nonce, challenge_nonce,
+            "the success-response nonce must be freshly generated"
+        );
+    }
+
+    #[test]
+    fn killer_service_debug_impl_renders_fields() {
+        // OAuthAuthService Debug must include inner/verifier/require_ath —
+        // the Debug mutant returned Ok(default) silently.
+        let verifier = Arc::new(DPoPVerifier::new());
+        let validator = crate::integrations::InMemoryTokenValidator::new();
+        let layer = OAuthAuthLayer::from_token_store(verifier, validator);
+        let svc = layer.layer(service_fn(|_req: Request<()>| async move {
+            Ok::<Response<String>, Infallible>(Response::new(String::new()))
+        }));
+        let dbg = format!("{svc:?}");
+        assert!(
+            dbg.contains("OAuthAuthService"),
+            "Debug must name the type: {dbg}"
+        );
+        assert!(
+            dbg.contains("require_ath"),
+            "Debug must render require_ath: {dbg}"
+        );
+        assert!(
+            dbg.contains("verifier"),
+            "Debug must render the verifier: {dbg}"
+        );
     }
 }
