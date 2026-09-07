@@ -106,6 +106,13 @@ jobs:
       - name: Run documentation tests
         run: cargo test --doc --all-features
 
+      - name: "Run tests with default features (packaging contract: default = [])"
+        # Review L6: the empty default feature set is part of the crate's
+        # packaging contract — this leg fails if a future change accidentally
+        # makes a framework integration (axum/actix/tower) a default
+        # dependency or breaks the feature-gated test cfgs.
+        run: cargo test --all-targets
+
       - name: Verify ATProto Lexicon & RFC Schema Synchronization
         run: |
           chmod +x ./scripts/sync_specs.sh

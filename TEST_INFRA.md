@@ -95,10 +95,10 @@ cargo test --doc --all-features
 
 # Run specific tiers
 cargo test --test tier1_feature_tests   # Tier 1: 125 Feature Tests
-cargo test --test tier2_boundary_tests  # Tier 2: 125 Boundary & Corner Tests
+cargo test --test tier2_boundary_tests  # Tier 2: 127 Boundary & Corner Tests
 cargo test --test tier3_pairwise_tests  # Tier 3: 30 Pairwise Interaction Tests
 cargo test --test tier4_workload_tests  # Tier 4: 5 Realistic Workload Tests
-cargo test --test tier5_adversarial_tests  # Tier 5: 65 Adversarial & Attack-Path Tests
+cargo test --test tier5_adversarial_tests  # Tier 5: 66 Adversarial & Attack-Path Tests
 
 # Formal verification gates
 bash scripts/run_verus.sh               # Verus SMT deductive proofs (self-bootstrapping)

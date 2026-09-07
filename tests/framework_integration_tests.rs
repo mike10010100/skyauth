@@ -1,20 +1,20 @@
 //! Integration Tests for Framework Adapters (Axum, Actix, Tower).
 
-use std::convert::Infallible;
-use std::sync::Arc;
+// Imports are intentionally module-local in this file: every test module is
+// feature-gated, and top-level imports would be dead under other feature
+// combinations (CI enforces `cargo test --all-targets` with `-D warnings`).
+
+#[cfg(any(feature = "axum", feature = "actix"))]
 use std::time::SystemTime;
 
-use http::{header, Request, Response, StatusCode};
+#[cfg(any(feature = "axum", feature = "actix"))]
 use skyauth::client::{AuthorizationRequest, OAuthClientMetadata, StoredStateEntry};
-use skyauth::dpop::{compute_access_token_hash, DPoPKey, DPoPVerifier};
-use skyauth::error::IntegrationError;
-use skyauth::integrations::{AuthenticatedUser, OAuthCallbackQuery, OAuthSessionExtension};
-#[cfg(feature = "tower")]
-use tower_layer::Layer;
-#[cfg(feature = "tower")]
-use tower_service::Service;
+#[cfg(any(feature = "axum", feature = "actix"))]
+use skyauth::dpop::DPoPKey;
+#[cfg(any(feature = "axum", feature = "actix"))]
 use url::Url;
 
+#[cfg(any(feature = "axum", feature = "actix"))]
 fn mock_authorization_request() -> AuthorizationRequest {
     let url = Url::parse("https://auth.bsky.social/oauth/authorize?client_id=https%3A%2F%2Ffeed.example.com%2Fclient-metadata.json&request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3Apar_12345").unwrap();
     let stored_state = StoredStateEntry {
@@ -42,6 +42,7 @@ fn mock_authorization_request() -> AuthorizationRequest {
     }
 }
 
+#[cfg(any(feature = "axum", feature = "actix"))]
 fn mock_client_metadata() -> OAuthClientMetadata {
     OAuthClientMetadata::new(
         "https://feed.example.com/oauth/client-metadata.json",
@@ -53,9 +54,12 @@ fn mock_client_metadata() -> OAuthClientMetadata {
 
 #[cfg(feature = "axum")]
 mod axum_tests {
-    use super::*;
+    use super::{mock_authorization_request, mock_client_metadata};
     use axum::extract::FromRequestParts;
+    use http::{header, Request, StatusCode};
+    use skyauth::error::IntegrationError;
     use skyauth::integrations::axum::{client_metadata_response, redirect_to_authorization};
+    use skyauth::integrations::{AuthenticatedUser, OAuthCallbackQuery, OAuthSessionExtension};
 
     #[tokio::test]
     async fn test_axum_extract_callback_query_valid() {
@@ -172,7 +176,7 @@ mod axum_tests {
 
 #[cfg(feature = "actix")]
 mod actix_tests {
-    use super::*;
+    use super::{mock_authorization_request, mock_client_metadata};
     use actix_web::dev::Payload;
     use actix_web::http::header as actix_header;
     use actix_web::test::TestRequest;
@@ -180,6 +184,7 @@ mod actix_tests {
     use skyauth::integrations::actix::{
         client_metadata_http_response, redirect_to_authorization_http_response,
     };
+    use skyauth::integrations::{AuthenticatedUser, OAuthCallbackQuery, OAuthSessionExtension};
 
     #[tokio::test]
     async fn test_actix_extract_callback_query_valid() {
@@ -269,9 +274,16 @@ mod actix_tests {
 
 #[cfg(feature = "tower")]
 mod tower_tests {
-    use super::*;
+    use std::convert::Infallible;
+    use std::sync::Arc;
+
+    use http::{header, Request, Response, StatusCode};
+    use skyauth::dpop::{compute_access_token_hash, DPoPKey, DPoPVerifier};
     use skyauth::integrations::tower::OAuthAuthLayer;
+    use skyauth::integrations::AuthenticatedUser;
     use tower::service_fn;
+    use tower_layer::Layer;
+    use tower_service::Service;
 
     #[tokio::test]
     async fn test_tower_middleware_full_dpop_handshake_flow() {
