@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-09-07
+
+Documentation-truth audit release. No library code changes — every public claim
+was re-verified against reality (all gates re-run and green), and every
+stale claim corrected. See the audit notes per item below.
+
+### Fixed
+
+- **Documentation Drift (full audit, 7 findings)**: TEST_READY.md was stale wholesale (825 → 848 tests, 797 → 848 passed, 16 → 15 doc-tests with 1 intentionally `ignore`d, 87.95% → 87.98% coverage, "21 Verus obligations" → 69, "4/4 Kani harnesses" → 8/8, "7 symbolic harnesses" → 8, Tier 2: 126 → 127, suite arithmetic corrected to 353 tiers + 334 integration across 20 binaries + 161 unit = 848). TEST_INFRA.md tier counts corrected (125 → 127, 65 → 66). All figures re-measured from `cargo test`/`cargo llvm-cov` output.
+- **README Quick-Start Version Pin**: `skyauth = "0.2"` → `"0.3"` (0.3.0 is published on crates.io, verified via the crates.io API); Kani harness count 7 → 8 with the complete harness list.
+- **PRD Architecture Tree Omitted `src/kernels/`**: the 0.3.0 headline dual-representation kernel module was missing from the §4.1 tree; added, along with the kernel-bound Verus layer in the verification line.
+- **PRD Milestone 7 & Roadmap Staleness**: v0.2.0 was listed as "hardening release in progress" (published 2026-08-30); §7.1/§7.3 named 0.3.0 as the target for `private_key_jwt` and client pooling — both shipped in 0.3.0 without those features; re-targeted to a future release and the publication record completed (0.1.0 / 0.2.0 / 0.3.0 dates).
+- **CHANGELOG `private_key_jwt` Staleness**: the 0.3.0 "Removed" entry still claimed the feature was "planned for 0.3.0"; corrected to a future milestone (see PRD §7.3).
+
+### Added
+
+- **CI Default-Features Test Leg**: the 0.3.0 changelog entry "CI gained a default-features test leg" described a leg that did not exist in `ci.yml`. Added it now: `cargo test --all-targets` (no features) runs in the `test` job, protecting the `default = []` packaging contract (review L6) — the leg fails if a framework integration ever becomes a default dependency or a feature-gated test cfg breaks.
+- **Audit Verification Record**: Kani anti-vacuity was re-verified with the exact CI gate command (`cargo kani -Z source-coverage --harness proof_ --coverage`): 8/8 harnesses verified, **31/31 cover properties SATISFIED, 0 UNSATISFIABLE** — no vacuous proofs. All 11 `kani::assume` sites audited as honest domain-bounds (each paired with bidirectional false-accept/false-reject parity assertions); both Verus `assume_specification` bindings confirmed postcondition-free, with the adapter≡core equivalence instead proven by the Kani refinement harnesses.
+
 ## [0.3.0] - 2026-09-05
 
 ### Added
@@ -23,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - **Dead Error Variants** (review L11): `TokenError::MissingCnf` (the `cnf` claim is structurally mandatory — a token without it fails deserialization) and `TokenError::UseDPoPNonce` (nonce challenges are handled transparently by the auto-retry paths).
-- **Static `client_secret` Confidential-Client Mode** (review H1, **Breaking**): ATProto OAuth has no shared client secret — confidential clients authenticate with `private_key_jwt` (ES256 client assertions). The previous `OAuthClientMetadata::with_client_secret` path sent the static secret to a **user-selected** authorization server in the first PAR request, an unconditional credential-disclosure path for any malicious identity. `client_secret` is removed from `OAuthClientMetadata`, `with_client_secret`/`execute_par_request_with_credentials` are gone, and generated framework metadata now advertises `token_endpoint_auth_method: "none"` exclusively. `private_key_jwt` support is planned for 0.3.0.
+- **Static `client_secret` Confidential-Client Mode** (review H1, **Breaking**): ATProto OAuth has no shared client secret — confidential clients authenticate with `private_key_jwt` (ES256 client assertions). The previous `OAuthClientMetadata::with_client_secret` path sent the static secret to a **user-selected** authorization server in the first PAR request, an unconditional credential-disclosure path for any malicious identity. `client_secret` is removed from `OAuthClientMetadata`, `with_client_secret`/`execute_par_request_with_credentials` are gone, and generated framework metadata now advertises `token_endpoint_auth_method: "none"` exclusively. `private_key_jwt` support remains a future milestone (see PRD §7.3).
 
 ### Fixed
 

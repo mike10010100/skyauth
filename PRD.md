@@ -88,7 +88,9 @@ skyauth/
 │   ├── session.rs          # OAuthSession with token rotation & zeroization
 │   ├── ssrf.rs             # SsrfFilter: restricted IP/hostname filtering, DNS pinning, bounded bodies
 │   ├── store.rs            # 64-shard OAuthStateStore & pluggable OAuthStore trait
-│   ├── verification/       # Verus contracts, Kani harnesses, executable formal models
+│   ├── kernels/            # Dual-representation security kernels (plain rustc + verus! twins):
+│   │                       #   ip_filter, ct_eq, pkce_bytes, htu_components, nsid_bytes
+│   ├── verification/       # Verus contracts, kernel-bound Verus proofs, Kani harnesses, executable formal models
 │   ├── integrations/       # axum / actix / tower middleware, AccessTokenValidator implementations
 │   └── error.rs            # Strongly-typed AtprotoOAuthError enum
 ├── lexicons/               # Bundled official ATProto Lexicon schemas
@@ -271,7 +273,7 @@ To prevent subtle schema divergence, naming errors, or casing bugs (e.g. `camelC
 - [ ] **Milestone 7: Documentation, Benchmarks & Crates.io Publication** *(docs complete; latency benchmarks & crates.io publication pending → see §7.1 trade-off notes and release checklist)*
   - 100% rustdoc documentation coverage (`missing_docs` denied).
   - Latency benchmarks asserting $< 1.0\text{ms}$ proof generation.
-  - Publish `v0.2.0` to crates.io and GitHub. *(v0.1.0 published 2026-08-29; v0.2.0 hardening release in progress.)*
+  - Publish `v0.2.0` to crates.io and GitHub. *(v0.1.0 published 2026-08-29; v0.2.0 published 2026-08-30; v0.3.0 published 2026-09-05 — the 0.3.x hardening release — with `private_key_jwt` confidential-client support and per-origin client pooling still open; see §7.)*
 
 ---
 
@@ -288,7 +290,7 @@ This section records deliberate engineering trade-offs made during 0.2.0 develop
 - A shared client's connection pool outlives DNS re-validation: a pooled connection routed to a previously-approved IP silently bypasses the per-request `resolve()` pinning that defeats DNS rebinding. Simple, obviously-correct per-request pinning was preferred over pool-lifetime reasoning.
 - Costs are dominated by the same-path DPoP signing and state-store checks (all sub-millisecond), so handshake overhead only matters in already-fast network conditions.
 
-**Upgrade path (candidate for 0.3.0)**: implement a `PinnedClientCache` in `SsrfFilter`:
+**Upgrade path (candidate for a future 0.4.x release)**: implement a `PinnedClientCache` in `SsrfFilter`:
 - Keyed by origin, storing the verified `SocketAddr` alongside the pooled client.
 - TTL-based re-validation of resolved IPs on reuse, plus an explicit `invalidate(host)` hook.
 - Formal invariant to re-prove: pinned-IP stability across pool reuse (Kani/Verus property test that a cached client's socket address is re-validated, never stale).
@@ -301,7 +303,7 @@ Opt-in via a builder knob; keep the current per-request behavior as the default 
 
 ### 7.3 Confidential-Client `private_key_jwt`
 
-Client metadata advertises `private_key_jwt` support (per the ATProto profile). The static `client_secret` path (`client_secret_post`) was **removed** in the 0.2.x security remediation (review H1: a user-selected authorization server receives the static secret in the first PAR request — an unconditional credential-disclosure path with no place in the ATProto protocol). Auto-assertion generation (ES256-signed `client_assertion` bound to a registered JWKS) is a candidate for a 0.3.0 milestone.
+Client metadata advertises `private_key_jwt` support (per the ATProto profile). The static `client_secret` path (`client_secret_post`) was **removed** in the 0.2.x security remediation (review H1: a user-selected authorization server receives the static secret in the first PAR request — an unconditional credential-disclosure path with no place in the ATProto protocol). Auto-assertion generation (ES256-signed `client_assertion` bound to a registered JWKS) remains open and is the next feature milestone.
 
 ---
 

@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-The complete, multi-tiered End-to-End (E2E) test suite for `skyauth` has been designed, implemented, and verified. As of the **v0.2.0 verification upgrade**, the suite comprises **825 passing test cases** (plus 16 doc-tests) spanning five testing tiers, RFC/lexicon vector suites, formal-verification harnesses, and unit/property suites, achieving a **100% pass rate** across the 25 system features defined in `PRD.md`. Formal verification stands at **69 Verus obligations** (21 standalone + 48 kernel-bound over the shipped `src/kernels/` source) and **7 Kani symbolic harnesses** with a machine-inventoried 57-tag anti-vacuity gate.
+The complete, multi-tiered End-to-End (E2E) test suite for `skyauth` has been designed, implemented, and verified. As of the **v0.3.0 audit**, the suite comprises **848 passing test cases** (plus 15 doc-tests; 1 further doc example is intentionally `ignore`d) spanning five testing tiers, RFC/lexicon vector suites, formal-verification harnesses, and unit/property suites, achieving a **100% pass rate** across the 25 system features defined in `PRD.md`. Formal verification stands at **69 Verus obligations** (21 standalone + 48 kernel-bound over the shipped `src/kernels/` source) and **8 Kani symbolic harnesses** with a machine-inventoried 57-tag anti-vacuity gate.
 
 All tests follow strict **opaque-box methodology**, deriving expectations directly from authoritative RFC specifications (**RFC 9449, RFC 9126, RFC 7636, RFC 8414, RFC 9728, RFC 7638, RFC 2104**) and standard ATProto OAuth specifications.
 
@@ -13,14 +13,14 @@ All tests follow strict **opaque-box methodology**, deriving expectations direct
 | Test Suite / Tier | File Path | Total Tests | Passed | Failed | Description |
 |---|---|---|---|---|---|
 | **Tier 1: Feature Coverage** | `tests/tier1_feature_tests.rs` | 125 | 125 | 0 | $\ge 5$ distinct test cases for every one of the 25 system features. |
-| **Tier 2: Boundary & Corner** | `tests/tier2_boundary_tests.rs` | 126 | 126 | 0 | $\ge 5$ edge cases, extreme inputs, and boundary conditions per feature (incl. `expires_in` overflow fail-closed regression). |
+| **Tier 2: Boundary & Corner** | `tests/tier2_boundary_tests.rs` | 127 | 127 | 0 | $\ge 5$ edge cases, extreme inputs, and boundary conditions per feature (incl. `expires_in` overflow fail-closed regression). |
 | **Tier 3: Pairwise Combinations** | `tests/tier3_pairwise_tests.rs` | 30 | 30 | 0 | Combinatorial interactions across Crypto, DPoP, PKCE, Discovery, PAR, & Sharding. |
 | **Tier 4: Realistic Workloads** | `tests/tier4_workload_tests.rs` | 5 | 5 | 0 | Realistic end-to-end login lifecycles, 3-hop auto-nonce recovery, & high concurrency. |
 | **Tier 5: Adversarial & Fuzzing** | `tests/tier5_adversarial_tests.rs` | 66 | 66 | 0 | Adversarial DPoP/JWT mutation, SSRF boundary fuzzing, & attack-path rejection (incl. `jti` 256/257 byte boundary). |
-| **RFC Vector & Formal Suites** | `tests/*_vectors.rs`, formal verification, stress & challenger suites | 344 | 344 | 0 | Official RFC 7636/9449 vectors, schema compliance, E2E harness rounds, proptest fuzzing, Kani fallback execution, tag-inventory meta-test (21 suites; per-binary counts via `cargo test --test <name>`). |
-| **Unit & Property Tests** | `src/` unit modules | 147 | 147 | 0 | Pure-Rust primitives, proptest property testing, PKCS#8 serialization, & kernel unit tests. |
-| **Documentation Tests** | rustdoc examples | 16 | 16 | 0 | README/quickstart examples verified via `cargo test --doc`. |
-| **Total Test Suite** | **All Targets** | **825 (+16 doc)** | **825** | **0** | **100% Pass Rate (0 Failures, 0 Warnings).** Tier rows: 125 + 126 + 30 + 5 + 66 = 352; integration/vector/formal suites: 326 across 21 binaries; `src/` unit modules: 147. |
+| **RFC Vector & Formal Suites** | `tests/*_vectors.rs`, formal verification, stress & challenger suites | 334 | 334 | 0 | Official RFC 7636/9449 vectors, schema compliance, E2E harness rounds, proptest fuzzing, Kani fallback execution, tag-inventory meta-test (20 suites; per-binary counts via `cargo test --test <name>`). |
+| **Unit & Property Tests** | `src/` unit modules | 161 | 161 | 0 | Pure-Rust primitives, proptest property testing, PKCS#8 serialization, & kernel unit tests. |
+| **Documentation Tests** | rustdoc examples | 15 | 15 | 0 | README/quickstart examples verified via `cargo test --doc` (1 further example intentionally `ignore`d). |
+| **Total Test Suite** | **All Targets** | **848 (+15 doc)** | **848** | **0** | **100% Pass Rate (0 Failures, 0 Warnings).** Tier rows: 125 + 127 + 30 + 5 + 66 = 353; integration/vector/formal suites: 334 across 20 binaries; `src/` unit modules: 161. |
 
 ---
 
@@ -62,12 +62,12 @@ All tests follow strict **opaque-box methodology**, deriving expectations direct
 |---|---|---|---|
 | **Code Formatting** | Zero diffs against rustfmt standards | `cargo fmt --all -- --check` | **PASS (0 diffs)** |
 | **Strict Clippy Guard** | Zero compiler or clippy warnings with `-D warnings` | `cargo clippy --all-targets --all-features -- -D warnings` | **PASS (0 warnings)** |
-| **Test Execution** | 100% tests pass across all crates & targets | `cargo test --all-targets --all-features` | **PASS (797/797 passed)** |
-| **Documentation Tests** | All rustdoc examples compile & pass | `cargo test --doc --all-features` | **PASS (15/15)** |
-| **Code Coverage** | Line coverage ≥ 80% | `cargo llvm-cov --all-features --fail-under-lines 80` | **PASS (87.95% lines)** |
-| **Specification Drift** | Local lexicons/schemas match upstream canon | `bash scripts/sync_specs.sh --verify` | **PASS (zero drift)** |
-| **Verus Deductive Verification** | All SMT proof obligations discharge | `bash scripts/run_verus.sh` | **PASS (21 verified, 0 errors)** |
-| **Kani Bounded Model Checking** | All harnesses verified, all anti-vacuity covers reachable | `cargo kani` | **PASS (4/4 harnesses, 2,755 checks, all covers satisfied)** |
+| **Test Execution** | 100% tests pass across all crates & targets | `cargo test --all-targets --all-features` | **PASS (848/848 passed)** |
+| **Documentation Tests** | All rustdoc examples compile & pass | `cargo test --doc --all-features` | **PASS (15/15; 1 intentionally `ignore`d example)** |
+| **Code Coverage** | Line coverage ≥ 80% | `cargo llvm-cov --all-features --fail-under-lines 80` | **PASS (87.98% lines)** |
+| **Specification Drift** | Local lexicons/schemas match upstream canon | `bash scripts/sync_specs.sh --verify` | **PASS (zero drift; 3 lexicons match upstream)** |
+| **Verus Deductive Verification** | All SMT proof obligations discharge | `bash scripts/run_verus.sh` | **PASS (69 verified: 21 standalone + 48 kernel-bound, 0 errors)** |
+| **Kani Bounded Model Checking** | All harnesses verified, all anti-vacuity covers reachable | `cargo kani` | **PASS (8/8 harnesses, 0 failures; 57-tag inventory machine-checked)** |
 | **Memory & Concurrency** | Zero race conditions, sharded state concurrency | Multi-threaded tests in Tier 1-4 | **PASS** |
 | **Opaque-Box Hermeticity**| Zero unmocked external network calls | Ephemeral Wiremock & in-memory harness | **PASS** |
 
