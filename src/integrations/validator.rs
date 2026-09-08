@@ -1152,3 +1152,391 @@ mod m5_enforcement_tests {
         );
     }
 }
+
+/// Mutation-killer regression tests (2026-09-07 mutation sweep: the
+/// integrations shard, once its config was fixed, measured a 33.3% kill rate
+/// with 86 survivors in this file). Each test pins a behavior a surviving
+/// mutant had silently broken.
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
+mod mutation_killer_tests {
+    use super::*;
+    use crate::dpop::DPoPKey;
+    use p256::ecdsa::SigningKey;
+    use rand::thread_rng;
+
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    fn minted_validator(now: u64) -> (JwtAccessTokenValidator, String, String) {
+        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_verifying_key = *auth_key.verifying_key();
+        let client_jkt = DPoPKey::generate().jwk_thumbprint();
+        let claims = JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now + 3600,
+            &client_jkt,
+        )
+        .with_audience("https://pds.example.com")
+        .with_scope("atproto transition:generic");
+        let jwt = claims.sign_jwt(&auth_key, None).unwrap();
+        let validator = JwtAccessTokenValidator::new()
+            .with_verifying_key(auth_verifying_key)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com")
+            .with_required_scope("atproto");
+        (validator, jwt, client_jkt)
+    }
+
+    // ---- CnfClaim::jkt() accessor (survivor at line 46) ----
+
+    #[test]
+    fn killer_cnf_claim_jkt_accessor() {
+        let cnf = CnfClaim::new("thumbprint-abc");
+        assert_eq!(
+            cnf.jkt(),
+            "thumbprint-abc",
+            "jkt() must return the stored value"
+        );
+        assert_ne!(cnf.jkt(), "");
+        // Round-trip through serde preserves the accessor's value.
+        let round: CnfClaim = serde_json::from_str(&serde_json::to_string(&cnf).unwrap()).unwrap();
+        assert_eq!(round.jkt(), "thumbprint-abc");
+    }
+
+    // ---- with_trusted_key / with_expected_subject builder effects ----
+    // (survivors at lines 257/295: Default::default() mutants)
+
+    #[test]
+    fn killer_with_expected_subject_is_enforced() {
+        let now = now_secs();
+        let (validator, jwt, jkt) = minted_validator(now);
+        // Matching subject passes.
+        let ok = validator.clone().with_expected_subject("did:plc:alice123");
+        assert!(ok.verify_token_sync(&jwt, &jkt).is_ok());
+        // Mismatched subject is rejected — the builder must have taken effect.
+        let wrong = validator.with_expected_subject("did:plc:bob");
+        assert!(
+            wrong.verify_token_sync(&jwt, &jkt).is_err(),
+            "with_expected_subject must reject a different subject"
+        );
+    }
+
+    #[test]
+    fn killer_with_trusted_key_kid_routing() {
+        let now = now_secs();
+        let auth_key = SigningKey::random(&mut thread_rng());
+        let verifying = *auth_key.verifying_key();
+        let jkt = DPoPKey::generate().jwk_thumbprint();
+        let claims = JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now + 3600,
+            &jkt,
+        )
+        .with_audience("https://pds.example.com");
+        let jwt = claims.sign_jwt(&auth_key, Some("key-2026")).unwrap();
+
+        // Registered kid resolves and validates.
+        let validator = JwtAccessTokenValidator::new()
+            .with_trusted_key("key-2026", verifying)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
+        assert!(validator.verify_token_sync(&jwt, &jkt).is_ok());
+
+        // A kid the validator does NOT know, while other trusted keys exist,
+        // must fail — not silently fall back to the default key.
+        let validator2 = JwtAccessTokenValidator::new()
+            .with_trusted_key("other-kid", verifying)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
+        assert!(
+            validator2.verify_token_sync(&jwt, &jkt).is_err(),
+            "unknown kid with non-empty trusted_keys must not fall back"
+        );
+    }
+
+    // ---- verify_token_sync boundaries (survivors 375/380/416/459/461/481/489) ----
+
+    #[test]
+    fn killer_nbf_and_exp_boundaries_are_strict() {
+        let auth_key = SigningKey::random(&mut thread_rng());
+        let verifying = *auth_key.verifying_key();
+        let jkt = DPoPKey::generate().jwk_thumbprint();
+        let now = now_secs();
+
+        // nbf in the future beyond leeway: rejected. At now: accepted.
+        let future_nbf = JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now + 3600,
+            &jkt,
+        )
+        .with_audience("https://pds.example.com")
+        .with_nbf(now + 3600);
+        let jwt_future = future_nbf.sign_jwt(&auth_key, None).unwrap();
+        let validator = JwtAccessTokenValidator::new()
+            .with_verifying_key(verifying)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
+        assert!(
+            validator.verify_token_sync(&jwt_future, &jkt).is_err(),
+            "nbf far in the future must be rejected"
+        );
+
+        // exp boundary: exp == now (leeway 0) is already expired; exp > now
+        // is accepted.
+        let zero_leeway = validator.with_clock_skew(Duration::ZERO);
+        let exp_now =
+            JwtAccessTokenClaims::new("https://auth.example.com", "did:plc:alice123", now, &jkt)
+                .with_audience("https://pds.example.com");
+        let jwt_exp_now = exp_now.sign_jwt(&auth_key, None).unwrap();
+        assert!(
+            zero_leeway.verify_token_sync(&jwt_exp_now, &jkt).is_err(),
+            "exp == now with zero leeway must be expired"
+        );
+
+        let live = minted_validator(now);
+        assert!(
+            live.0.verify_token_sync(&live.1, &live.2).is_ok(),
+            "exp > now must validate"
+        );
+    }
+
+    #[test]
+    fn killer_audience_must_match_exactly() {
+        let now = now_secs();
+        let auth_key = SigningKey::random(&mut thread_rng());
+        let verifying = *auth_key.verifying_key();
+        let jkt = DPoPKey::generate().jwk_thumbprint();
+
+        // Array-audience containing the expected value: accepted.
+        let mut claims = JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now + 3600,
+            &jkt,
+        );
+        claims.aud = Some(serde_json::Value::Array(vec![
+            serde_json::Value::String("https://other.example.com".to_string()),
+            serde_json::Value::String("https://pds.example.com".to_string()),
+        ]));
+        let jwt_arr = claims.sign_jwt(&auth_key, None).unwrap();
+        let validator = JwtAccessTokenValidator::new()
+            .with_verifying_key(verifying)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
+        assert!(
+            validator.verify_token_sync(&jwt_arr, &jkt).is_ok(),
+            "array audience containing the RS must be accepted"
+        );
+
+        // Array audience NOT containing the RS: rejected (the `.any` match
+        // arm must be exercised in both directions).
+        let mut wrong_claims = JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now + 3600,
+            &jkt,
+        );
+        wrong_claims.aud = Some(serde_json::Value::Array(vec![serde_json::Value::String(
+            "https://elsewhere.example.com".to_string(),
+        )]));
+        let jwt_wrong = wrong_claims.sign_jwt(&auth_key, None).unwrap();
+        assert!(
+            validator.verify_token_sync(&jwt_wrong, &jkt).is_err(),
+            "array audience without the RS must be rejected"
+        );
+
+        // Non-string audience value: rejected (unwrap_or(false) arm).
+        let mut num_claims = JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now + 3600,
+            &jkt,
+        );
+        num_claims.aud = Some(serde_json::Value::Array(vec![serde_json::Value::from(
+            42u64,
+        )]));
+        let jwt_num = num_claims.sign_jwt(&auth_key, None).unwrap();
+        assert!(
+            validator.verify_token_sync(&jwt_num, &jkt).is_err(),
+            "non-string audience entries must never match"
+        );
+    }
+
+    #[test]
+    fn killer_required_scope_must_be_present() {
+        let now = now_secs();
+        let auth_key = SigningKey::random(&mut thread_rng());
+        let verifying = *auth_key.verifying_key();
+        let jkt = DPoPKey::generate().jwk_thumbprint();
+
+        // No scope claim at all + required scope: rejected.
+        let claims = JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now + 3600,
+            &jkt,
+        )
+        .with_audience("https://pds.example.com");
+        let jwt = claims.sign_jwt(&auth_key, None).unwrap();
+        let validator = JwtAccessTokenValidator::new()
+            .with_verifying_key(verifying)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com")
+            .with_required_scope("atproto");
+        assert!(
+            validator.verify_token_sync(&jwt, &jkt).is_err(),
+            "token without scope claim must fail a required-scope check"
+        );
+    }
+
+    #[test]
+    fn kid_routing_none_when_multiple_trusted_keys_and_no_default() {
+        // With >1 trusted keys, no default key, and a kid-less token: there is
+        // no unambiguous key — validation must fail (not pick one at random).
+        let now = now_secs();
+        let auth_key = SigningKey::random(&mut thread_rng());
+        let verifying = *auth_key.verifying_key();
+        let other_key = *SigningKey::random(&mut thread_rng()).verifying_key();
+        let jkt = DPoPKey::generate().jwk_thumbprint();
+        let claims = JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now + 3600,
+            &jkt,
+        )
+        .with_audience("https://pds.example.com");
+        let jwt = claims.sign_jwt(&auth_key, None).unwrap();
+        let validator = JwtAccessTokenValidator::new()
+            .with_trusted_key("kid-a", verifying)
+            .with_trusted_key("kid-b", other_key)
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com");
+        assert!(
+            validator.verify_token_sync(&jwt, &jkt).is_err(),
+            "kid-less token with multiple trusted keys and no default must fail"
+        );
+    }
+
+    // ---- InMemoryTokenValidator lifecycle (survivors 584-648) ----
+
+    #[test]
+    fn killer_in_memory_validator_full_lifecycle() {
+        let store = InMemoryTokenValidator::new();
+        assert!(store.is_empty(), "fresh store must be empty");
+        assert_eq!(store.len(), 0, "fresh store len must be 0");
+
+        // register_token + validate_sync happy path.
+        store.register_token(
+            "token-a",
+            "did:plc:alice123",
+            "jkt-a",
+            Some("atproto".to_string()),
+            Some(SystemTime::now() + Duration::from_secs(3600)),
+        );
+        assert_eq!(store.len(), 1, "len must count registered tokens");
+        assert!(!store.is_empty());
+        let user = store.validate_sync("token-a", "jkt-a").unwrap();
+        assert_eq!(user.did, "did:plc:alice123");
+        assert_eq!(user.access_token, "token-a");
+        assert_eq!(user.dpop_thumbprint, "jkt-a");
+        assert_eq!(user.scope.as_deref(), Some("atproto"));
+
+        // Wrong thumbprint: rejected.
+        assert!(
+            store.validate_sync("token-a", "jkt-b").is_err(),
+            "mismatched thumbprint must be rejected"
+        );
+        // Unknown token: rejected.
+        assert!(
+            store.validate_sync("never-registered", "jkt-a").is_err(),
+            "unknown token must be rejected"
+        );
+
+        // revoke_token removes exactly the target.
+        store.register_token(
+            "token-b",
+            "did:plc:bob",
+            "jkt-b",
+            None,
+            Some(SystemTime::now() + Duration::from_secs(3600)),
+        );
+        assert_eq!(store.len(), 2);
+        store.revoke_token("token-a");
+        assert_eq!(store.len(), 1, "revoke must remove exactly one entry");
+        assert!(store.validate_sync("token-a", "jkt-a").is_err());
+        assert!(store.validate_sync("token-b", "jkt-b").is_ok());
+
+        // prune_expired evicts only expired entries; count is exact.
+        store.register_token(
+            "token-expired",
+            "did:plc:expired",
+            "jkt-e",
+            None,
+            Some(SystemTime::now() - Duration::from_secs(1)),
+        );
+        assert_eq!(store.len(), 2);
+        let pruned = store.prune_expired();
+        assert_eq!(
+            pruned, 1,
+            "prune_expired must evict exactly the expired entry"
+        );
+        assert_eq!(store.len(), 1);
+        assert!(store.validate_sync("token-expired", "jkt-e").is_err());
+        assert!(store.validate_sync("token-b", "jkt-b").is_ok());
+
+        // Expired tokens are rejected at validation time with the exact
+        // boundary: expires_at == now is already expired (strict >).
+        store.register_token(
+            "token-now",
+            "did:plc:now",
+            "jkt-n",
+            None,
+            Some(SystemTime::now()),
+        );
+        assert!(
+            store.validate_sync("token-now", "jkt-n").is_err(),
+            "expires_at == now must be expired"
+        );
+    }
+
+    #[test]
+    fn killer_register_session_binds_session_thumbprint() {
+        let key = DPoPKey::generate();
+        let session = crate::session::OAuthSession::new(
+            "did:plc:alice123",
+            "at_session_token",
+            None,
+            "DPoP",
+            Some("atproto".to_string()),
+            Some(3600),
+            key.clone(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let expected_jkt = key.jwk_thumbprint();
+        let store = InMemoryTokenValidator::new();
+        store.register_session(&session);
+        assert_eq!(store.len(), 1);
+        // Correct thumbprint validates and carries the session DID/scope.
+        let user = store
+            .validate_sync("at_session_token", &expected_jkt)
+            .unwrap();
+        assert_eq!(user.did, "did:plc:alice123");
+        assert_eq!(user.scope.as_deref(), Some("atproto"));
+        // A different thumbprint is rejected — register_session must bind
+        // the session's real key.
+        assert!(store
+            .validate_sync("at_session_token", "some-other-jkt")
+            .is_err());
+    }
+}

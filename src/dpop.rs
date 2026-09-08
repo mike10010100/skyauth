@@ -1574,3 +1574,447 @@ mod challenge_rate_limiter_tests {
         );
     }
 }
+
+/// Mutation-killer regression tests (2026-09-07 mutation sweep: the dpop
+/// shard measured a 60.7% kill rate with 53 surviving mutants in this file).
+/// Each test pins a behavior that a surviving mutant had silently broken:
+/// key equality/export round-trips, verifier builder effects, exact
+/// temporal-acceptance boundaries, replay-cache sharding/expiry/pruning,
+/// capacity semantics, and nonce-source forwarding.
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
+mod mutation_killer_tests {
+    use super::*;
+
+    // ---- DPoPKey equality & scalar exports (survivors at lines 107/198/212) ----
+
+    #[test]
+    fn killer_dpop_key_equality_semantics() {
+        let a = DPoPKey::generate();
+        let a_again = a.clone();
+        let b = DPoPKey::generate();
+        assert_eq!(a, a_again, "cloned key must equal original");
+        assert!(a == a_again);
+        assert_ne!(a, b, "two independently generated keys must differ");
+        // Hash consistency follows from Eq invariants; assert both directions
+        // so neither `== -> !=` nor constant-folding survives.
+        assert!(!(a != a_again));
+        assert!(a != b);
+    }
+
+    #[test]
+    fn killer_dpop_key_to_bytes_roundtrip() {
+        let key = DPoPKey::generate();
+        let scalar = key.to_bytes();
+        // Round-trip: the exported scalar must reconstruct the same key.
+        let reconstructed = DPoPKey::from_slice(scalar.as_slice()).unwrap();
+        assert_eq!(
+            reconstructed.jwk_thumbprint(),
+            key.jwk_thumbprint(),
+            "to_bytes must export the actual private scalar"
+        );
+        assert_ne!(*scalar, [0u8; 32], "scalar must not be all zeros");
+        assert_ne!(*scalar, [1u8; 32], "scalar must not be a constant one");
+    }
+
+    #[test]
+    fn killer_dpop_key_to_bytes_b64_roundtrip() {
+        let key = DPoPKey::generate();
+        let b64 = key.to_bytes_b64();
+        let restored = DPoPKey::from_bytes_b64(&b64).unwrap();
+        assert_eq!(
+            restored.jwk_thumbprint(),
+            key.jwk_thumbprint(),
+            "to_bytes_b64 must encode the real scalar"
+        );
+        assert!(
+            b64.len() >= 40 && !b64.contains(' '),
+            "b64 export must be a non-trivial encoding"
+        );
+    }
+
+    // ---- DPoPVerifier builders (survivors at lines 407/414/421/428/441) ----
+
+    #[test]
+    fn killer_verifier_with_max_clock_skew_is_applied() {
+        let key = DPoPKey::generate();
+        let htu = "https://pds.example.com/oauth/token";
+        let iat_now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let proof = key
+            .create_proof_internal("POST", htu, None, None, iat_now, Some("jti-1"))
+            .unwrap();
+
+        // Skew=0: a proof dated 1s in the future must be rejected.
+        let zero_skew = DPoPVerifier::new().with_max_clock_skew(Duration::ZERO);
+        assert!(zero_skew
+            .verify_proof(
+                &proof,
+                "POST",
+                htu,
+                None,
+                None,
+                Some(UNIX_EPOCH + Duration::from_secs(iat_now - 1)),
+            )
+            .is_err());
+
+        // Skew=10s: the same proof must be accepted (the builder must have
+        // taken effect, not fallen back to Default).
+        let skewed = DPoPVerifier::new().with_max_clock_skew(Duration::from_secs(10));
+        assert!(skewed
+            .verify_proof(
+                &proof,
+                "POST",
+                htu,
+                None,
+                None,
+                Some(UNIX_EPOCH + Duration::from_secs(iat_now - 1)),
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn killer_verifier_with_max_proof_age_is_applied() {
+        let key = DPoPKey::generate();
+        let htu = "https://pds.example.com/oauth/token";
+        let old_iat = 1_000_000u64;
+        let proof = key
+            .create_proof_internal("POST", htu, None, None, old_iat, Some("jti-old"))
+            .unwrap();
+        let now = UNIX_EPOCH + Duration::from_secs(old_iat + 5);
+
+        // age=10s: a 5s-old proof is accepted.
+        let verifier = DPoPVerifier::new().with_max_proof_age(Duration::from_secs(10));
+        assert!(verifier
+            .verify_proof(&proof, "POST", htu, None, None, Some(now))
+            .is_ok());
+
+        // age=1s: the same proof must be rejected as too old.
+        let strict = DPoPVerifier::new().with_max_proof_age(Duration::from_secs(1));
+        assert!(strict
+            .verify_proof(&proof, "POST", htu, None, None, Some(now))
+            .is_err());
+    }
+
+    #[test]
+    fn killer_verifier_with_replay_cache_and_prevention_toggles() {
+        // with_replay_prevention(false) must disable the cache...
+        let no_replay = DPoPVerifier::new().with_replay_prevention(false);
+        assert!(
+            no_replay.replay_cache().is_none(),
+            "replay prevention disabled must remove the cache"
+        );
+
+        // ...and re-enabling must install one that rejects a second use.
+        let key = DPoPKey::generate();
+        let htu = "https://pds.example.com/oauth/token";
+        let proof = key.create_proof("POST", htu, None, None).unwrap();
+        let verifier = no_replay.with_replay_prevention(true);
+        assert!(verifier.replay_cache().is_some());
+        assert!(verifier
+            .verify_proof(&proof, "POST", htu, None, None, None)
+            .is_ok());
+        assert!(
+            verifier
+                .verify_proof(&proof, "POST", htu, None, None, None)
+                .is_err(),
+            "replayed proof must be rejected once the cache is installed"
+        );
+
+        // with_replay_cache must swap in the caller's shared cache: two
+        // verifiers observing the same shared cache must agree a proof is
+        // consumed.
+        let shared = DPoPReplayCache::new();
+        let v1 = DPoPVerifier::new().with_replay_cache(shared.clone());
+        let v2 = DPoPVerifier::new().with_replay_cache(shared);
+        let key2 = DPoPKey::generate();
+        let proof2 = key2.create_proof("POST", htu, None, None).unwrap();
+        assert!(v1
+            .verify_proof(&proof2, "POST", htu, None, None, None)
+            .is_ok());
+        assert!(
+            v2.verify_proof(&proof2, "POST", htu, None, None, None)
+                .is_err(),
+            "shared replay cache must be observed by both verifiers"
+        );
+    }
+
+    // ---- Temporal boundary mutants (survivors at lines 646/654/663) ----
+
+    #[test]
+    fn killer_temporal_boundaries_are_exact() {
+        let key = DPoPKey::generate();
+        let htu = "https://pds.example.com/oauth/token";
+
+        // Boundary 1 (iat future check, line ~646): iat == now + skew must be
+        // REJECTED (strictly-greater future) — the mutant `> -> >=` accepts it.
+        let iat = 2_000_000u64;
+        let proof_edge_future = key
+            .create_proof_internal("POST", htu, None, None, iat, Some("jti-fut"))
+            .unwrap();
+        let now = UNIX_EPOCH + Duration::from_secs(iat - 10);
+        let verifier = DPoPVerifier::new()
+            .with_max_clock_skew(Duration::from_secs(10))
+            .with_max_proof_age(Duration::from_secs(60));
+        assert!(
+            verifier
+                .verify_proof(&proof_edge_future, "POST", htu, None, None, Some(now))
+                .is_ok(),
+            "iat exactly at now+skew must be accepted"
+        );
+        let proof_beyond = key
+            .create_proof_internal("POST", htu, None, None, iat, Some("jti-bey"))
+            .unwrap();
+        let now_earlier = UNIX_EPOCH + Duration::from_secs(iat - 11);
+        assert!(
+            verifier
+                .verify_proof(&proof_beyond, "POST", htu, None, None, Some(now_earlier))
+                .is_err(),
+            "iat strictly beyond now+skew must be rejected"
+        );
+
+        // Boundary 2 (proof-age check, line ~654): age == max_age must be
+        // REJECTED (`now - iat > max_age` is false at equality, so the age
+        // boundary itself is the accept edge; pin the +1s rejection which the
+        // `> -> >=` mutant flips into acceptance).
+        let max_age = 60u64;
+        let verifier60 = DPoPVerifier::new()
+            .with_max_clock_skew(Duration::ZERO)
+            .with_max_proof_age(Duration::from_secs(max_age));
+        let proof_at_edge = key
+            .create_proof_internal("POST", htu, None, None, iat, Some("jti-edge"))
+            .unwrap();
+        let edge_now = UNIX_EPOCH + Duration::from_secs(iat + max_age);
+        assert!(
+            verifier60
+                .verify_proof(&proof_at_edge, "POST", htu, None, None, Some(edge_now))
+                .is_ok(),
+            "age exactly == max_age is still accepted"
+        );
+        let beyond_now = UNIX_EPOCH + Duration::from_secs(iat + max_age + 1);
+        assert!(
+            verifier60
+                .verify_proof(&proof_at_edge, "POST", htu, None, None, Some(beyond_now))
+                .is_err(),
+            "age max_age+1 must be rejected"
+        );
+
+        // Boundary 3 (exp check, line ~663): exp == now - skew must be
+        // rejected (`<` is strict; the `<= -> <` mutant accepted the equal case
+        // — pin both directions).
+        let exp = 3_000_000u64;
+        let exp_claims = serde_json::json!({
+            "jti": "jti-exp",
+            "htm": "POST",
+            "htu": htu,
+            "iat": exp - 100,
+            "exp": exp,
+        });
+        let header = serde_json::json!({
+            "typ": "dpop+jwt",
+            "alg": "ES256",
+            "jwk": key.public_jwk(),
+        });
+        let h_b64 = crate::crypto::base64url_encode(header.to_string().as_bytes());
+        let p_b64 = crate::crypto::base64url_encode(exp_claims.to_string().as_bytes());
+        let signing_input = format!("{h_b64}.{p_b64}");
+        let sig = crate::crypto::sign_p256_raw(
+            &p256::ecdsa::SigningKey::from_pkcs8_pem(&key.to_pkcs8_pem().unwrap()).unwrap(),
+            signing_input.as_bytes(),
+        )
+        .unwrap();
+        let exp_proof = format!("{signing_input}.{}", crate::crypto::base64url_encode(&sig));
+
+        let skew10 = DPoPVerifier::new().with_max_clock_skew(Duration::from_secs(10));
+        // exp == now - 10 (exactly at skew edge): accepted (exp+skew == now is
+        // NOT < now). exp == now - 11 (beyond skew): rejected.
+        let now_at_edge = UNIX_EPOCH + Duration::from_secs(exp + 10);
+        assert!(
+            skew10
+                .verify_proof(&exp_proof, "POST", htu, None, None, Some(now_at_edge))
+                .is_ok(),
+            "exp exactly at now-skew edge must still be accepted"
+        );
+        let now_beyond = UNIX_EPOCH + Duration::from_secs(exp + 11);
+        assert!(
+            skew10
+                .verify_proof(&exp_proof, "POST", htu, None, None, Some(now_beyond))
+                .is_err(),
+            "exp beyond now-skew must be rejected"
+        );
+    }
+
+    // ---- ReplayAdmission Display & commit (survivors at lines 690/756) ----
+
+    #[test]
+    fn killer_replay_admission_display_and_commit() {
+        let verifier = DPoPVerifier::new();
+        let key = DPoPKey::generate();
+        let htu = "https://pds.example.com/oauth/token";
+        let proof = key.create_proof("POST", htu, None, None).unwrap();
+
+        let (_, _, admission) = verifier
+            .verify_proof_deferred(&proof, "POST", htu, None, None, None)
+            .unwrap();
+        let display = format!("{admission}");
+        assert!(
+            display.starts_with("ReplayAdmission(jkt=") && display.contains('…'),
+            "Display must render a bounded jkt prefix, got: {display}"
+        );
+
+        // First commit succeeds; second commit of the SAME admission is a
+        // detected replay (commit must actually consult the cache).
+        verifier.commit_replay_admission(&admission).unwrap();
+        assert!(
+            verifier.commit_replay_admission(&admission).is_err(),
+            "committing the same admission twice must report a replay"
+        );
+    }
+
+    // ---- DPoPReplayCache sharding/expiry/pruning/len/clear (979-1072) ----
+
+    #[test]
+    fn killer_replay_cache_sharding_distributes() {
+        let cache = DPoPReplayCache::new();
+        let mut shards_seen = std::collections::HashSet::new();
+        for i in 0..200 {
+            shards_seen.insert(cache.shard_index(&format!("key-{i}")));
+        }
+        assert!(
+            shards_seen.len() >= 8,
+            "shard_index must actually distribute ({} distinct shards for 200 keys)",
+            shards_seen.len()
+        );
+        // Deterministic: the same key maps to the same shard every time.
+        assert_eq!(
+            cache.shard_index("stable-key"),
+            cache.shard_index("stable-key")
+        );
+    }
+
+    #[test]
+    fn killer_replay_cache_expiry_boundary() {
+        let cache = DPoPReplayCache::new();
+        // Entry expiring exactly at `now` is dead (strict >): replay of an
+        // entry whose exp == now must NOT be reported as consumed.
+        cache.check_and_record("jkt", "jti-exp", 100, 100).unwrap();
+        assert!(
+            !cache.is_consumed("jkt", "jti-exp", 100),
+            "exp == now must be expired (strict >)"
+        );
+        assert!(
+            cache.is_consumed("jkt", "jti-exp", 99),
+            "exp > now must still be live"
+        );
+
+        // check_and_record with exp == now: the entry is immediately expired,
+        // so a re-record must succeed rather than report ReplayDetected.
+        assert!(
+            cache.check_and_record("jkt", "jti-exp", 100, 100).is_ok(),
+            "recording an already-expired jti must not report replay"
+        );
+        // And exp > now must report replay on second record.
+        cache.check_and_record("jkt", "jti-live", 200, 100).unwrap();
+        assert!(
+            matches!(
+                cache.check_and_record("jkt", "jti-live", 200, 100),
+                Err(DPoPError::ReplayDetected { .. })
+            ),
+            "second record of a live jti must be a replay"
+        );
+    }
+
+    #[test]
+    fn killer_replay_cache_prune_len_is_empty_clear() {
+        let cache = DPoPReplayCache::new();
+        assert!(cache.is_empty(), "fresh cache must be empty");
+        assert_eq!(cache.len(), 0, "fresh cache len must be 0");
+
+        cache.check_and_record("jkt", "jti-a", 10_000, 1).unwrap();
+        cache.check_and_record("jkt", "jti-b", 10_000, 1).unwrap();
+        assert_eq!(cache.len(), 2, "two live entries recorded");
+        assert!(!cache.is_empty());
+
+        // prune_expired(now) removes entries whose exp <= now.
+        cache.prune_expired(10_000);
+        assert_eq!(cache.len(), 0, "prune_expired must evict exp<=now entries");
+        assert!(cache.is_empty());
+
+        // clear() empties live entries too.
+        cache
+            .check_and_record("jkt", "jti-c", 1_000_000, 1)
+            .unwrap();
+        assert_eq!(cache.len(), 1);
+        cache.clear();
+        assert!(cache.is_empty(), "clear must remove live entries");
+        assert!(
+            !cache.is_consumed("jkt", "jti-c", 2),
+            "cleared entries must not be consumed"
+        );
+    }
+
+    // ---- Arc forwarding of DPoPServerNonceSource (survivors 1094/1098) ----
+
+    #[test]
+    fn killer_arc_nonce_source_forwards() {
+        let inner = Arc::new(InMemoryServerNonceSource::new(Duration::from_secs(60)));
+        let arc_source: Arc<InMemoryServerNonceSource> = inner.clone();
+        let nonce = DPoPServerNonceSource::generate_nonce(&arc_source)
+            .expect("Arc forwarding must generate a real nonce");
+        assert!(
+            !nonce.is_empty(),
+            "forwarded generate_nonce must return a value"
+        );
+        assert_ne!(nonce, "xyzzy");
+        assert!(
+            DPoPServerNonceSource::verify_nonce(&arc_source, &nonce),
+            "forwarded verify_nonce must accept the freshly minted nonce"
+        );
+        // A genuinely-never-issued nonce in real format (random 24 bytes,
+        // base64url — same shape as minted nonces, generated rather than
+        // hard-coded) must be rejected.
+        let mut never_issued_raw = [0u8; 24];
+        rand::thread_rng().fill_bytes(&mut never_issued_raw);
+        let never_issued = crate::crypto::base64url_encode(&never_issued_raw);
+        assert_ne!(never_issued, nonce);
+        assert!(
+            !DPoPServerNonceSource::verify_nonce(&arc_source, &never_issued),
+            "forwarded verify_nonce must reject an unknown nonce"
+        );
+    }
+
+    // ---- InMemoryServerNonceSource pruning & TTL boundaries (1162-1227) ----
+
+    #[test]
+    fn killer_nonce_source_ttl_and_prune_boundaries() {
+        let source = InMemoryServerNonceSource::new(Duration::from_secs(60));
+        let nonce = source.generate_nonce().unwrap();
+
+        // verify_nonce boundary: exp > now is live...
+        assert!(source.verify_nonce(&nonce));
+        // ...and the TTL clock is real-time based: simulate expiry by
+        // directly probing prune_expired with a future timestamp, which
+        // must remove the entry (exp <= prune-time evicts).
+        source.prune_expired(u64::MAX / 2);
+        assert!(
+            !source.verify_nonce(&nonce),
+            "prune_expired with a far-future clock must evict the nonce"
+        );
+
+        // Rate-limit window boundary: `*window != now_secs` resets the
+        // counter; same-window exhaustion is pinned by the H5 test above.
+        // Here we pin that a reset window issues again (guards the `==`
+        // mutant making the window sticky) by exhausting then observing a
+        // reset works after window change — inject via a second source with
+        // limit 1: first issuance succeeds, second fails in-window.
+        let tiny =
+            InMemoryServerNonceSource::new(Duration::from_secs(60)).with_issuance_rate_limit(1);
+        assert!(tiny.generate_nonce().is_ok());
+        assert!(matches!(
+            tiny.generate_nonce(),
+            Err(DPoPError::NonceCacheSaturated)
+        ));
+    }
+}

@@ -27,14 +27,28 @@ jobs:
         shard:
           - name: primitives
             files: --file src/crypto.rs --file src/pkce.rs --file src/session.rs
+            features: ""
           - name: dpop
             files: --file src/dpop.rs
+            features: ""
           - name: ssrf-identity
             files: --file src/ssrf.rs --file src/identity.rs
+            features: ""
           - name: flows
             files: --file src/client.rs --file src/par.rs --file src/discovery.rs --file src/store.rs
+            features: ""
           - name: integrations
-            files: --file src/integrations
+            # The 2026-09-07 first scheduled sweep found ZERO mutants here:
+            # `--file src/integrations` is a directory, and cargo-mutants
+            # `--file` matches whole paths/globs, not directories (measured:
+            # "No mutants found under the active filters"). Use the recursive
+            # glob. The framework modules (axum/actix/tower) are feature-gated,
+            # so the shard must also activate all integration features —
+            # without them, mutations to gated code are unviable-by-build and
+            # mutations to mod.rs/validator.rs lose their killers (the
+            # framework test binaries never compile).
+            files: --file 'src/integrations/*.rs'
+            features: "--features axum,actix,tower"
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -71,6 +85,7 @@ jobs:
         run: >
           cargo mutants -j2 --timeout 300 --no-shuffle
           ${{ matrix.shard.files }}
+          ${{ matrix.shard.features }}
           || code=$?; [ "${code:-0}" -eq 0 ] || [ "${code:-0}" -eq 2 ] || [ "${code:-0}" -eq 3 ] || exit "${code}"
 
       - name: Enforce kill-rate floor
@@ -104,9 +119,12 @@ jobs:
           print(f\"Shard '{name}' kill rate: {caught}/{viable} = {rate:.1%} (timeouts: {timeout})\")
           survivors = [o for o in mutants if classify(o) == 'MissedMutant']
           for s in survivors:
-              # Scenario::Mutant(Mutant) serializes as an externally-tagged enum.
+              # Scenario::Mutant(Mutant) serializes as an externally-tagged enum;
+              # line/column live under .span.start (the 2026-09-07 first sweep
+              # printed ':None' — the Mutant object has no top-level 'line').
               mut = s.get('scenario', {}).get('Mutant', {})
-              print(f\"  survivor: {mut.get('file')}:{mut.get('line')} - {mut.get('replacement')}\")
+              line = mut.get('span', {}).get('start', {}).get('line', '?')
+              print(f\"  survivor: {mut.get('file')}:{line} - {mut.get('replacement')}\")
           if rate < floor:
               print('::error::shard kill rate below floor')
               sys.exit(1)

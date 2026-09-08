@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-09-08
+
+Mutation-sweep remediation release (the 2026-09-07 first scheduled sweep failed
+two shards). The mutation-killer test effort itself surfaced **two latent
+production bugs**, now fixed; plus test-suite hardening and the mutation
+workflow fixes that made the sweep actionable.
+
+### Fixed
+
+- **Case-Sensitive Authorization Scheme in Axum/Actix Extractors** (mutation-sweep finding, **production bug**): `AuthenticatedUser` extractors accepted only exact `DPoP ` or exact `dpop ` prefixes — a `DpOp <token>` header (legal per RFC 7235 § 2.1: the auth-scheme token is case-insensitive, and the Tower middleware already handles it correctly) was rejected as an invalid scheme. Both extractors now parse the scheme token and compare `eq_ignore_ascii_case("DPoP")`. Killer tests present lowercase and mixed-case schemes in both frameworks.
+- **`default_htu_from_uri` Did Not Canonicalize Default Ports on Absolute-Form URIs** (mutation-sweep finding, **production bug**): the absolute-form branch formatted `authority.as_str()` verbatim, retaining an explicit `:443`/`:80` — contradicting the function's own RFC 9449 § 4.2 contract (and its origin-form branch, which strips them). Benign for verification (the DPoP verifier re-normalizes both sides) but inconsistent for logs, proxies, and deployment hooks. The authority is now canonicalized (default ports stripped) on both branches; pinned by port-stripping killer tests for `https :443`, `http :80`, `:443`-on-http (custom, preserved), and custom ports.
+- **Mutation Sweep `integrations` Shard Found Zero Mutants**: the shard filter was `--file src/integrations` — a *directory* — and cargo-mutants `--file` matches whole paths/globs, not directories (measured: `No mutants found under the active filters`, `mutants.json == []`, the kill-rate gate then crashed on the missing report). The filter is now the recursive glob `--file 'src/integrations/*.rs'` (176 mutants discovered), and the shard activates `--features axum,actix,tower` — without them the feature-gated framework modules' mutations are unviable-by-build and `mod.rs`/`validator.rs` mutants lose their killers (the framework test binaries never compile).
+- **Mutation Gate Survivor Line Numbers**: the kill-rate gate printed `survivor: src/dpop.rs:None` because it read a top-level `line` field that does not exist in the cargo-mutants `Mutant` schema (line/column live under `.span.start`); the printer now reads the span so triage output names real locations.
+
+### Added
+
+- **Mutation-Killer Regression Tests (44 tests across `dpop.rs` + `integrations/`)**: the dpop shard measured a **60.7% kill rate** (53 surviving mutants) and the integrations shard — once its config was fixed — **33.3%** (86 survivors). Every survivor mapped to a genuine untested behavior; each is now pinned by a dedicated killer test:
+  - `dpop.rs` (13 tests): `DPoPKey` equality semantics + scalar export round-trips (`to_bytes`/`to_bytes_b64` must round-trip the real private scalar); verifier builder effects (`with_max_clock_skew`, `with_max_proof_age` configured values actually observed, shared `with_replay_cache` visibility across verifiers, `with_replay_prevention` toggles, `replay_cache()`); exact temporal boundaries (`iat` at/beyond `now+skew`, proof age at/beyond `max_age`, `exp` at/beyond `now-skew`); two-phase replay admission (`ReplayAdmission` Display renders the bounded `jkt` prefix; `commit_replay_admission` double-commit is a detected replay); replay-cache sharding determinism, strict-`>` expiry boundary, `prune_expired`/`len`/`is_empty`/`clear` semantics; `Arc` nonce-source forwarding; nonce-source TTL/prune boundaries.
+  - `integrations/` (31 tests): `AuthenticatedUser` borrowed + owned accessors, `with_scope`, zeroize-on-drop hygiene; `OAuthCallbackQuery` builder paths; `CnfClaim::jkt` accessor; `JwtAccessTokenValidator` kid routing (unknown kid with populated map does not fall back; kid-less token with multiple trusted keys fails), `with_expected_subject` enforcement, strict `nbf`/`exp` boundaries, array-audience matching in both directions, non-string audience rejection, required-scope enforcement; `InMemoryTokenValidator` full lifecycle (register/validate/revoke/prune/len/is_empty, `register_session` binds the session's real thumbprint, `expires_at == now` is expired); Tower `default_htu_from_uri` port canonicalization, non-HTTP(S) scheme rejection, success-response DPoP-Nonce attachment (full challenge handshake), service Debug impl; axum/actix lowercase + mixed-case scheme acceptance.
+
+### Changed
+
+- **Mutation Workflow Per-Shard Features**: `mutation.yml` shards now carry a `features` matrix field (empty for core shards, `--features axum,actix,tower` for integrations), keeping each shard's build matching the code it mutates.
+
 ## [0.3.1] - 2026-09-07
 
 Documentation-truth audit release. No library code changes — every public claim
