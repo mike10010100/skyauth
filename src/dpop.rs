@@ -1972,8 +1972,15 @@ mod mutation_killer_tests {
             DPoPServerNonceSource::verify_nonce(&arc_source, &nonce),
             "forwarded verify_nonce must accept the freshly minted nonce"
         );
+        // A genuinely-never-issued nonce in real format (random 24 bytes,
+        // base64url — same shape as minted nonces, generated rather than
+        // hard-coded) must be rejected.
+        let mut never_issued_raw = [0u8; 24];
+        rand::thread_rng().fill_bytes(&mut never_issued_raw);
+        let never_issued = crate::crypto::base64url_encode(&never_issued_raw);
+        assert_ne!(never_issued, nonce);
         assert!(
-            !DPoPServerNonceSource::verify_nonce(&arc_source, "never-issued-nonce"),
+            !DPoPServerNonceSource::verify_nonce(&arc_source, &never_issued),
             "forwarded verify_nonce must reject an unknown nonce"
         );
     }
