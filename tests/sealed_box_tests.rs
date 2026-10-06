@@ -118,16 +118,15 @@ fn test_debug_redacts_key() {
 
 #[test]
 fn test_cross_box_equivalence() {
-    let hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
-    let a = SealedBox::from_hex(hex).expect("hex");
-    let bytes: [u8; 32] = {
-        let mut k = [0u8; 32];
-        for (i, c) in hex.as_bytes().as_chunks::<2>().0.iter().enumerate() {
-            k[i] = u8::from_str_radix(std::str::from_utf8(c).expect("utf8"), 16).expect("hex");
-        }
-        k
-    };
-    let b = SealedBox::new(bytes);
+    // Two independently-constructed boxes derived from the same passphrase must
+    // agree: one via the passphrase KDF, one via an explicit key built by
+    // hex-encoding that KDF's output (exercising `from_hex`).
+    let passphrase = std::env::var("SKYAUTH_TEST_KDF_INPUT")
+        .unwrap_or_else(|_| "cross-box-equivalence".to_string());
+    let a = SealedBox::from_secret_passphrase(&passphrase);
+    let digest = skyauth::crypto::sha256_digest(passphrase.as_bytes());
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    let b = SealedBox::from_hex(&hex).expect("hex roundtrip");
     let sealed = a.seal(b"same-key").expect("seal");
     assert_eq!(b.open_string(&sealed).expect("open"), "same-key");
 }
