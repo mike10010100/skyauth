@@ -61,13 +61,19 @@ impl SealedBox {
                 bytes.len()
             )));
         }
-        let mut key = [0u8; 32];
-        for (i, chunk) in bytes.as_chunks::<2>().0.iter().enumerate() {
-            let pair = std::str::from_utf8(chunk)
-                .map_err(|e| CryptoError::InvalidKey(format!("Key is not valid UTF-8: {e}")))?;
-            key[i] = u8::from_str_radix(pair, 16)
-                .map_err(|e| CryptoError::InvalidKey(format!("Key is not valid hex: {e}")))?;
-        }
+        let key = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|chunk| {
+                let pair = std::str::from_utf8(chunk)
+                    .map_err(|e| CryptoError::InvalidKey(format!("Key is not valid UTF-8: {e}")))?;
+                u8::from_str_radix(pair, 16)
+                    .map_err(|e| CryptoError::InvalidKey(format!("Key is not valid hex: {e}")))
+            })
+            .collect::<Result<Vec<u8>, CryptoError>>()?
+            .try_into()
+            .map_err(|_| CryptoError::InvalidKey("Key must decode to 32 bytes".to_string()))?;
         Ok(Self { key })
     }
 

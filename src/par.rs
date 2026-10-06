@@ -212,7 +212,7 @@ pub async fn execute_par_request(
     let proof = dpop_key.create_proof("POST", par_endpoint, initial_nonce.as_deref(), None)?;
 
     let resp = client
-        .post(par_endpoint)
+        .post(parsed_url.clone())
         .header(reqwest::header::HOST, host_header.clone())
         .header("content-type", "application/x-www-form-urlencoded")
         .header("accept", "application/json")
@@ -277,7 +277,7 @@ pub async fn execute_par_request(
                 .map_err(ParError::from)?;
 
             let retry_resp = retry_client
-                .post(par_endpoint)
+                .post(parsed_url.clone())
                 .header(reqwest::header::HOST, retry_host_header)
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("accept", "application/json")

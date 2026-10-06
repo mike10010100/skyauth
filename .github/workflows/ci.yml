@@ -193,6 +193,11 @@ jobs:
         uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
         with:
           command: 'cargo-kani'
+          # Pin the verifier: `latest` pulled Kani 0.68.0 / CBMC 6.11.0, whose
+          # solver is dramatically slower on the (unchanged) PKCE refinement
+          # harness and times out the job. 0.67.0 / CBMC 6.8.0 is the version
+          # that last passed on main.
+          kani-version: '0.67.0'
           # `--coverage` is an unstable Kani option (verified locally): it requires
           # `-Z source-coverage` to be enabled.
           args: '-Z source-coverage --harness proof_ --coverage | tee kani_output.txt'
