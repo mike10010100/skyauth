@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-10-07
+
+Release cut so downstream crates (`skybase`, `skybouncer`) can consume the
+pulled-up cryptographic primitives from crates.io rather than only from path
+dependencies.
+
+### Added
+
+- **`sealed::SealedBox` authenticated-encryption primitive** (`src/sealed.rs`, #17):
+  an authenticated-encryption helper consolidating the AEAD construction
+  previously duplicated across downstream crates. Adds an optional `aes-gcm`
+  dependency where the AES-GCM backend is selected.
+- **`CryptoError` seal/open variants** (`src/error.rs`, #17): `Seal`, `Open`,
+  `InvalidEnvelope`, and `Utf8` variants for the new primitive.
+- **Security/test fixes**: pinned `kani-version` to `0.67.0` and cleared CodeQL
+  alerts in `par.rs`, `sealed.rs`, and `crypto.rs`.
+
+### Changed
+
+- No breaking API changes: additive modules only.
+
 ## [0.3.2] - 2026-09-08
 
 Mutation-sweep remediation release (the 2026-09-07 first scheduled sweep failed
