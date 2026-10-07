@@ -125,6 +125,7 @@ pub mod integrations;
 pub mod kernels;
 pub mod par;
 pub mod pkce;
+pub mod sealed;
 pub mod session;
 pub mod ssrf;
 pub mod store;
@@ -165,6 +166,7 @@ pub use integrations::{
 };
 pub use par::{build_authorization_url, execute_par_request, ParParameters, ParResponse};
 pub use pkce::{derive_s256_challenge, validate_verifier, verify_pkce, PkceMethod, PkcePair};
+pub use sealed::{SealedBox, SEALED_ENVELOPE_PREFIX};
 pub use session::OAuthSession;
 pub use ssrf::{
     is_blocked_hostname, is_restricted_ip, is_restricted_ipv4, is_restricted_ipv6,

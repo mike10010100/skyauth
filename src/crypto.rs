@@ -29,10 +29,7 @@ pub use crate::kernels::ct_eq::constant_time_eq;
 pub fn sha256_digest(data: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(data);
-    let result = hasher.finalize();
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&result);
-    out
+    hasher.finalize().into()
 }
 
 /// Computes an HMAC-SHA256 message authentication code (RFC 2104).

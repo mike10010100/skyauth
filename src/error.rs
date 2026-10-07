@@ -88,6 +88,22 @@ pub enum CryptoError {
     /// PEM certificate/key decoding error.
     #[error("PEM decoding error: {0}")]
     Pem(String),
+
+    /// Authenticated encryption (sealing) failed.
+    #[error("Authenticated encryption failed: {0}")]
+    Seal(String),
+
+    /// Authenticated decryption (opening) failed, typically due to a tag mismatch or wrong key.
+    #[error("Authenticated decryption failed: {0}")]
+    Open(String),
+
+    /// A sealed envelope was structurally invalid (e.g. truncated).
+    #[error("Invalid sealed envelope: {0}")]
+    InvalidEnvelope(String),
+
+    /// Decrypted plaintext was not valid UTF-8.
+    #[error("Decrypted payload is not valid UTF-8: {0}")]
+    Utf8(String),
 }
 
 /// Errors arising from RFC 9449 DPoP proof generation, serialization, or verification.
