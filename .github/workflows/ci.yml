@@ -157,7 +157,7 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@b66acf5e9fe20f8aba065be86778a8a4c846f902 # v2
 
   msrv:
-    name: MSRV (1.88) Library Build
+    name: MSRV (1.89) Library Build
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -167,11 +167,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust 1.88 toolchain
-        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Install Rust 1.89 toolchain
+        run: rustup toolchain install 1.89.0 --profile minimal
 
       - name: Check library on MSRV (locked deps, all features)
-        run: cargo +1.88.0 check --locked --lib --all-features
+        run: cargo +1.89.0 check --locked --lib --all-features
 
   kani:
     name: Kani Bounded Model Checking

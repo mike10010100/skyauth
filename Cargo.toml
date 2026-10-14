@@ -1,8 +1,8 @@
 [package]
 name = "skyauth"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.89"
 authors = ["Mike <mike@example.com>"]
 description = "High-assurance, formally verified OAuth 2.1 and RFC 9449 DPoP authentication engine for the AT Protocol (Bluesky)"
 license = "MIT OR Apache-2.0"
@@ -24,8 +24,7 @@ sha2 = { version = "0.11", default-features = false }
 hmac = { version = "0.13", default-features = false }
 subtle = { version = "2.6", default-features = false }
 base64 = { version = "0.23", default-features = false, features = ["std"] }
-rand = { version = "0.10", default-features = false, features = ["std", "std_rng"] }
-rand_core = { version = "0.6", default-features = false, features = ["std"] }
+rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
 zeroize = { version = "1.8", features = ["derive"] }
 
 # Serialization & Models

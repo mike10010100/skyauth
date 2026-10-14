@@ -6,7 +6,6 @@
 //! - [`client_metadata_response`]: Generating compliant `/oauth/client-metadata.json` HTTP responses.
 //! - [`redirect_to_authorization`]: Generating HTTP 303 See Other redirects to authorization servers.
 
-use axum::async_trait;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::{header, StatusCode};
@@ -18,7 +17,6 @@ use super::{AuthenticatedUser, OAuthCallbackQuery, OAuthSessionExtension};
 use crate::client::{AuthorizationRequest, OAuthClientMetadata};
 use crate::error::IntegrationError;
 
-#[async_trait]
 impl<S> FromRequestParts<S> for OAuthCallbackQuery
 where
     S: Send + Sync,
@@ -39,7 +37,6 @@ where
     }
 }
 
-#[async_trait]
 impl<S> FromRequestParts<S> for AuthenticatedUser
 where
     S: Send + Sync,

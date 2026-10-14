@@ -3,7 +3,7 @@
 //! This module implements PKCE code verifier generation, S256 code challenge derivation,
 //! and constant-time verification according to <https://datatracker.ietf.org/doc/html/rfc7636>.
 
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use crate::crypto::{base64url_encode, constant_time_eq, sha256_digest};
@@ -66,7 +66,7 @@ impl PkcePair {
     #[must_use]
     pub fn generate() -> Self {
         let mut entropy = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut entropy);
+        rand::rng().fill_bytes(&mut entropy);
         let verifier = base64url_encode(&entropy);
         let challenge = derive_s256_challenge(&verifier);
         Self {
@@ -93,7 +93,7 @@ impl PkcePair {
             });
         }
         let mut bytes = vec![0u8; entropy_bytes];
-        rand::thread_rng().fill_bytes(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
         let verifier = base64url_encode(&bytes);
         Self::from_verifier(verifier)
     }

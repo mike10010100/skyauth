@@ -1887,15 +1887,6 @@ dependencies = [
 
 [[package]]
 name = "rand_core"
-version = "0.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
-dependencies = [
- "getrandom 0.2.17",
-]
-
-[[package]]
-name = "rand_core"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
@@ -2435,7 +2426,7 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "skyauth"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "actix-web",
  "aes-gcm",
@@ -2451,7 +2442,6 @@ dependencies = [
  "parking_lot",
  "proptest",
  "rand 0.10.2",
- "rand_core 0.6.4",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
