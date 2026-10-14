@@ -12,7 +12,7 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use rand::RngCore;
+use rand::Rng;
 
 use crate::crypto::sha256_digest;
 use crate::error::CryptoError;
@@ -99,7 +99,7 @@ impl SealedBox {
             .map_err(|e| CryptoError::InvalidKey(format!("Invalid AES-256-GCM key: {e}")))?;
 
         let mut nonce_bytes = [0u8; 12];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from(nonce_bytes);
 
         let payload = Payload {

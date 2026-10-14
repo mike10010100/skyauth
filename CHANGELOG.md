@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-10-14
+
+### Changed
+
+- **Dependencies**: Upgraded `p256` (`0.14`), `sha2` (`0.11`), `hmac` (`0.13`), `base64` (`0.23`), `rand` (`0.10`), `url` (`2.5`), `reqwest` (`0.13`), `axum` (`0.8`), `http` (`1.4`), `tower` (`0.5`), `criterion` (`0.8`), and `proptest` (`1.11`), and updated MSRV to Rust `1.89`.
+
 ## [0.3.4] - 2026-10-10
 
 ### Changed

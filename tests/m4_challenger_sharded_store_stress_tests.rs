@@ -25,8 +25,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use http::{header, Request, Response, StatusCode};
 use proptest::prelude::*;
-use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
+use rand::distr::Alphanumeric;
+use rand::{rng, RngExt};
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tower")]
 use tower_layer::Layer;
@@ -64,10 +64,7 @@ fn test_challenge_100_threads_racing_take_state_single_key() {
     let store = Arc::new(OAuthStateStore::default());
 
     for round in 0..20 {
-        let state_key = format!(
-            "race_target_token_round_{round}_{}",
-            thread_rng().gen::<u64>()
-        );
+        let state_key = format!("race_target_token_round_{round}_{}", rng().random::<u64>());
         let entry = mock_stored_state(&state_key, 300);
 
         store
@@ -439,30 +436,30 @@ fn test_challenge_shard_distribution_uniformity_10000_random_keys() {
     let total_keys = 10_000usize;
     let mut shard_counts = vec![0usize; NUM_SHARDS];
 
-    let mut rng = thread_rng();
+    let mut rng = rng();
 
     for i in 0..total_keys {
         let key = match i % 4 {
             0 => {
-                let bytes: Vec<u8> = (0..32).map(|_| rng.gen::<u8>()).collect();
+                let bytes: Vec<u8> = (0..32).map(|_| rng.random::<u8>()).collect();
                 base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &bytes)
             }
             1 => {
-                let bytes: Vec<u8> = (0..32).map(|_| rng.gen::<u8>()).collect();
+                let bytes: Vec<u8> = (0..32).map(|_| rng.random::<u8>()).collect();
                 hex::encode(bytes)
             }
             2 => {
                 format!(
                     "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-                    rng.gen::<u32>(),
-                    rng.gen::<u16>(),
-                    rng.gen::<u16>() & 0x0fff,
-                    (rng.gen::<u16>() & 0x3fff) | 0x8000,
-                    rng.gen::<u64>() & 0x0000_ffff_ffff_ffff
+                    rng.random::<u32>(),
+                    rng.random::<u16>(),
+                    rng.random::<u16>() & 0x0fff,
+                    (rng.random::<u16>() & 0x3fff) | 0x8000,
+                    rng.random::<u64>() & 0x0000_ffff_ffff_ffff
                 )
             }
             _ => {
-                let len = rng.gen_range(43..=128);
+                let len = rng.random_range(43..=128);
                 (0..len)
                     .map(|_| rng.sample(Alphanumeric) as char)
                     .collect::<String>()
@@ -513,7 +510,7 @@ fn test_challenge_shard_distribution_uniformity_10000_random_keys() {
 #[test]
 fn test_challenge_shard_index_deterministic_invariance() {
     let store = OAuthStateStore::default();
-    let mut rng = thread_rng();
+    let mut rng = rng();
 
     for _ in 0..1000 {
         let key: String = (0..32).map(|_| rng.sample(Alphanumeric) as char).collect();

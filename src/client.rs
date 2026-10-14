@@ -629,7 +629,7 @@ impl AtprotoOAuthClient {
 
         let pkce = PkcePair::generate();
         let mut state_bytes = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut state_bytes);
+        rand::Rng::fill_bytes(&mut rand::rng(), &mut state_bytes);
         let state = base64url_encode(&state_bytes);
 
         let dpop_key = DPoPKey::generate();

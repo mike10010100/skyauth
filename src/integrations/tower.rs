@@ -627,7 +627,7 @@ mod tests {
     use crate::integrations::validator::JwtAccessTokenClaims;
     use crate::integrations::AuthenticatedUser;
     use p256::ecdsa::SigningKey;
-    use rand::thread_rng;
+    use p256::elliptic_curve::Generate;
     use std::convert::Infallible;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tower::service_fn;
@@ -635,7 +635,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tower_jwt_dpop_auth_success() {
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let auth_verifying_key = *auth_key.verifying_key();
 
         let client_key = DPoPKey::generate();
@@ -880,7 +880,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tower_rejects_invented_token_credentials() {
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let auth_verifying_key = *auth_key.verifying_key();
 
         let attacker_key = DPoPKey::generate();
@@ -926,7 +926,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tower_rejects_stolen_token_with_attacker_dpop_proof_cnf_mismatch() {
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let auth_verifying_key = *auth_key.verifying_key();
 
         let alice_key = DPoPKey::generate();
@@ -994,7 +994,7 @@ mod tests {
     async fn test_tower_stolen_token_positive_control_with_own_proof() {
         // Positive control: the same token must authenticate with Alice's own proof,
         // proving rejection came from the cnf.jkt binding check, not an unrelated failure.
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let alice_key = DPoPKey::generate();
         let alice_jkt = alice_key.jwk_thumbprint();
 
@@ -1367,7 +1367,7 @@ mod nonce_enforcement_tests {
     use crate::dpop::{DPoPKey, DPoPVerifier, InMemoryServerNonceSource};
     use crate::integrations::validator::JwtAccessTokenClaims;
     use p256::ecdsa::SigningKey;
-    use rand::thread_rng;
+    use p256::elliptic_curve::Generate;
     use std::convert::Infallible;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1379,7 +1379,7 @@ mod nonce_enforcement_tests {
         // Review H2 (server side): with a nonce source configured, every success
         // response to a DPoP-authenticated request MUST carry a DPoP-Nonce so
         // conforming clients can rotate their nonce.
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let auth_verifying_key = *auth_key.verifying_key();
 
         let client_key = DPoPKey::generate();
@@ -1492,7 +1492,7 @@ mod h5_exhaustion_defense_tests {
     use crate::dpop::{DPoPKey, DPoPReplayCache, DPoPVerifier};
     use crate::integrations::validator::JwtAccessTokenClaims;
     use p256::ecdsa::SigningKey;
-    use rand::thread_rng;
+    use p256::elliptic_curve::Generate;
     use std::convert::Infallible;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tower::service_fn;
@@ -1504,7 +1504,7 @@ mod h5_exhaustion_defense_tests {
         // token validation succeed. An attacker minting validly-signed proofs
         // for INVENTED access tokens fails token validation — the cache must
         // remain untouched.
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let auth_verifying_key = *auth_key.verifying_key();
 
         let client_key = DPoPKey::generate();

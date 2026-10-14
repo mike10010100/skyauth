@@ -28,7 +28,7 @@ use std::sync::{Arc, Barrier, RwLock};
 use std::time::{Duration, SystemTime};
 
 use proptest::prelude::*;
-use rand::{thread_rng, Rng};
+use rand::{rng, RngExt};
 use tokio_util::sync::CancellationToken;
 
 use skyauth::client::StoredStateEntry;
@@ -317,7 +317,7 @@ fn test_challenge_state_store_and_formal_model_state_machine_equivalence_traces(
 fn test_challenge_150_threads_racing_at_exact_ttl_boundary() {
     for round in 0..15 {
         let store = Arc::new(OAuthStateStore::default());
-        let state_key = format!("ttl_race_round_{round}_{}", thread_rng().gen::<u64>());
+        let state_key = format!("ttl_race_round_{round}_{}", rng().random::<u64>());
 
         store
             .insert_state_sync(

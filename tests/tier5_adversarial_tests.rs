@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use p256::ecdsa::SigningKey;
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
 use p256::pkcs8::DecodePrivateKey;
 use proptest::prelude::*;
 
@@ -1340,7 +1340,7 @@ fn test_adv_sec1_generator_point_success() {
 #[test]
 fn test_adv_sec1_negated_generator_point_success() {
     let neg_g = -p256::AffinePoint::GENERATOR;
-    let encoded = neg_g.to_encoded_point(false);
+    let encoded = neg_g.to_sec1_point(false);
     let neg_gx = encoded.x().unwrap();
     let neg_gy = encoded.y().unwrap();
 
@@ -1405,11 +1405,12 @@ fn test_adv_sec1_coordinate_exceeding_modulus_rejection() {
 
 #[test]
 fn test_adv_sec1_fuzz_random_coordinate_flips() {
-    use rand::RngCore;
-    let mut rng = rand::thread_rng();
+    use p256::elliptic_curve::Generate;
+    use rand::Rng;
+    let mut rng = rand::rng();
 
     for _ in 0..50 {
-        let key = p256::ecdsa::SigningKey::random(&mut rng);
+        let key = p256::ecdsa::SigningKey::generate_from_rng(&mut rng);
         let vkey = key.verifying_key();
         let (mut x, y) = verifying_key_to_coordinates(vkey);
 
@@ -1426,7 +1427,8 @@ fn test_adv_sec1_fuzz_random_coordinate_flips() {
 
 #[test]
 fn test_adv_ieee_p1363_length_enforcement() {
-    let key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+    use p256::elliptic_curve::Generate;
+    let key = p256::ecdsa::SigningKey::generate();
     let vkey = key.verifying_key();
     let message = b"IEEE P1363 Length Boundary Test";
 
@@ -1468,7 +1470,8 @@ fn test_adv_ieee_p1363_length_enforcement() {
 
 #[test]
 fn test_adv_ieee_p1363_scalar_out_of_range_rejection() {
-    let key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+    use p256::elliptic_curve::Generate;
+    let key = p256::ecdsa::SigningKey::generate();
     let vkey = key.verifying_key();
     let message = b"Scalar Range Test";
 
@@ -1501,7 +1504,8 @@ fn test_adv_ieee_p1363_scalar_out_of_range_rejection() {
 
 #[test]
 fn test_adv_ieee_p1363_exhaustive_bit_flip_tamper_rejection() {
-    let key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+    use p256::elliptic_curve::Generate;
+    let key = p256::ecdsa::SigningKey::generate();
     let vkey = key.verifying_key();
     let message = b"Critical ATProto DPoP Authorization Token";
 
@@ -1522,8 +1526,9 @@ fn test_adv_ieee_p1363_exhaustive_bit_flip_tamper_rejection() {
 
 #[test]
 fn test_adv_ieee_p1363_cross_message_and_key_isolation() {
-    let key_a = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
-    let key_b = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+    use p256::elliptic_curve::Generate;
+    let key_a = p256::ecdsa::SigningKey::generate();
+    let key_b = p256::ecdsa::SigningKey::generate();
 
     let msg_a = b"Message Alpha";
     let msg_b = b"Message Beta";
@@ -1539,7 +1544,8 @@ fn test_adv_ieee_p1363_cross_message_and_key_isolation() {
 
 #[test]
 fn test_adv_ieee_p1363_empty_and_large_message_handling() {
-    let key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+    use p256::elliptic_curve::Generate;
+    let key = p256::ecdsa::SigningKey::generate();
     let vkey = key.verifying_key();
 
     let empty_msg = b"";
@@ -1586,9 +1592,10 @@ proptest! {
     fn prop_adv_coordinate_extraction_roundtrip(
         seed in any::<[u8; 32]>()
     ) {
+        use p256::elliptic_curve::Generate;
         use rand::SeedableRng;
         let mut rng = rand::rngs::StdRng::from_seed(seed);
-        let signing_key = p256::ecdsa::SigningKey::random(&mut rng);
+        let signing_key = p256::ecdsa::SigningKey::generate_from_rng(&mut rng);
         let verifying_key = signing_key.verifying_key();
 
         let (x, y) = verifying_key_to_coordinates(verifying_key);
@@ -1596,8 +1603,8 @@ proptest! {
             .expect("Valid key must always reconstruct");
 
         prop_assert_eq!(
-            verifying_key.to_encoded_point(false),
-            reconstructed.to_encoded_point(false)
+            verifying_key.to_sec1_point(false),
+            reconstructed.to_sec1_point(false)
         );
     }
 
@@ -1605,9 +1612,10 @@ proptest! {
     fn prop_adv_jwk_thumbprint_invariance(
         seed in any::<[u8; 32]>()
     ) {
+        use p256::elliptic_curve::Generate;
         use rand::SeedableRng;
         let mut rng = rand::rngs::StdRng::from_seed(seed);
-        let signing_key = p256::ecdsa::SigningKey::random(&mut rng);
+        let signing_key = p256::ecdsa::SigningKey::generate_from_rng(&mut rng);
         let vkey = signing_key.verifying_key();
         let (x_bytes, y_bytes) = verifying_key_to_coordinates(vkey);
 
@@ -1633,7 +1641,8 @@ proptest! {
         tamper_idx in 0usize..64,
         tamper_val in 1u8..=255
     ) {
-        let key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        use p256::elliptic_curve::Generate;
+        let key = p256::ecdsa::SigningKey::generate();
         let vkey = key.verifying_key();
 
         let signature = sign_p256_raw(&key, &message).expect("sign message");

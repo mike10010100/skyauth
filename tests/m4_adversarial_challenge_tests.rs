@@ -710,7 +710,7 @@ mod tower_adversarial_tests {
 
     #[tokio::test]
     async fn test_tower_adversarial_invented_credentials_rejected() {
-        let auth_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let auth_key = <p256::ecdsa::SigningKey as p256::elliptic_curve::Generate>::generate();
         let auth_verifying_key = *auth_key.verifying_key();
 
         let attacker_dpop_key = DPoPKey::generate();
@@ -752,7 +752,7 @@ mod tower_adversarial_tests {
 
     #[tokio::test]
     async fn test_tower_adversarial_stolen_token_with_attacker_dpop_proof_cnf_mismatch() {
-        let auth_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let auth_key = <p256::ecdsa::SigningKey as p256::elliptic_curve::Generate>::generate();
         let auth_verifying_key = *auth_key.verifying_key();
 
         let alice_dpop_key = DPoPKey::generate();
@@ -814,10 +814,11 @@ mod tower_adversarial_tests {
 
     #[tokio::test]
     async fn test_tower_adversarial_forged_jwt_signature_rejected() {
-        let auth_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let auth_key = <p256::ecdsa::SigningKey as p256::elliptic_curve::Generate>::generate();
         let auth_verifying_key = *auth_key.verifying_key();
 
-        let attacker_signing_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let attacker_signing_key =
+            <p256::ecdsa::SigningKey as p256::elliptic_curve::Generate>::generate();
         let attacker_dpop_key = DPoPKey::generate();
         let attacker_jkt = attacker_dpop_key.jwk_thumbprint();
         let uri = "https://pds.example.com/xrpc/app.bsky.actor.getProfile";
@@ -875,7 +876,7 @@ mod tower_adversarial_tests {
 
     #[tokio::test]
     async fn test_tower_adversarial_valid_token_and_proof_succeeds() {
-        let auth_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let auth_key = <p256::ecdsa::SigningKey as p256::elliptic_curve::Generate>::generate();
         let auth_verifying_key = *auth_key.verifying_key();
 
         let client_dpop_key = DPoPKey::generate();
@@ -927,7 +928,7 @@ mod tower_adversarial_tests {
 
     #[tokio::test]
     async fn test_tower_adversarial_replay_attack_rejected() {
-        let auth_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let auth_key = <p256::ecdsa::SigningKey as p256::elliptic_curve::Generate>::generate();
         let auth_verifying_key = *auth_key.verifying_key();
 
         let client_dpop_key = DPoPKey::generate();
@@ -997,7 +998,7 @@ mod tower_adversarial_tests {
 
     #[tokio::test]
     async fn test_tower_adversarial_server_nonce_challenge_and_enforcement() {
-        let auth_key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let auth_key = <p256::ecdsa::SigningKey as p256::elliptic_curve::Generate>::generate();
         let auth_verifying_key = *auth_key.verifying_key();
 
         let client_dpop_key = DPoPKey::generate();

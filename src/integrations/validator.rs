@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use p256::ecdsa::VerifyingKey;
 use parking_lot::RwLock;
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use super::AuthenticatedUser;
@@ -98,7 +98,7 @@ impl JwtAccessTokenClaims {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let mut raw = [0u8; 16];
-        rand::thread_rng().fill_bytes(&mut raw);
+        rand::rng().fill_bytes(&mut raw);
         Self {
             iss: iss.into(),
             sub: sub.into(),
@@ -694,10 +694,10 @@ mod tests {
     use super::*;
     use crate::dpop::DPoPKey;
     use p256::ecdsa::SigningKey;
-    use rand::thread_rng;
+    use p256::elliptic_curve::Generate;
     #[test]
     fn test_jwt_access_token_signing_and_validation_roundtrip() {
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let auth_verifying_key = *auth_key.verifying_key();
 
         let client_dpop_key = DPoPKey::generate();
@@ -734,7 +734,7 @@ mod tests {
 
     #[test]
     fn test_jwt_access_token_cnf_jkt_mismatch_fails() {
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let auth_verifying_key = *auth_key.verifying_key();
 
         let alice_dpop_key = DPoPKey::generate();
@@ -772,7 +772,7 @@ mod tests {
 
     #[test]
     fn test_jwt_access_token_expired_fails() {
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let auth_verifying_key = *auth_key.verifying_key();
         let client_dpop_key = DPoPKey::generate();
         let jkt = client_dpop_key.jwk_thumbprint();
@@ -797,7 +797,7 @@ mod tests {
 
     #[test]
     fn test_jwt_access_token_issuer_mismatch_fails() {
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let auth_verifying_key = *auth_key.verifying_key();
         let client_dpop_key = DPoPKey::generate();
         let jkt = client_dpop_key.jwk_thumbprint();
@@ -830,7 +830,7 @@ mod tests {
 
     #[test]
     fn test_jwt_access_token_audience_mismatch_fails() {
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let auth_verifying_key = *auth_key.verifying_key();
         let client_dpop_key = DPoPKey::generate();
         let jkt = client_dpop_key.jwk_thumbprint();
@@ -895,7 +895,7 @@ mod tests {
     #[test]
     fn test_jwt_access_token_wrong_typ_rejected() {
         // RFC 9068 § 4: a well-signed generic JWT (typ 'JWT' or none) from the same key must be rejected to prevent confusion attacks across token types.
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let client_jkt = DPoPKey::generate().jwk_thumbprint();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -936,7 +936,7 @@ mod tests {
     #[test]
     fn test_jwt_access_token_unknown_kid_fail_closed() {
         // Fail-closed kid resolution: kid is attacker-controlled, so a well-signed token naming an unknown kid must be rejected, not verified against the registered trusted key.
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let client_jkt = DPoPKey::generate().jwk_thumbprint();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -971,7 +971,7 @@ mod tests {
     #[test]
     fn test_jwt_access_token_missing_audience_rejected() {
         // Fail-closed presence check: aud absence is rejected before expected-audience matching runs.
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let client_jkt = DPoPKey::generate().jwk_thumbprint();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1003,7 +1003,7 @@ mod tests {
     #[test]
     fn test_jwt_access_token_unconfigured_audience_fails_closed() {
         // RFC 9068 § 4 fail-closed gate: without a configured expected audience, every token must be refused rather than any audience accepted (cross-RS confusion).
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let client_jkt = DPoPKey::generate().jwk_thumbprint();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1033,7 +1033,7 @@ mod tests {
     #[test]
     fn test_jwt_access_token_unconfigured_issuer_fails_closed() {
         // RFC 9449 § 7.2 fail-closed gate: without a configured expected issuer, every token must be refused rather than any issuer accepted.
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let client_jkt = DPoPKey::generate().jwk_thumbprint();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1066,7 +1066,7 @@ mod tests {
 mod m5_enforcement_tests {
     use super::*;
     use p256::ecdsa::SigningKey;
-    use rand::thread_rng;
+    use p256::elliptic_curve::Generate;
 
     fn signed_token(claims: &JwtAccessTokenClaims, key: &SigningKey) -> String {
         claims.sign_jwt(key, None).unwrap()
@@ -1076,7 +1076,7 @@ mod m5_enforcement_tests {
     fn test_m5_exp_boundary_is_exact() {
         // Review M5: a token at exactly `now == exp` (zero leeway) is expired —
         // the previous `now > exp` comparison accepted the boundary instant.
-        let key = SigningKey::random(&mut thread_rng());
+        let key = SigningKey::generate();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -1107,7 +1107,7 @@ mod m5_enforcement_tests {
     fn test_m5_issuer_comparison_is_exact() {
         // Review M5: trailing-slash normalization previously accepted an issuer
         // differing from the pinned one by a slash.
-        let key = SigningKey::random(&mut thread_rng());
+        let key = SigningKey::generate();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -1163,7 +1163,7 @@ mod mutation_killer_tests {
     use super::*;
     use crate::dpop::DPoPKey;
     use p256::ecdsa::SigningKey;
-    use rand::thread_rng;
+    use p256::elliptic_curve::Generate;
 
     fn now_secs() -> u64 {
         SystemTime::now()
@@ -1173,7 +1173,7 @@ mod mutation_killer_tests {
     }
 
     fn minted_validator(now: u64) -> (JwtAccessTokenValidator, String, String) {
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let auth_verifying_key = *auth_key.verifying_key();
         let client_jkt = DPoPKey::generate().jwk_thumbprint();
         let claims = JwtAccessTokenClaims::new(
@@ -1230,7 +1230,7 @@ mod mutation_killer_tests {
     #[test]
     fn killer_with_trusted_key_kid_routing() {
         let now = now_secs();
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let verifying = *auth_key.verifying_key();
         let jkt = DPoPKey::generate().jwk_thumbprint();
         let claims = JwtAccessTokenClaims::new(
@@ -1265,7 +1265,7 @@ mod mutation_killer_tests {
 
     #[test]
     fn killer_nbf_and_exp_boundaries_are_strict() {
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let verifying = *auth_key.verifying_key();
         let jkt = DPoPKey::generate().jwk_thumbprint();
         let now = now_secs();
@@ -1311,7 +1311,7 @@ mod mutation_killer_tests {
     #[test]
     fn killer_audience_must_match_exactly() {
         let now = now_secs();
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let verifying = *auth_key.verifying_key();
         let jkt = DPoPKey::generate().jwk_thumbprint();
 
@@ -1373,7 +1373,7 @@ mod mutation_killer_tests {
     #[test]
     fn killer_required_scope_must_be_present() {
         let now = now_secs();
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let verifying = *auth_key.verifying_key();
         let jkt = DPoPKey::generate().jwk_thumbprint();
 
@@ -1402,9 +1402,9 @@ mod mutation_killer_tests {
         // With >1 trusted keys, no default key, and a kid-less token: there is
         // no unambiguous key — validation must fail (not pick one at random).
         let now = now_secs();
-        let auth_key = SigningKey::random(&mut thread_rng());
+        let auth_key = SigningKey::generate();
         let verifying = *auth_key.verifying_key();
-        let other_key = *SigningKey::random(&mut thread_rng()).verifying_key();
+        let other_key = *SigningKey::generate().verifying_key();
         let jkt = DPoPKey::generate().jwk_thumbprint();
         let claims = JwtAccessTokenClaims::new(
             "https://auth.example.com",

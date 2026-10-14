@@ -12,9 +12,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ahash::RandomState;
 use p256::ecdsa::{SigningKey, VerifyingKey};
+use p256::elliptic_curve::Generate;
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey, LineEnding};
 use parking_lot::RwLock;
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use url::Url;
 use zeroize::{Zeroize, Zeroizing};
@@ -154,7 +155,7 @@ impl DPoPKey {
     #[must_use]
     pub fn generate() -> Self {
         Self {
-            signing_key: SigningKey::random(&mut rand::thread_rng()),
+            signing_key: SigningKey::generate(),
         }
     }
 
@@ -296,7 +297,7 @@ impl DPoPKey {
             Some(j) => j.to_string(),
             None => {
                 let mut jti_bytes = [0u8; 16];
-                rand::thread_rng().fill_bytes(&mut jti_bytes);
+                rand::rng().fill_bytes(&mut jti_bytes);
                 base64url_encode(&jti_bytes)
             }
         };
@@ -1188,7 +1189,7 @@ impl DPoPServerNonceSource for InMemoryServerNonceSource {
         }
 
         let mut raw = [0u8; 24];
-        rand::thread_rng().fill_bytes(&mut raw);
+        rand::rng().fill_bytes(&mut raw);
         let nonce = base64url_encode(&raw);
         let exp = now_secs.saturating_add(self.ttl.as_secs());
 
@@ -1468,7 +1469,7 @@ mod tests {
         let nonce = source.generate_nonce().unwrap();
         assert!(source.verify_nonce(&nonce));
         let mut raw = [0u8; 24];
-        rand::thread_rng().fill_bytes(&mut raw);
+        rand::rng().fill_bytes(&mut raw);
         let unissued_nonce = base64url_encode(&raw);
         assert!(!source.verify_nonce(&unissued_nonce));
     }
@@ -1976,7 +1977,7 @@ mod mutation_killer_tests {
         // base64url — same shape as minted nonces, generated rather than
         // hard-coded) must be rejected.
         let mut never_issued_raw = [0u8; 24];
-        rand::thread_rng().fill_bytes(&mut never_issued_raw);
+        rand::rng().fill_bytes(&mut never_issued_raw);
         let never_issued = crate::crypto::base64url_encode(&never_issued_raw);
         assert_ne!(never_issued, nonce);
         assert!(

@@ -7,7 +7,7 @@
 
 use base64::engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use p256::ecdsa::signature::{Signer, Verifier};
 use p256::ecdsa::{Signature, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
@@ -179,7 +179,7 @@ pub fn verifying_key_from_coordinates(
 /// Extracts uncompressed affine coordinates (x, y) as 32-byte arrays from a [`VerifyingKey`].
 #[must_use]
 pub fn verifying_key_to_coordinates(verifying_key: &VerifyingKey) -> ([u8; 32], [u8; 32]) {
-    let encoded = verifying_key.to_encoded_point(false);
+    let encoded = verifying_key.to_sec1_point(false);
     let mut x_out = [0u8; 32];
     let mut y_out = [0u8; 32];
 
@@ -302,7 +302,8 @@ mod tests {
 
     #[test]
     fn test_p256_raw_signing_and_verification() {
-        let signing_key = SigningKey::random(&mut rand::thread_rng());
+        use p256::elliptic_curve::Generate;
+        let signing_key = SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
         let message = b"AT Protocol DPoP Proof Signing Input";
 
@@ -320,15 +321,16 @@ mod tests {
 
     #[test]
     fn test_verifying_key_coordinates_roundtrip() {
-        let signing_key = SigningKey::random(&mut rand::thread_rng());
+        use p256::elliptic_curve::Generate;
+        let signing_key = SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
 
         let (x, y) = verifying_key_to_coordinates(verifying_key);
         let reconstructed = verifying_key_from_coordinates(&x, &y).unwrap();
 
         assert_eq!(
-            verifying_key.to_encoded_point(false),
-            reconstructed.to_encoded_point(false)
+            verifying_key.to_sec1_point(false),
+            reconstructed.to_sec1_point(false)
         );
     }
 }

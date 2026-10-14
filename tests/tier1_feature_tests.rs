@@ -18,6 +18,7 @@ mod e2e_harness;
 use e2e_harness::fixtures::*;
 use e2e_harness::{MockDnsResolver, MockOAuthEnvironment};
 use p256::ecdsa::SigningKey;
+use p256::elliptic_curve::Generate;
 use serde_json::json;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -38,7 +39,7 @@ use skyauth::pkce::{derive_s256_challenge, validate_verifier, verify_pkce, PkceP
 
 #[test]
 fn test_f1_01_p256_signature_raw_64_bytes() {
-    let key = SigningKey::random(&mut rand::thread_rng());
+    let key = SigningKey::generate();
     let message = b"ATProto RFC 9449 Signing Test";
     let sig = sign_p256_raw(&key, message).expect("signature succeeds");
     assert_eq!(
@@ -50,7 +51,7 @@ fn test_f1_01_p256_signature_raw_64_bytes() {
 
 #[test]
 fn test_f1_02_p256_signature_verification_success_and_tamper() {
-    let key = SigningKey::random(&mut rand::thread_rng());
+    let key = SigningKey::generate();
     let vkey = key.verifying_key();
     let message = b"Protected Resource Request 2026";
     let sig = sign_p256_raw(&key, message).expect("sign message");
