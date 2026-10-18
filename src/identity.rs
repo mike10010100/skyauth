@@ -17,6 +17,9 @@ use crate::ssrf::{SsrfFilter, MAX_OAUTH_RESPONSE_BYTES};
 /// Standard PLC directory endpoint.
 pub const DEFAULT_PLC_DIRECTORY: &str = "https://plc.directory";
 
+/// Default handle domain assumed when a user enters a single-label handle without a dot (e.g. `alice` -> `alice.bsky.social`).
+pub const DEFAULT_HANDLE_DOMAIN: &str = "bsky.social";
+
 /// Supported AT Protocol Decentralized Identifier (DID) methods.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DidMethod {
@@ -97,6 +100,15 @@ impl DidDocument {
             .any(|aka| aka.to_ascii_lowercase() == expected_uri)
     }
 
+    /// Extracts the primary claimed AT Protocol handle from `alsoKnownAs` (`at://<handle>`), if present and valid.
+    #[must_use]
+    pub fn extract_primary_handle(&self) -> Option<String> {
+        self.also_known_as.iter().find_map(|aka| {
+            let candidate = aka.strip_prefix("at://")?;
+            normalize_handle(candidate).ok()
+        })
+    }
+
     /// Verifies bidirectional handle linkage against `alsoKnownAs`.
     ///
     /// # Errors
@@ -157,6 +169,69 @@ pub struct ResolvedIdentity {
     pub did_doc: DidDocument,
     /// Extracted `#atproto_pds` personal data server endpoint URL.
     pub pds_endpoint: String,
+}
+
+/// Disallowed top-level domains and reserved single-label names per the ATProto handle specification.
+const DISALLOWED_HANDLE_TLDS: [&str; 8] = [
+    "alt",
+    "arpa",
+    "example",
+    "internal",
+    "invalid",
+    "local",
+    "localhost",
+    "onion",
+];
+
+/// Normalizes a user-supplied handle, automatically appending `default_domain` (e.g. `"bsky.social"`)
+/// when the input is a single DNS label without a dot (such as `"alice"` or `"@alice"`).
+///
+/// Reserved single-label names (such as `"localhost"` or `"local"`) and invalid label syntax
+/// are still rejected prior to domain completion.
+///
+/// # Errors
+/// - Returns [`IdentityError::DisallowedHandleTld`] if the TLD is disallowed.
+/// - Returns [`IdentityError::InvalidHandleSyntax`] if any syntax rule is violated.
+pub fn normalize_handle_with_default_domain(
+    raw_handle: &str,
+    default_domain: &str,
+) -> Result<String, IdentityError> {
+    let trimmed = raw_handle.trim().trim_start_matches('@').trim();
+    let normalized = trimmed.to_ascii_lowercase();
+
+    if normalized.is_empty() {
+        return Err(IdentityError::InvalidHandleSyntax(
+            "Handle cannot be empty".to_string(),
+        ));
+    }
+
+    if !normalized.contains('.') {
+        if DISALLOWED_HANDLE_TLDS.contains(&normalized.as_str()) {
+            return Err(IdentityError::InvalidHandleSyntax(format!(
+                "Reserved single-label name '{normalized}' cannot be expanded to a handle"
+            )));
+        }
+        if normalized.chars().all(|c| c.is_ascii_digit()) {
+            return Err(IdentityError::InvalidHandleSyntax(
+                "Handle cannot be a numeric literal".to_string(),
+            ));
+        }
+        let suffix = default_domain.trim().trim_start_matches('.');
+        let expanded = format!("{normalized}.{suffix}");
+        return normalize_handle(&expanded);
+    }
+
+    normalize_handle(raw_handle)
+}
+
+/// Normalizes a user-supplied handle, assuming `.bsky.social` ([`DEFAULT_HANDLE_DOMAIN`]) when no
+/// domain is included (e.g. `"alice"` or `"@alice"` -> `"alice.bsky.social"`).
+///
+/// # Errors
+/// - Returns [`IdentityError::DisallowedHandleTld`] if the TLD is disallowed.
+/// - Returns [`IdentityError::InvalidHandleSyntax`] if any syntax rule is violated.
+pub fn normalize_user_handle(raw_handle: &str) -> Result<String, IdentityError> {
+    normalize_handle_with_default_domain(raw_handle, DEFAULT_HANDLE_DOMAIN)
 }
 
 /// Validates and normalizes an AT Protocol handle string.
@@ -237,18 +312,7 @@ pub fn normalize_handle(raw_handle: &str) -> Result<String, IdentityError> {
     }
 
     let tld = labels.last().copied().unwrap_or("");
-    let disallowed_tlds = [
-        "alt",
-        "arpa",
-        "example",
-        "internal",
-        "invalid",
-        "local",
-        "localhost",
-        "onion",
-    ];
-
-    if disallowed_tlds.contains(&tld) {
+    if DISALLOWED_HANDLE_TLDS.contains(&tld) {
         return Err(IdentityError::DisallowedHandleTld(tld.to_string()));
     }
 
@@ -689,6 +753,9 @@ impl IdentityResolver {
 
     /// Resolves a user identifier (handle or DID), verifies bidirectional handle linkage,
     /// and extracts the authoritative PDS endpoint.
+    ///
+    /// Bare single-label handles (e.g. `"alice"` or `"@alice"`) automatically default to
+    /// `.bsky.social` via [`normalize_user_handle`].
     pub async fn resolve_ident(
         &self,
         handle_or_did: &str,
@@ -698,14 +765,15 @@ impl IdentityResolver {
             let did = trimmed.to_string();
             let doc = self.resolve_did(&did).await?;
             let pds_endpoint = doc.extract_pds_endpoint()?;
+            let handle = doc.extract_primary_handle();
             Ok(ResolvedIdentity {
                 did,
-                handle: None,
+                handle,
                 did_doc: doc,
                 pds_endpoint,
             })
         } else {
-            let handle = normalize_handle(trimmed)?;
+            let handle = normalize_user_handle(trimmed)?;
             let did = self.resolve_handle(&handle).await?;
             let doc = self.resolve_did(&did).await?;
             doc.verify_handle_bidirectional(&handle)?;
@@ -739,6 +807,48 @@ mod tests {
             normalize_handle("my-domain.co.uk").unwrap(),
             "my-domain.co.uk"
         );
+    }
+
+    #[test]
+    fn test_user_handle_bare_completion() {
+        assert_eq!(normalize_user_handle("alice").unwrap(), "alice.bsky.social");
+        assert_eq!(
+            normalize_user_handle("@Alice-123").unwrap(),
+            "alice-123.bsky.social"
+        );
+        assert_eq!(
+            normalize_user_handle("  @bob  ").unwrap(),
+            "bob.bsky.social"
+        );
+        assert_eq!(
+            normalize_user_handle("custom.domain.org").unwrap(),
+            "custom.domain.org"
+        );
+        assert_eq!(
+            normalize_handle_with_default_domain("carol", "example.com").unwrap(),
+            "carol.example.com"
+        );
+        // Reserved single-label names and invalid labels must still fail
+        assert!(matches!(
+            normalize_user_handle("localhost"),
+            Err(IdentityError::InvalidHandleSyntax(_))
+        ));
+        assert!(matches!(
+            normalize_user_handle("local"),
+            Err(IdentityError::InvalidHandleSyntax(_))
+        ));
+        assert!(matches!(
+            normalize_user_handle("-bad"),
+            Err(IdentityError::InvalidHandleSyntax(_))
+        ));
+        assert!(matches!(
+            normalize_user_handle("12345"),
+            Err(IdentityError::InvalidHandleSyntax(_))
+        ));
+        assert!(matches!(
+            normalize_user_handle(""),
+            Err(IdentityError::InvalidHandleSyntax(_))
+        ));
     }
 
     #[test]

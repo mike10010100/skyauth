@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-10-18
+
+### Added
+
+- **Bare Handle `.bsky.social` Completion** (`src/identity.rs`): Added `DEFAULT_HANDLE_DOMAIN` (`"bsky.social"`), `normalize_handle_with_default_domain`, and `normalize_user_handle` so single-label handles (e.g. `alice` or `@alice`) automatically normalize to `alice.bsky.social` while preserving strict rejection of reserved single-label names (`localhost`, `local`, etc.), numeric literals, and invalid DNS label syntax. Also added `DidDocument::extract_primary_handle` to recover the primary claimed `at://` handle when resolving by DID.
+- **Pre-Flight Login & Provider Preview** (`src/discovery.rs`, `src/client.rs`): Added `DiscoveredAuthEndpoints::pds_host()`, `DiscoveredAuthEndpoints::auth_server_host()`, `OAuthLoginPreview`, and `AtprotoOAuthClient::preview_login` to resolve a user's DID, handle, Personal Data Server (PDS) host, and OAuth Authorization Server host prior to PAR initiation for "Is this you? Continue to `<provider>`" confirmation flows.
+
 ## [0.3.5] - 2026-10-14
 
 ### Changed

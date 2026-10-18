@@ -133,7 +133,7 @@ pub mod verification;
 
 pub use client::{
     AtprotoOAuthClient, AtprotoOAuthClientBuilder, AuthorizationRequest, CallbackParams,
-    OAuthClientMetadata, StoredStateEntry, TokenResponse,
+    OAuthClientMetadata, OAuthLoginPreview, StoredStateEntry, TokenResponse,
 };
 pub use crypto::{
     base64url_decode, base64url_decode_fixed, base64url_encode, constant_time_eq, hmac_sha256,
@@ -155,9 +155,10 @@ pub use error::{
     ParError, PkceError, SsrfError, StoreError, TokenError,
 };
 pub use identity::{
-    normalize_handle, validate_did_syntax, DidDocument, DidMethod, DidService, DnsTxtResolver,
-    IdentityResolver, IdentityResolverBuilder, ResolvedIdentity, StandardDnsResolver,
-    VerificationMethod, DEFAULT_PLC_DIRECTORY,
+    normalize_handle, normalize_handle_with_default_domain, normalize_user_handle,
+    validate_did_syntax, DidDocument, DidMethod, DidService, DnsTxtResolver, IdentityResolver,
+    IdentityResolverBuilder, ResolvedIdentity, StandardDnsResolver, VerificationMethod,
+    DEFAULT_HANDLE_DOMAIN, DEFAULT_PLC_DIRECTORY,
 };
 pub use integrations::{
     AccessTokenValidator, AuthenticatedUser, CnfClaim, InMemoryTokenValidator,
