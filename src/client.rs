@@ -163,6 +163,26 @@ impl StoredStateEntry {
     }
 }
 
+/// Pre-flight identity and OAuth provider summary for the login confirmation step
+/// ("Is this you? Continue to `<provider>`").
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OAuthLoginPreview {
+    /// Resolved Decentralized Identifier (`did:plc:...` or `did:web:...`).
+    pub did: String,
+    /// Normalized AT Protocol handle, if resolved from a handle or `alsoKnownAs`.
+    pub handle: Option<String>,
+    /// Authoritative Personal Data Server (PDS) endpoint URL.
+    pub pds_endpoint: String,
+    /// Hostname of the user's Personal Data Server (e.g. `"bsky.social"` or `"pds.example.com"`).
+    pub pds_host: String,
+    /// Authoritative OAuth Authorization Server issuer URL.
+    pub auth_server_issuer: String,
+    /// Hostname of the OAuth Authorization Server (e.g. `"bsky.social"`).
+    pub auth_server_host: String,
+    /// User authorization redirect endpoint URL.
+    pub authorization_endpoint: String,
+}
+
 /// The result of initiating an OAuth authorization flow.
 #[derive(Debug, Clone)]
 pub struct AuthorizationRequest {
@@ -575,6 +595,40 @@ impl AtprotoOAuthClient {
     #[must_use]
     pub const fn state_ttl(&self) -> Duration {
         self.state_ttl
+    }
+
+    /// Resolves a user's handle or DID and discovers their Personal Data Server (PDS) and
+    /// OAuth Authorization Server without initiating a PAR session.
+    ///
+    /// Designed for pre-redirect login confirmation UIs ("Is this you? Continue to `<pds_host>`").
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AtprotoOAuthError`] if identity resolution or OAuth endpoint discovery fails.
+    pub async fn preview_login(
+        &self,
+        handle_or_did: &str,
+    ) -> Result<OAuthLoginPreview, AtprotoOAuthError> {
+        let endpoints = self
+            .resolver
+            .discover_oauth_endpoints(handle_or_did)
+            .await?;
+        let pds_host = endpoints
+            .pds_host()
+            .unwrap_or_else(|| endpoints.pds_endpoint.clone());
+        let auth_server_host = endpoints
+            .auth_server_host()
+            .unwrap_or_else(|| endpoints.auth_server_issuer.clone());
+
+        Ok(OAuthLoginPreview {
+            did: endpoints.did,
+            handle: endpoints.handle,
+            pds_endpoint: endpoints.pds_endpoint,
+            pds_host,
+            auth_server_issuer: endpoints.auth_server_issuer,
+            auth_server_host,
+            authorization_endpoint: endpoints.authorization_endpoint,
+        })
     }
 
     /// Initiates an OAuth authorization flow for a user handle or DID and returns the [`AuthorizationRequest`].

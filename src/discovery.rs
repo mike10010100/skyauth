@@ -115,6 +115,26 @@ pub struct DiscoveredAuthEndpoints {
     pub auth_server_metadata: AuthorizationServerMetadata,
 }
 
+impl DiscoveredAuthEndpoints {
+    /// Extracts the hostname of the user's Personal Data Server (`pds_endpoint`),
+    /// such as `"bsky.social"` or `"pds.example.com"`.
+    #[must_use]
+    pub fn pds_host(&self) -> Option<String> {
+        Url::parse(&self.pds_endpoint)
+            .ok()
+            .and_then(|u| u.host_str().map(ToString::to_string))
+    }
+
+    /// Extracts the hostname of the OAuth Authorization Server (`auth_server_issuer`),
+    /// such as `"bsky.social"` or `"auth.example.com"`.
+    #[must_use]
+    pub fn auth_server_host(&self) -> Option<String> {
+        Url::parse(&self.auth_server_issuer)
+            .ok()
+            .and_then(|u| u.host_str().map(ToString::to_string))
+    }
+}
+
 /// Checks whether a URL is an origin-only URL (scheme + host + optional non-default port, no path/query/fragment).
 ///
 /// Rejects explicit default HTTPS port (`:443`) or explicit default HTTP port (`:80`),
