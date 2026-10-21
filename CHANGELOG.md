@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] - 2026-10-21
+
+### Security
+
+- **eMudhra Intermediate CA Compromise Mitigation** (`Cargo.toml`, `Cargo.lock`, `deny.toml`, `tests/emudhra_tls_distrust_tests.rs`): Enforced minimum versions `rustls-webpki >= 0.103.16` and `webpki-roots >= 1.0.10` in `[dependencies]` and banned vulnerable older releases (`rustls-webpki@<0.103.16`, `webpki-roots@<1.0.10`) in `deny.toml`. Ensures all outbound HTTPS connections (DID resolution, PDS discovery, PAR, token exchange, and DPoP requests) explicitly distrust the 8 compromised eMudhra intermediate CA SubjectPublicKeyInfos (`Error::CertDistrusted`) across both `emSign` and Sectigo `AAA Certificate Services` cross-signed chains, and removes `emSign ECC Root CA - G3` from bundled roots.
+
 ## [0.3.6] - 2026-10-18
 
 ### Added
