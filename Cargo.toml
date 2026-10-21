@@ -1,6 +1,6 @@
 [package]
 name = "skyauth"
-version = "0.3.6"
+version = "0.3.7"
 edition = "2021"
 rust-version = "1.89"
 authors = ["Mike <mike@example.com>"]
@@ -35,6 +35,8 @@ serde_urlencoded = "0.7"
 # Networking & URLs
 url = { version = "2.5", features = ["serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rustls-webpki = { version = "0.103.16", default-features = false, features = ["std", "ring"] }
+webpki-roots = "1.0.10"
 
 # Concurrency & Async
 tokio = { version = "1.40", default-features = false, features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
@@ -69,6 +71,7 @@ hex = "0.4"
 serde_urlencoded = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 http-body-util = "0.1"
+rustls-pki-types = "1.12"
 
 [lints.rust]
 unsafe_code = "forbid"
