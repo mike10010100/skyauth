@@ -66,7 +66,7 @@ tower = ["dep:tower", "dep:tower-service", "dep:tower-layer"]
 [dev-dependencies]
 proptest = "1.5"
 wiremock = "0.6"
-jsonschema = "0.58"
+jsonschema = "0.59"
 hex = "0.4"
 serde_urlencoded = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
