@@ -352,6 +352,98 @@ impl DPoPKey {
 
         Ok(format!("{signing_input}.{sig_b64}"))
     }
+
+    /// Derives the public JWK JSON representation suitable for inclusion in a confidential
+    /// client's `jwks.keys` metadata document (`private_key_jwt`, RFC 7517 / RFC 7523).
+    ///
+    /// Populates `"kid"` with the deterministic RFC 7638 SHA-256 JWK thumbprint, `"use": "sig"`,
+    /// and `"alg": "ES256"`.
+    #[must_use]
+    pub fn public_client_jwk(&self) -> serde_json::Value {
+        let jwk = self.public_jwk();
+        let kid = jwk.thumbprint();
+        serde_json::json!({
+            "kty": jwk.kty,
+            "crv": jwk.crv,
+            "x": jwk.x,
+            "y": jwk.y,
+            "kid": kid,
+            "use": "sig",
+            "alg": "ES256"
+        })
+    }
+
+    /// Signs an RFC 7523 `private_key_jwt` client assertion JWT for confidential client
+    /// authentication at an Authorization Server's PAR or Token endpoint.
+    ///
+    /// # Parameters
+    ///
+    /// - `client_id`: Canonical OAuth client identifier (`iss` and `sub` claims).
+    /// - `audience`: Target Authorization Server issuer identifier URL (`aud` claim).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DPoPError`] if the system clock is invalid, serialization fails, or signing fails.
+    pub fn create_client_assertion(
+        &self,
+        client_id: &str,
+        audience: &str,
+    ) -> Result<String, DPoPError> {
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| DPoPError::ClockSkew(e.to_string()))?
+            .as_secs();
+
+        self.create_client_assertion_internal(client_id, audience, now_secs, None)
+    }
+
+    /// Internal helper for deterministic `private_key_jwt` client assertion generation.
+    pub(crate) fn create_client_assertion_internal(
+        &self,
+        client_id: &str,
+        audience: &str,
+        iat_secs: u64,
+        jti_override: Option<&str>,
+    ) -> Result<String, DPoPError> {
+        let jti = match jti_override {
+            Some(j) => j.to_string(),
+            None => {
+                let mut jti_bytes = [0u8; 16];
+                rand::rng().fill_bytes(&mut jti_bytes);
+                base64url_encode(&jti_bytes)
+            }
+        };
+
+        let header = serde_json::json!({
+            "alg": "ES256",
+            "kid": self.jwk_thumbprint(),
+            "typ": "jwt"
+        });
+
+        let exp_secs = iat_secs.saturating_add(60);
+        let payload = serde_json::json!({
+            "iss": client_id,
+            "sub": client_id,
+            "aud": audience,
+            "jti": jti,
+            "iat": iat_secs,
+            "exp": exp_secs
+        });
+
+        let header_str =
+            serde_json::to_string(&header).map_err(|e| DPoPError::Serialization(e.to_string()))?;
+        let payload_str =
+            serde_json::to_string(&payload).map_err(|e| DPoPError::Serialization(e.to_string()))?;
+
+        let header_b64 = base64url_encode(header_str.as_bytes());
+        let payload_b64 = base64url_encode(payload_str.as_bytes());
+
+        let signing_input = format!("{header_b64}.{payload_b64}");
+        let sig_bytes = sign_p256_raw(&self.signing_key, signing_input.as_bytes())?;
+        let sig_b64 = base64url_encode(&sig_bytes);
+
+        Ok(format!("{signing_input}.{sig_b64}"))
+    }
 }
 
 /// Decoded and validated claims from an RFC 9449 DPoP proof payload.
