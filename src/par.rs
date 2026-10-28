@@ -12,6 +12,10 @@ use crate::dpop::{extract_dpop_nonce, DPoPKey, DPoPNonceCache};
 use crate::error::{AtprotoOAuthError, DPoPError, ParError};
 use crate::ssrf::{read_bounded_body, SsrfFilter, MAX_OAUTH_RESPONSE_BYTES};
 
+/// Standard RFC 7523 client assertion type URI for `private_key_jwt` confidential client authentication.
+pub const CLIENT_ASSERTION_TYPE_JWT_BEARER: &str =
+    "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+
 /// Parameters for an RFC 9126 Pushed Authorization Request.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParParameters {
@@ -195,6 +199,36 @@ pub async fn execute_par_request(
     dpop_key: &DPoPKey,
     nonce_cache: &DPoPNonceCache,
 ) -> Result<ParResponse, AtprotoOAuthError> {
+    execute_par_request_with_client_key(
+        ssrf_filter,
+        par_endpoint,
+        params,
+        dpop_key,
+        nonce_cache,
+        None,
+    )
+    .await
+}
+
+/// Executes an RFC 9126 PAR request with DPoP signing, transparent auto-nonce retry,
+/// and optional `private_key_jwt` confidential-client authentication.
+///
+/// When `client_auth` is `Some((client_key, audience_issuer))`, a fresh ES256
+/// `client_assertion` JWT (with a unique `jti`) is minted for the initial request and
+/// regenerated if a `use_dpop_nonce` retry occurs.
+///
+/// # Errors
+///
+/// Returns [`AtprotoOAuthError`] if SSRF validation, DPoP signing, client assertion
+/// signing, HTTP transport, or response parsing fails.
+pub async fn execute_par_request_with_client_key(
+    ssrf_filter: &SsrfFilter,
+    par_endpoint: &str,
+    params: &ParParameters,
+    dpop_key: &DPoPKey,
+    nonce_cache: &DPoPNonceCache,
+    client_auth: Option<(&DPoPKey, &str)>,
+) -> Result<ParResponse, AtprotoOAuthError> {
     let parsed_url = Url::parse(par_endpoint).map_err(|e| {
         ParError::InvalidEndpoint(format!("Invalid PAR endpoint URL '{par_endpoint}': {e}"))
     })?;
@@ -206,7 +240,16 @@ pub async fn execute_par_request(
 
     let server_origin = parsed_url.origin().ascii_serialization();
 
-    let form_body = params.to_form_urlencoded();
+    let form_body = match client_auth {
+        Some((ckey, aud)) => {
+            let assertion = ckey.create_client_assertion(&params.client_id, aud)?;
+            params
+                .clone()
+                .with_client_assertion(CLIENT_ASSERTION_TYPE_JWT_BEARER, assertion)
+                .to_form_urlencoded()
+        }
+        None => params.to_form_urlencoded(),
+    };
 
     let initial_nonce = nonce_cache.get_nonce(&server_origin);
     let proof = dpop_key.create_proof("POST", par_endpoint, initial_nonce.as_deref(), None)?;
@@ -271,6 +314,17 @@ pub async fn execute_par_request(
             let retry_proof =
                 dpop_key.create_proof("POST", par_endpoint, Some(&fresh_nonce), None)?;
 
+            let retry_form_body = match client_auth {
+                Some((ckey, aud)) => {
+                    let assertion = ckey.create_client_assertion(&params.client_id, aud)?;
+                    params
+                        .clone()
+                        .with_client_assertion(CLIENT_ASSERTION_TYPE_JWT_BEARER, assertion)
+                        .to_form_urlencoded()
+                }
+                None => form_body,
+            };
+
             let (retry_client, _retry_pinned_addr, retry_host_header) = ssrf_filter
                 .build_pinned_client(&parsed_url)
                 .await
@@ -282,7 +336,7 @@ pub async fn execute_par_request(
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("accept", "application/json")
                 .header("dpop", retry_proof)
-                .body(form_body)
+                .body(retry_form_body)
                 .send()
                 .await
                 .map_err(|e| ParError::Http(e.to_string()))?;

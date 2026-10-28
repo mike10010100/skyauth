@@ -13,7 +13,10 @@ use crate::crypto::base64url_encode;
 use crate::dpop::{compute_access_token_hash, extract_dpop_nonce, DPoPKey, DPoPNonceCache};
 use crate::error::{AtprotoOAuthError, DPoPError, ParError, TokenError};
 use crate::identity::{IdentityResolver, IdentityResolverBuilder};
-use crate::par::{build_authorization_url, execute_par_request, ParParameters};
+use crate::par::{
+    build_authorization_url, execute_par_request_with_client_key, ParParameters,
+    CLIENT_ASSERTION_TYPE_JWT_BEARER,
+};
 use crate::pkce::PkcePair;
 use crate::session::OAuthSession;
 use crate::ssrf::{read_bounded_body, SsrfFilter, MAX_OAUTH_RESPONSE_BYTES};
@@ -32,6 +35,8 @@ pub struct OAuthClientMetadata {
     pub scope: String,
     /// Optional human-readable client display name.
     pub client_name: Option<String>,
+    /// Optional asymmetric ES256 client keypair enabling `private_key_jwt` confidential-client authentication.
+    pub client_key: Option<DPoPKey>,
 }
 
 impl std::fmt::Debug for OAuthClientMetadata {
@@ -41,6 +46,7 @@ impl std::fmt::Debug for OAuthClientMetadata {
             .field("redirect_uri", &self.redirect_uri)
             .field("scope", &self.scope)
             .field("client_name", &self.client_name)
+            .field("client_key", &self.client_key)
             .finish()
     }
 }
@@ -54,6 +60,7 @@ impl OAuthClientMetadata {
             redirect_uri: redirect_uri.into(),
             scope: "atproto".to_string(),
             client_name: None,
+            client_key: None,
         }
     }
 
@@ -69,6 +76,88 @@ impl OAuthClientMetadata {
     pub fn with_client_name(mut self, name: impl Into<String>) -> Self {
         self.client_name = Some(name.into());
         self
+    }
+
+    /// Configures an asymmetric ES256 keypair for `private_key_jwt` confidential-client authentication.
+    ///
+    /// When set, the client metadata document advertises `"token_endpoint_auth_method": "private_key_jwt"`,
+    /// `"token_endpoint_auth_signing_alg": "ES256"`, and inline `"jwks"`, and all PAR and Token
+    /// requests automatically carry a freshly signed RFC 7523 `client_assertion` JWT.
+    #[must_use]
+    pub fn with_client_key(mut self, key: DPoPKey) -> Self {
+        self.client_key = Some(key);
+        self
+    }
+
+    /// Returns `true` if a `private_key_jwt` confidential client signing key is configured.
+    #[must_use]
+    pub const fn is_confidential(&self) -> bool {
+        self.client_key.is_some()
+    }
+
+    /// Serializes this client metadata into an AT Protocol OAuth Client Metadata JSON document.
+    #[must_use]
+    pub fn to_json_value(&self) -> serde_json::Value {
+        let mut payload = serde_json::Map::new();
+        payload.insert(
+            "client_id".to_string(),
+            serde_json::Value::String(self.client_id.clone()),
+        );
+        if let Some(name) = &self.client_name {
+            payload.insert(
+                "client_name".to_string(),
+                serde_json::Value::String(name.clone()),
+            );
+        }
+        payload.insert(
+            "client_uri".to_string(),
+            serde_json::Value::String(self.client_id.clone()),
+        );
+        payload.insert(
+            "redirect_uris".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::String(self.redirect_uri.clone())]),
+        );
+        payload.insert(
+            "grant_types".to_string(),
+            serde_json::Value::Array(vec![
+                serde_json::Value::String("authorization_code".to_string()),
+                serde_json::Value::String("refresh_token".to_string()),
+            ]),
+        );
+        payload.insert(
+            "response_types".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::String("code".to_string())]),
+        );
+        payload.insert(
+            "scope".to_string(),
+            serde_json::Value::String(self.scope.clone()),
+        );
+        if let Some(ref key) = self.client_key {
+            payload.insert(
+                "token_endpoint_auth_method".to_string(),
+                serde_json::Value::String("private_key_jwt".to_string()),
+            );
+            payload.insert(
+                "token_endpoint_auth_signing_alg".to_string(),
+                serde_json::Value::String("ES256".to_string()),
+            );
+            payload.insert(
+                "jwks".to_string(),
+                serde_json::json!({
+                    "keys": [key.public_client_jwk()]
+                }),
+            );
+        } else {
+            payload.insert(
+                "token_endpoint_auth_method".to_string(),
+                serde_json::Value::String("none".to_string()),
+            );
+        }
+        payload.insert(
+            "dpop_bound_access_tokens".to_string(),
+            serde_json::Value::Bool(true),
+        );
+        serde_json::Value::Object(payload)
     }
 }
 
@@ -702,12 +791,19 @@ impl AtprotoOAuthClient {
             params = params.with_login_hint(&endpoints.did);
         }
 
-        let par_res = execute_par_request(
+        let client_auth = self
+            .metadata
+            .client_key
+            .as_ref()
+            .map(|k| (k, endpoints.auth_server_issuer.as_str()));
+
+        let par_res = execute_par_request_with_client_key(
             &self.ssrf_filter,
             &endpoints.par_endpoint,
             &params,
             &dpop_key,
             &self.nonce_cache,
+            client_auth,
         )
         .await?;
 
@@ -777,11 +873,20 @@ impl AtprotoOAuthClient {
         let form_body =
             serde_urlencoded::to_string(form_pairs).map_err(|e| TokenError::Http(e.to_string()))?;
 
+        let client_auth = self.metadata.client_key.as_ref().map(|k| {
+            (
+                k,
+                state_entry.client_id.as_str(),
+                state_entry.issuer.as_str(),
+            )
+        });
+
         let resp_json: TokenResponse = self
             .send_dpop_token_request(
                 &state_entry.token_endpoint,
                 &state_entry.dpop_key,
-                form_body.into_bytes(),
+                form_body,
+                client_auth,
             )
             .await?;
 
@@ -941,8 +1046,23 @@ impl AtprotoOAuthClient {
         let form_body =
             serde_urlencoded::to_string(form_pairs).map_err(|e| TokenError::Http(e.to_string()))?;
 
+        let resolved_issuer = match session.auth_server_issuer.as_deref() {
+            Some(iss) => iss.to_string(),
+            None => Url::parse(&token_endpoint)
+                .map(|u| u.origin().ascii_serialization())
+                .unwrap_or_default(),
+        };
+
+        let client_auth = self.metadata.client_key.as_ref().map(|k| {
+            (
+                k,
+                self.metadata.client_id.as_str(),
+                resolved_issuer.as_str(),
+            )
+        });
+
         let resp_json: TokenResponse = self
-            .send_dpop_token_request(&token_endpoint, session.dpop_key(), form_body.into_bytes())
+            .send_dpop_token_request(&token_endpoint, session.dpop_key(), form_body, client_auth)
             .await?;
 
         if !resp_json.token_type.eq_ignore_ascii_case("DPoP") {
@@ -1026,14 +1146,16 @@ impl AtprotoOAuthClient {
         &self,
         token_endpoint: &str,
         dpop_key: &DPoPKey,
-        body_bytes: Vec<u8>,
+        base_form_body: String,
+        client_auth: Option<(&DPoPKey, &str, &str)>,
     ) -> Result<TokenResponse, AtprotoOAuthError> {
         send_dpop_token_request_inner(
             &self.ssrf_filter,
             &self.nonce_cache,
             token_endpoint,
             dpop_key,
-            body_bytes,
+            base_form_body,
+            client_auth,
         )
         .await
     }
@@ -1379,6 +1501,24 @@ async fn read_bounded_json(
     Ok(serde_json::from_slice(&bytes).ok())
 }
 
+/// Builds the urlencoded token request body, appending a fresh `private_key_jwt`
+/// `client_assertion` when confidential client credentials are provided.
+fn build_token_form_body(
+    base_form_body: &str,
+    client_auth: Option<(&DPoPKey, &str, &str)>,
+) -> Result<Vec<u8>, AtprotoOAuthError> {
+    match client_auth {
+        Some((ckey, client_id, audience)) => {
+            let assertion = ckey.create_client_assertion(client_id, audience)?;
+            let mut serializer = url::form_urlencoded::Serializer::new(base_form_body.to_string());
+            serializer.append_pair("client_assertion_type", CLIENT_ASSERTION_TYPE_JWT_BEARER);
+            serializer.append_pair("client_assertion", &assertion);
+            Ok(serializer.finish().into_bytes())
+        }
+        None => Ok(base_form_body.as_bytes().to_vec()),
+    }
+}
+
 /// Free-function core for DPoP-bound token endpoint requests with transparent
 /// auto-nonce retry, shared by code exchange and session refresh.
 ///
@@ -1389,7 +1529,8 @@ async fn send_dpop_token_request_inner(
     nonce_cache: &DPoPNonceCache,
     token_endpoint: &str,
     dpop_key: &DPoPKey,
-    body_bytes: Vec<u8>,
+    base_form_body: String,
+    client_auth: Option<(&DPoPKey, &str, &str)>,
 ) -> Result<TokenResponse, AtprotoOAuthError> {
     let parsed_url = Url::parse(token_endpoint).map_err(|e| {
         TokenError::Http(format!(
@@ -1404,6 +1545,8 @@ async fn send_dpop_token_request_inner(
 
     let server_origin = parsed_url.origin().ascii_serialization();
 
+    let body_bytes = build_token_form_body(&base_form_body, client_auth)?;
+
     let initial_nonce = nonce_cache.get_nonce(&server_origin);
     let proof = dpop_key.create_proof("POST", token_endpoint, initial_nonce.as_deref(), None)?;
 
@@ -1413,7 +1556,7 @@ async fn send_dpop_token_request_inner(
         .header("content-type", "application/x-www-form-urlencoded")
         .header("accept", "application/json")
         .header("dpop", proof)
-        .body(body_bytes.clone())
+        .body(body_bytes)
         .send()
         .await
         .map_err(|e| TokenError::Http(e.to_string()))?;
@@ -1453,6 +1596,7 @@ async fn send_dpop_token_request_inner(
 
             let retry_proof =
                 dpop_key.create_proof("POST", token_endpoint, Some(&fresh_nonce), None)?;
+            let retry_body_bytes = build_token_form_body(&base_form_body, client_auth)?;
 
             let (retry_client, _retry_pinned_addr, retry_host_header) = ssrf_filter
                 .build_pinned_client(&parsed_url)
@@ -1465,7 +1609,7 @@ async fn send_dpop_token_request_inner(
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("accept", "application/json")
                 .header("dpop", retry_proof)
-                .body(body_bytes)
+                .body(retry_body_bytes)
                 .send()
                 .await
                 .map_err(|e| TokenError::Http(e.to_string()))?;
@@ -1821,5 +1965,59 @@ mod tests {
             AtprotoOAuthClient::validate_xrpc_nsid(&nsid_318),
             Err(TokenError::InvalidNsid(_))
         ));
+    }
+
+    #[test]
+    fn test_confidential_client_metadata_and_assertion() {
+        let client_key = DPoPKey::generate();
+        let expected_kid = client_key.jwk_thumbprint();
+        let meta = OAuthClientMetadata::new(
+            "https://app.example.com/client-metadata.json",
+            "https://app.example.com/oauth/callback",
+        )
+        .with_client_name("Confidential App")
+        .with_client_key(client_key.clone());
+
+        assert!(meta.is_confidential());
+        let json_doc = meta.to_json_value();
+        assert_eq!(json_doc["token_endpoint_auth_method"], "private_key_jwt");
+        assert_eq!(json_doc["token_endpoint_auth_signing_alg"], "ES256");
+        let keys = json_doc["jwks"]["keys"].as_array().unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0]["kid"], expected_kid);
+        assert_eq!(keys[0]["use"], "sig");
+        assert_eq!(keys[0]["alg"], "ES256");
+
+        let jwt = client_key
+            .create_client_assertion(
+                "https://app.example.com/client-metadata.json",
+                "https://bsky.social",
+            )
+            .unwrap();
+        let parts: Vec<&str> = jwt.split('.').collect();
+        assert_eq!(parts.len(), 3);
+
+        let header_bytes = crate::crypto::base64url_decode(parts[0]).unwrap();
+        let header: serde_json::Value = serde_json::from_slice(&header_bytes).unwrap();
+        assert_eq!(header["alg"], "ES256");
+        assert_eq!(header["kid"], expected_kid);
+        assert_eq!(header["typ"], "jwt");
+
+        let payload_bytes = crate::crypto::base64url_decode(parts[1]).unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&payload_bytes).unwrap();
+        assert_eq!(
+            payload["iss"],
+            "https://app.example.com/client-metadata.json"
+        );
+        assert_eq!(
+            payload["sub"],
+            "https://app.example.com/client-metadata.json"
+        );
+        assert_eq!(payload["aud"], "https://bsky.social");
+        assert!(payload["jti"].as_str().is_some_and(|s| !s.is_empty()));
+        assert_eq!(
+            payload["exp"].as_u64().unwrap() - payload["iat"].as_u64().unwrap(),
+            60
+        );
     }
 }

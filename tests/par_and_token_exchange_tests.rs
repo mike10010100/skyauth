@@ -925,3 +925,88 @@ async fn test_h4_refresh_single_flight_serializes_per_subject() {
         "concurrent refreshes for the same DID must never overlap upstream (single-flight)"
     );
 }
+
+#[tokio::test]
+async fn test_confidential_client_par_exchange_and_refresh_with_nonce_retry() {
+    let env = MockOAuthEnvironment::start_default().await;
+    let client_key = DPoPKey::generate();
+
+    let request_uri = "urn:ietf:params:oauth:request_uri:req-confidential-123";
+    env.auth_server
+        .mount_par_nonce_challenge_once("par-conf-nonce-1")
+        .await;
+    env.auth_server.mount_par_success(request_uri, 90).await;
+    env.auth_server
+        .mount_token_nonce_challenge_once("tok-conf-nonce-2")
+        .await;
+    env.auth_server
+        .mount_token_exchange_success("at_conf_initial", "rt_conf_initial", TEST_ALICE_DID, 3600)
+        .await;
+
+    let ssrf_filter = SsrfFilter::new(true);
+    let resolver = IdentityResolverBuilder::new()
+        .ssrf_filter(ssrf_filter)
+        .plc_directory_url(env.plc.uri())
+        .dns_resolver(std::sync::Arc::new(env.dns.clone()))
+        .build();
+
+    let metadata = OAuthClientMetadata::new(TEST_CLIENT_ID, TEST_REDIRECT_URI)
+        .with_client_name("Skybouncer Confidential")
+        .with_client_key(client_key);
+
+    let client = AtprotoOAuthClient::builder()
+        .client_metadata(metadata)
+        .identity_resolver(resolver)
+        .allow_insecure_localhost(true)
+        .build()
+        .unwrap();
+
+    let (_, stored_state) = client.initiate_login(TEST_ALICE_HANDLE).await.unwrap();
+    let mut session = client
+        .exchange_code("code_conf", &stored_state)
+        .await
+        .unwrap();
+    assert_eq!(session.access_token(), "at_conf_initial");
+
+    // Verify that PAR and Token requests included `client_assertion_type` and `client_assertion`
+    let requests = env
+        .auth_server
+        .server
+        .received_requests()
+        .await
+        .unwrap_or_default();
+    let par_reqs: Vec<_> = requests
+        .iter()
+        .filter(|r| r.url.path() == "/oauth/par")
+        .collect();
+    assert_eq!(par_reqs.len(), 2);
+    for r in &par_reqs {
+        let body = String::from_utf8_lossy(&r.body);
+        assert!(body.contains("client_assertion_type=urn%3Aietf%3Aparams%3Aoauth%3Aclient-assertion-type%3Ajwt-bearer"));
+        assert!(body.contains("client_assertion="));
+    }
+
+    let tok_reqs: Vec<_> = requests
+        .iter()
+        .filter(|r| r.url.path() == "/oauth/token")
+        .collect();
+    assert!(!tok_reqs.is_empty());
+    for r in &tok_reqs {
+        let body = String::from_utf8_lossy(&r.body);
+        assert!(body.contains("client_assertion_type=urn%3Aietf%3Aparams%3Aoauth%3Aclient-assertion-type%3Ajwt-bearer"));
+        assert!(body.contains("client_assertion="));
+    }
+
+    // Also test refresh_session with confidential client
+    let refresh_server = e2e_harness::MockAuthServer::start().await;
+    refresh_server
+        .mount_token_nonce_challenge_once("refresh-conf-nonce")
+        .await;
+    refresh_server
+        .mount_token_exchange_success("at_conf_rotated", "rt_conf_rotated", TEST_ALICE_DID, 3600)
+        .await;
+    session.token_endpoint = Some(format!("{}/oauth/token", refresh_server.uri()));
+    session.auth_server_issuer = None; // exercises fallback to token_endpoint origin
+    client.refresh_session(&mut session).await.unwrap();
+    assert_eq!(session.access_token(), "at_conf_rotated");
+}

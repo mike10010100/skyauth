@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.9] - 2026-10-28
+
+### Added
+
+- **Confidential Client `private_key_jwt` Authentication** (`src/dpop.rs`, `src/client.rs`, `src/par.rs`, `src/integrations/axum.rs`, `src/integrations/actix.rs`): Implemented full RFC 7523 / ATProto OAuth profile `private_key_jwt` confidential-client authentication so server-side applications receive long-lived renewable refresh tokens instead of 14-day public-client grants.
+  - Added `DPoPKey::public_client_jwk` and `DPoPKey::create_client_assertion` to mint ES256-signed `client_assertion` JWTs (`iss = sub = client_id`, `aud = issuer`, unique `jti`, 60s `exp`, and `kid` bound to the RFC 7638 JWK thumbprint).
+  - Added `OAuthClientMetadata::with_client_key`, `OAuthClientMetadata::is_confidential`, and `OAuthClientMetadata::to_json_value` so Axum and Actix client-metadata endpoints automatically advertise `"token_endpoint_auth_method": "private_key_jwt"`, `"token_endpoint_auth_signing_alg": "ES256"`, and inline `"jwks"` when a client key is configured (falling back to `"none"` for public clients).
+  - Wired `execute_par_request_with_client_key`, `AtprotoOAuthClient::initiate_login_with_scope`, `AtprotoOAuthClient::exchange_code`, and `AtprotoOAuthClient::refresh_session` to automatically attach `client_assertion_type` and a freshly signed `client_assertion` on PAR, code exchange, and refresh requests (including minting a fresh `jti` on `use_dpop_nonce` challenge retries).
+
 ## [0.3.8] - 2026-10-26
 
 ### Security

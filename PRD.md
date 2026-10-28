@@ -301,9 +301,9 @@ Opt-in via a builder knob; keep the current per-request behavior as the default 
 
 **Current state**: `DPoPReplayCache` is per-process (`Arc`-sharded in-memory). Multi-replica deployments behind a load balancer have a wider replay exposure than the single-process guarantee implies — RFC 9449 § 11.1 bounds the exposure by the proof acceptance window, but strict multi-replica anti-replay needs a shared store (e.g. Redis) behind the `OAuthStore` trait's existing abstraction seam.
 
-### 7.3 Confidential-Client `private_key_jwt`
+### 7.3 Confidential-Client `private_key_jwt` (Completed in v0.3.9)
 
-Client metadata advertises `private_key_jwt` support (per the ATProto profile). The static `client_secret` path (`client_secret_post`) was **removed** in the 0.2.x security remediation (review H1: a user-selected authorization server receives the static secret in the first PAR request — an unconditional credential-disclosure path with no place in the ATProto protocol). Auto-assertion generation (ES256-signed `client_assertion` bound to a registered JWKS) remains open and is the next feature milestone.
+Client metadata advertises `private_key_jwt` support (per the ATProto profile) when configured with an asymmetric ES256 key (`OAuthClientMetadata::with_client_key`), automatically publishing inline `jwks` metadata and minting fresh ES256 `client_assertion` JWTs on PAR, code exchange, and token refresh requests (including `use_dpop_nonce` retries). The static `client_secret` path (`client_secret_post`) was **removed** in the 0.2.x security remediation (review H1: a user-selected authorization server receives the static secret in the first PAR request — an unconditional credential-disclosure path with no place in the ATProto protocol).
 
 ---
 
