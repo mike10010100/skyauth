@@ -41,7 +41,7 @@ webpki-roots = "1.0.10"
 # Concurrency & Async
 tokio = { version = "1.40", default-features = false, features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
 tokio-util = "0.7"
-parking_lot = "0.12"
+parking_lot = "0.13"
 ahash = "0.8"
 
 # Errors & Observability
@@ -66,7 +66,7 @@ tower = ["dep:tower", "dep:tower-service", "dep:tower-layer"]
 [dev-dependencies]
 proptest = "1.5"
 wiremock = "0.6"
-jsonschema = "0.58"
+jsonschema = "0.60"
 hex = "0.4"
 serde_urlencoded = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
