@@ -572,17 +572,21 @@ impl AtprotoOAuthClientBuilder {
 /// Orchestrates the entire lifecycle: identity resolution, discovery, PAR, code exchange,
 /// token rotation, and transparent auto-nonce retry loops.
 /// Per-subject single-flight coordination for refresh-token exchanges
+/// Maximum distinct subject entries retained in [`RefreshSingleFlight`] before
+/// evicting idle entries that are not currently locked.
+const MAX_TRACKED_REFRESH_SUBJECTS: usize = 4096;
+
+/// Per-subject single-flight mutex table for [`AtprotoOAuthClient::refresh_session`]
+/// and [`AtprotoOAuthClient::refresh_shared_session`]
 /// (review H4, mirroring `@atproto/oauth-client-node`'s per-DID `requestLock`).
 ///
 /// A refresh token is single-use: two concurrent refreshes for the same
 /// session race at the authorization server, and the loser receives
 /// `invalid_grant` with no recovery. This guard serializes refreshes per
-/// subject so concurrent callers *share* one refresh outcome instead of
-/// competing for the grant.
+/// subject and bounds table capacity to [`MAX_TRACKED_REFRESH_SUBJECTS`].
 #[derive(Debug, Default)]
 struct RefreshSingleFlight {
-    /// One mutex per in-flight subject; entries are intentionally left in the
-    /// map after use (bounded by distinct subjects per client instance).
+    /// One mutex per in-flight subject.
     locks: parking_lot::RwLock<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
@@ -601,6 +605,14 @@ impl RefreshSingleFlight {
         let mut guard = self.locks.write();
         if let Some(existing) = guard.get(sub) {
             return Arc::clone(existing);
+        }
+        if guard.len() >= MAX_TRACKED_REFRESH_SUBJECTS {
+            guard.retain(|_, arc_mutex| Arc::strong_count(arc_mutex) > 1);
+            if guard.len() >= MAX_TRACKED_REFRESH_SUBJECTS {
+                if let Some(victim_key) = guard.keys().next().cloned() {
+                    guard.remove(&victim_key);
+                }
+            }
         }
         let fresh = Arc::new(tokio::sync::Mutex::new(()));
         guard.insert(sub.to_string(), Arc::clone(&fresh));
@@ -1023,14 +1035,64 @@ impl AtprotoOAuthClient {
         session: &mut OAuthSession,
     ) -> Result<(), AtprotoOAuthError> {
         // Per-subject single-flight: serialize refreshes for the same DID so
-        // concurrent callers share one grant instead of racing the single-use
-        // refresh token (review H4; mirrors @atproto/oauth-client-node).
+        // concurrent callers are ordered deterministically (review H4; mirrors
+        // @atproto/oauth-client-node).
         let refresh_lock = self.refresh_single_flight.lock_for(session.sub());
         let _refresh_guard = refresh_lock.lock().await;
+        self.refresh_session_locked(session).await
+    }
 
+    /// Coalesces concurrent refresh requests against a shared [`OAuthSession`] behind a
+    /// [`tokio::sync::RwLock`].
+    ///
+    /// If multiple tasks concurrently observe an expired access token on the same shared
+    /// session, the first task to acquire the per-subject single-flight lock performs the
+    /// single-use refresh token rotation and writes the updated session back to `shared_session`.
+    /// Subsequent tasks waking from the lock observe that the refresh token has already
+    /// rotated and return the updated [`OAuthSession`] without re-submitting the consumed
+    /// refresh token to the Authorization Server.
+    ///
+    /// # Errors
+    /// Returns [`AtprotoOAuthError`] if the underlying token refresh fails.
+    pub async fn refresh_shared_session(
+        &self,
+        shared_session: &tokio::sync::RwLock<OAuthSession>,
+    ) -> Result<OAuthSession, AtprotoOAuthError> {
+        let (sub, observed_rt) = {
+            let guard = shared_session.read().await;
+            let rt = guard
+                .refresh_token()
+                .ok_or(TokenError::MissingRefreshToken)?
+                .to_string();
+            (guard.sub().to_string(), rt)
+        };
+
+        let refresh_lock = self.refresh_single_flight.lock_for(&sub);
+        let _refresh_guard = refresh_lock.lock().await;
+
+        let mut working = {
+            let guard = shared_session.read().await;
+            if let Some(current_rt) = guard.refresh_token() {
+                if !crate::crypto::constant_time_eq(current_rt.as_bytes(), observed_rt.as_bytes()) {
+                    return Ok(guard.clone());
+                }
+            }
+            guard.clone()
+        };
+
+        self.refresh_session_locked(&mut working).await?;
+        *shared_session.write().await = working.clone();
+        Ok(working)
+    }
+
+    async fn refresh_session_locked(
+        &self,
+        session: &mut OAuthSession,
+    ) -> Result<(), AtprotoOAuthError> {
         let refresh_token = session
             .refresh_token()
-            .ok_or(TokenError::MissingRefreshToken)?;
+            .ok_or(TokenError::MissingRefreshToken)?
+            .to_string();
 
         let token_endpoint = session
             .token_endpoint()
@@ -1039,7 +1101,7 @@ impl AtprotoOAuthClient {
 
         let form_pairs: Vec<(&str, &str)> = vec![
             ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
+            ("refresh_token", refresh_token.as_str()),
             ("client_id", self.metadata.client_id.as_str()),
         ];
 
@@ -1123,10 +1185,10 @@ impl AtprotoOAuthClient {
         }
 
         // Consume by value (E0509-safe owned accessors; see TokenResponse::into_parts).
-        let (_sub, access_token, refresh_token, _token_type, scope, expires_in) =
+        let (_sub, new_access_token, new_refresh_token, _token_type, scope, expires_in) =
             resp_json.into_parts();
 
-        session.rotate_tokens_with_scope(access_token, refresh_token, expires_in, scope);
+        session.rotate_tokens_with_scope(new_access_token, new_refresh_token, expires_in, scope);
 
         Ok(())
     }
@@ -2019,5 +2081,73 @@ mod tests {
             payload["exp"].as_u64().unwrap() - payload["iat"].as_u64().unwrap(),
             60
         );
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_refresh_single_flight_shares_rotated_session_without_replay() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // The token endpoint must be called EXACTLY ONCE across all 5 concurrent callers!
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("DPoP-Nonce", "rotated-nonce-1")
+                    .set_body_json(serde_json::json!({
+                        "access_token": "rotated_access_token_v2",
+                        "refresh_token": "rotated_refresh_token_v2",
+                        "token_type": "DPoP",
+                        "scope": "atproto transition:generic",
+                        "expires_in": 3600,
+                        "sub": "did:plc:concurrentuser123"
+                    })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(
+            AtprotoOAuthClient::builder()
+                .client_metadata(OAuthClientMetadata::new(
+                    "https://app.example.com/client-metadata.json",
+                    "https://app.example.com/oauth/callback",
+                ))
+                .ssrf_filter(SsrfFilter::new(true))
+                .build()
+                .unwrap(),
+        );
+
+        let token_endpoint = format!("{}/oauth/token", server.uri());
+        let initial_session = OAuthSession::new(
+            "did:plc:concurrentuser123",
+            "initial_access_token_v1",
+            Some("single_use_refresh_token_v1".to_string()),
+            "DPoP",
+            Some("atproto transition:generic".to_string()),
+            Some(60),
+            DPoPKey::generate(),
+            Some(server.uri()),
+            Some(server.uri()),
+            Some(token_endpoint),
+        )
+        .unwrap();
+
+        let shared_session = Arc::new(tokio::sync::RwLock::new(initial_session));
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            let c = Arc::clone(&client);
+            let s = Arc::clone(&shared_session);
+            handles.push(tokio::spawn(async move {
+                c.refresh_shared_session(&s).await.unwrap()
+            }));
+        }
+
+        for h in handles {
+            let refreshed = h.await.unwrap();
+            assert_eq!(refreshed.access_token(), "rotated_access_token_v2");
+            assert_eq!(refreshed.refresh_token(), Some("rotated_refresh_token_v2"));
+        }
     }
 }
