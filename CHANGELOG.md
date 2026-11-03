@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.12] - 2026-11-03
+
+### Added
+
+- **Connection-Pooled SSRF-Safe DNS Resolver (`SsrfDnsResolver`)** (`src/ssrf.rs`):
+  - Implemented `reqwest::dns::Resolve` on `SsrfDnsResolver` with bounded (`MAX_PINNED_HOSTS = 1024`) host-to-IP pinning and in-resolver Verus `ip_filter` validation.
+  - Added `SsrfFilter::pooled_client` and `SsrfFilter::dns_resolver`, and updated `SsrfFilter::build_pinned_client` to reuse shared connection-pooled `reqwest::Client` instances (`STRICT_POOLED_CLIENT` / `LOCALHOST_POOLED_CLIENT`) instead of initializing a new TLS config and connection pool per HTTP request.
+- **CI Workflow Upgrade** (`.github/workflows/codeql.yml`): Upgraded `github/codeql-action` from `v3` (Node 20) to `v4.39.2` (Node 24).
+
 ## [0.3.11] - 2026-11-03
 
 ### Added
