@@ -20,6 +20,7 @@
 use std::net::{IpAddr, SocketAddr};
 #[cfg(test)]
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::sync::{Arc, LazyLock};
 use url::Url;
 
 use crate::error::SsrfError;
@@ -27,6 +28,172 @@ pub use crate::kernels::ip_filter::{
     is_restricted_ip, is_restricted_ipv4, is_restricted_ipv4_octets, is_restricted_ipv6,
     is_restricted_ipv6_segments,
 };
+
+/// Maximum number of host-to-IP pins cached in [`SsrfDnsResolver`].
+pub const MAX_PINNED_HOSTS: usize = 1024;
+
+/// Custom [`reqwest::dns::Resolve`] implementation that enforces [`SsrfFilter`]
+/// hostname and IP-range invariants inside the HTTP connector's DNS resolution hook.
+///
+/// This allows a single persistent, connection-pooled [`reqwest::Client`] to reuse
+/// HTTP/1.1 keep-alive and HTTP/2 multiplexed TLS sessions across outbound requests
+/// while still guaranteeing zero-TOCTOU DNS-pinned SSRF protection.
+#[derive(Debug)]
+pub struct SsrfDnsResolver {
+    filter: SsrfFilter,
+    pinned_ips: parking_lot::RwLock<ahash::AHashMap<String, IpAddr>>,
+}
+
+impl SsrfDnsResolver {
+    /// Creates a new SSRF-enforcing DNS resolver.
+    #[must_use]
+    pub fn new(allow_insecure_localhost: bool) -> Self {
+        Self {
+            filter: SsrfFilter::new(allow_insecure_localhost),
+            pinned_ips: parking_lot::RwLock::new(ahash::AHashMap::new()),
+        }
+    }
+
+    /// Pins a lowercased hostname to a pre-validated [`IpAddr`].
+    pub fn pin_host(&self, host: &str, ip: IpAddr) {
+        if self.filter.validate_ip(ip).is_err() {
+            return;
+        }
+        let key = host.trim_end_matches('.').to_ascii_lowercase();
+        let mut guard = self.pinned_ips.write();
+        if !guard.contains_key(&key) && guard.len() >= MAX_PINNED_HOSTS {
+            if let Some(victim) = guard.keys().next().cloned() {
+                guard.remove(&victim);
+            }
+        }
+        guard.insert(key, ip);
+    }
+
+    /// Looks up a previously pinned [`IpAddr`] for `host`.
+    #[must_use]
+    pub fn get_pinned_ip(&self, host: &str) -> Option<IpAddr> {
+        let key = host.trim_end_matches('.').to_ascii_lowercase();
+        self.pinned_ips.read().get(&key).copied()
+    }
+}
+
+impl reqwest::dns::Resolve for SsrfDnsResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().trim_end_matches('.').to_ascii_lowercase();
+        let filter = self.filter;
+        let pinned = self.get_pinned_ip(&host);
+
+        Box::pin(async move {
+            if !filter.allow_insecure_localhost && is_blocked_hostname(&host) {
+                return Err(Box::new(SsrfError::BlockedHost(host))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+            if filter.allow_insecure_localhost {
+                let metadata_or_internal = host == "metadata.google.internal"
+                    || host == "instance-data"
+                    || host == "metadata.internal"
+                    || host == "169.254.169.254"
+                    || host.ends_with(".internal")
+                    || host.ends_with(".local")
+                    || host.ends_with(".localhost");
+                if metadata_or_internal {
+                    return Err(Box::new(SsrfError::BlockedHost(host))
+                        as Box<dyn std::error::Error + Send + Sync>);
+                }
+            }
+
+            if let Some(ip) = pinned {
+                filter
+                    .validate_ip(ip)
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                let addrs: reqwest::dns::Addrs = Box::new(std::iter::once(SocketAddr::new(ip, 0)));
+                return Ok(addrs);
+            }
+
+            let mut addrs: Vec<SocketAddr> = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                tokio::net::lookup_host((host.as_str(), 0)),
+            )
+            .await
+            .map_err(|_| {
+                Box::new(SsrfError::DnsResolutionFailed(format!(
+                    "DNS resolution for {host} timed out after 5s"
+                ))) as Box<dyn std::error::Error + Send + Sync>
+            })?
+            .map_err(|e| {
+                Box::new(SsrfError::DnsResolutionFailed(format!("{host}: {e}")))
+                    as Box<dyn std::error::Error + Send + Sync>
+            })?
+            .collect();
+
+            if addrs.is_empty() {
+                return Err(Box::new(SsrfError::DnsResolutionFailed(format!(
+                    "No DNS records returned for {host}"
+                )))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+
+            for addr in &addrs {
+                filter
+                    .validate_ip(addr.ip())
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            }
+
+            if filter.allow_insecure_localhost {
+                addrs.sort_by_key(|a| if a.is_ipv4() { 0 } else { 1 });
+            }
+
+            let iter: reqwest::dns::Addrs = Box::new(addrs.into_iter());
+            Ok(iter)
+        })
+    }
+}
+
+fn build_pooled_client_pair(
+    allow_insecure_localhost: bool,
+) -> (reqwest::Client, Arc<SsrfDnsResolver>) {
+    let resolver = Arc::new(SsrfDnsResolver::new(allow_insecure_localhost));
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .no_proxy()
+        .dns_resolver(Arc::clone(&resolver))
+        .build()
+        .unwrap_or_default();
+    (client, resolver)
+}
+
+type PooledClientKey = (Option<tokio::runtime::Id>, bool);
+type PooledClientPair = (reqwest::Client, Arc<SsrfDnsResolver>);
+type PooledClientMap = ahash::AHashMap<PooledClientKey, PooledClientPair>;
+
+static POOLED_CLIENTS: LazyLock<parking_lot::RwLock<PooledClientMap>> =
+    LazyLock::new(|| parking_lot::RwLock::new(ahash::AHashMap::new()));
+
+fn runtime_scoped_client_and_resolver(
+    allow_insecure_localhost: bool,
+) -> (reqwest::Client, Arc<SsrfDnsResolver>) {
+    let runtime_id = tokio::runtime::Handle::try_current().ok().map(|h| h.id());
+    let key = (runtime_id, allow_insecure_localhost);
+
+    if let Some(pair) = POOLED_CLIENTS.read().get(&key) {
+        return pair.clone();
+    }
+
+    let built = build_pooled_client_pair(allow_insecure_localhost);
+    let mut guard = POOLED_CLIENTS.write();
+    if let Some(existing) = guard.get(&key) {
+        return existing.clone();
+    }
+    if guard.len() >= 64 {
+        if let Some(victim) = guard.keys().next().copied() {
+            guard.remove(&victim);
+        }
+    }
+    guard.insert(key, built.clone());
+    built
+}
 
 /// Checks if a hostname matches any cloud metadata or internal hostnames.
 ///
@@ -208,17 +375,35 @@ impl SsrfFilter {
         Ok(pinned_addr)
     }
 
-    /// Constructs an SSRF-safe, DNS-pinned [`reqwest::Client`] configured with disabled automatic redirects
-    /// (`Policy::none()`), connection/request timeouts, and socket pinning to a verified IP address.
+    fn shared_client_and_resolver(&self) -> (reqwest::Client, Arc<SsrfDnsResolver>) {
+        runtime_scoped_client_and_resolver(self.allow_insecure_localhost)
+    }
+
+    /// Returns a shared, connection-pooled [`reqwest::Client`] backed by [`SsrfDnsResolver`]
+    /// with automatic redirects and environment proxies disabled.
+    #[must_use]
+    pub fn pooled_client(&self) -> reqwest::Client {
+        self.shared_client_and_resolver().0
+    }
+
+    /// Returns the shared [`SsrfDnsResolver`] associated with this filter mode.
+    #[must_use]
+    pub fn dns_resolver(&self) -> Arc<SsrfDnsResolver> {
+        self.shared_client_and_resolver().1
+    }
+
+    /// Returns a pooled, SSRF-safe, DNS-pinned [`reqwest::Client`] configured with disabled automatic redirects
+    /// (`Policy::none()`), disabled environment proxies (`.no_proxy()`), connection/request timeouts,
+    /// and socket pinning to a verified IP address via [`SsrfDnsResolver`].
     ///
     /// # Security Invariants
     /// 1. Resolves all DNS records for the URL's hostname.
     /// 2. Validates *every* resolved IP address against restricted and private ranges.
-    /// 3. Binds the HTTP client connection directly to the verified socket address via `.resolve()`.
+    /// 3. Pins the hostname in [`SsrfDnsResolver`] to the verified IP address.
     /// 4. Disables automatic redirects to prevent credential / token forwarding.
     ///
     /// # Errors
-    /// Returns [`SsrfError`] if DNS resolution fails, an IP is blocked, or the client cannot be built.
+    /// Returns [`SsrfError`] if DNS resolution fails or an IP/hostname is blocked.
     pub async fn build_pinned_client(
         &self,
         url: &Url,
@@ -226,27 +411,10 @@ impl SsrfFilter {
         let (pinned_addr, host_header) = self.resolve_and_pin(url).await?;
         let host_only = url.host_str().unwrap_or("localhost");
 
-        let mut builder = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(std::time::Duration::from_secs(5))
-            .timeout(std::time::Duration::from_secs(10))
-            // Hard-disable environment proxies (`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`):
-            // with an HTTPS proxy the TCP connection terminates at the proxy and the
-            // target hostname is sent via CONNECT, so proxy-side DNS — not the locally
-            // validated and pinned address — would select the destination. That
-            // silently invalidates the socket pin below and re-opens split-DNS /
-            // proxy-side rebinding paths (independent review H6). Pinned transport
-            // and proxies are mutually exclusive trust models; if proxied egress is
-            // ever needed it requires a separate, explicitly-constructed client.
-            .no_proxy();
-
+        let (client, resolver) = self.shared_client_and_resolver();
         if host_only.parse::<IpAddr>().is_err() {
-            builder = builder.resolve(host_only, pinned_addr);
+            resolver.pin_host(host_only, pinned_addr.ip());
         }
-
-        let client = builder
-            .build()
-            .map_err(|e| SsrfError::Http(e.to_string()))?;
 
         Ok((client, pinned_addr, host_header))
     }
@@ -543,5 +711,68 @@ mod tests {
 
         let teredo_plain = Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 0);
         assert!(is_restricted_ipv6(&teredo_plain));
+    }
+
+    #[tokio::test]
+    async fn test_ssrf_dns_resolver_pinning_eviction_and_restrictions() {
+        use reqwest::dns::{Name, Resolve};
+        use std::str::FromStr;
+
+        let strict_resolver = SsrfDnsResolver::new(false);
+        // Restricted IP pin is ignored in strict mode
+        strict_resolver.pin_host("evil.example", IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+        assert!(strict_resolver.get_pinned_ip("evil.example").is_none());
+
+        // Public IP pin succeeds and resolves immediately without network lookup
+        let public_ip = IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34));
+        strict_resolver.pin_host("Example.COM.", public_ip);
+        assert_eq!(
+            strict_resolver.get_pinned_ip("example.com"),
+            Some(public_ip)
+        );
+        let mut resolved = strict_resolver
+            .resolve(Name::from_str("example.com").unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resolved.next().unwrap().ip(), public_ip);
+
+        // Blocked hostname fails inside Resolve::resolve
+        assert!(strict_resolver
+            .resolve(Name::from_str("localhost").unwrap())
+            .await
+            .is_err());
+        assert!(strict_resolver
+            .resolve(Name::from_str("metadata.google.internal").unwrap())
+            .await
+            .is_err());
+
+        // Localhost mode still rejects metadata/internal in Resolve::resolve, but resolves localhost
+        let local_resolver = SsrfDnsResolver::new(true);
+        assert!(local_resolver
+            .resolve(Name::from_str("metadata.google.internal").unwrap())
+            .await
+            .is_err());
+        let mut local_addrs = local_resolver
+            .resolve(Name::from_str("localhost").unwrap())
+            .await
+            .unwrap();
+        assert!(local_addrs.next().unwrap().ip().is_loopback());
+
+        // Bounded pin eviction at MAX_PINNED_HOSTS
+        for i in 0..(MAX_PINNED_HOSTS + 10) {
+            local_resolver.pin_host(
+                &format!("host-{i}.example.com"),
+                IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
+            );
+        }
+        assert!(local_resolver.pinned_ips.read().len() <= MAX_PINNED_HOSTS);
+
+        // Pooled client & dns_resolver accessors
+        let filter_strict = SsrfFilter::new(false);
+        let _c1 = filter_strict.pooled_client();
+        let _r1 = filter_strict.dns_resolver();
+        let filter_local = SsrfFilter::new(true);
+        let _c2 = filter_local.pooled_client();
+        let _r2 = filter_local.dns_resolver();
     }
 }
