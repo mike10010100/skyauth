@@ -164,11 +164,36 @@ fn build_pooled_client_pair(
     (client, resolver)
 }
 
-static STRICT_POOLED_CLIENT: LazyLock<(reqwest::Client, Arc<SsrfDnsResolver>)> =
-    LazyLock::new(|| build_pooled_client_pair(false));
+type PooledClientKey = (Option<tokio::runtime::Id>, bool);
+type PooledClientPair = (reqwest::Client, Arc<SsrfDnsResolver>);
+type PooledClientMap = ahash::AHashMap<PooledClientKey, PooledClientPair>;
 
-static LOCALHOST_POOLED_CLIENT: LazyLock<(reqwest::Client, Arc<SsrfDnsResolver>)> =
-    LazyLock::new(|| build_pooled_client_pair(true));
+static POOLED_CLIENTS: LazyLock<parking_lot::RwLock<PooledClientMap>> =
+    LazyLock::new(|| parking_lot::RwLock::new(ahash::AHashMap::new()));
+
+fn runtime_scoped_client_and_resolver(
+    allow_insecure_localhost: bool,
+) -> (reqwest::Client, Arc<SsrfDnsResolver>) {
+    let runtime_id = tokio::runtime::Handle::try_current().ok().map(|h| h.id());
+    let key = (runtime_id, allow_insecure_localhost);
+
+    if let Some(pair) = POOLED_CLIENTS.read().get(&key) {
+        return pair.clone();
+    }
+
+    let built = build_pooled_client_pair(allow_insecure_localhost);
+    let mut guard = POOLED_CLIENTS.write();
+    if let Some(existing) = guard.get(&key) {
+        return existing.clone();
+    }
+    if guard.len() >= 64 {
+        if let Some(victim) = guard.keys().next().copied() {
+            guard.remove(&victim);
+        }
+    }
+    guard.insert(key, built.clone());
+    built
+}
 
 /// Checks if a hostname matches any cloud metadata or internal hostnames.
 ///
@@ -350,25 +375,21 @@ impl SsrfFilter {
         Ok(pinned_addr)
     }
 
-    fn shared_client_and_resolver(&self) -> &'static (reqwest::Client, Arc<SsrfDnsResolver>) {
-        if self.allow_insecure_localhost {
-            &LOCALHOST_POOLED_CLIENT
-        } else {
-            &STRICT_POOLED_CLIENT
-        }
+    fn shared_client_and_resolver(&self) -> (reqwest::Client, Arc<SsrfDnsResolver>) {
+        runtime_scoped_client_and_resolver(self.allow_insecure_localhost)
     }
 
     /// Returns a shared, connection-pooled [`reqwest::Client`] backed by [`SsrfDnsResolver`]
     /// with automatic redirects and environment proxies disabled.
     #[must_use]
     pub fn pooled_client(&self) -> reqwest::Client {
-        self.shared_client_and_resolver().0.clone()
+        self.shared_client_and_resolver().0
     }
 
     /// Returns the shared [`SsrfDnsResolver`] associated with this filter mode.
     #[must_use]
     pub fn dns_resolver(&self) -> Arc<SsrfDnsResolver> {
-        Arc::clone(&self.shared_client_and_resolver().1)
+        self.shared_client_and_resolver().1
     }
 
     /// Returns a pooled, SSRF-safe, DNS-pinned [`reqwest::Client`] configured with disabled automatic redirects
@@ -395,7 +416,7 @@ impl SsrfFilter {
             resolver.pin_host(host_only, pinned_addr.ip());
         }
 
-        Ok((client.clone(), pinned_addr, host_header))
+        Ok((client, pinned_addr, host_header))
     }
 
     /// Executes a safe HTTP GET request with SSRF validation, DNS pinning, redirect depth bounding,
