@@ -126,6 +126,7 @@ pub mod kernels;
 pub mod par;
 pub mod pkce;
 pub mod sealed;
+pub mod service_auth;
 pub mod session;
 pub mod ssrf;
 pub mod store;
@@ -168,6 +169,13 @@ pub use integrations::{
 pub use par::{build_authorization_url, execute_par_request, ParParameters, ParResponse};
 pub use pkce::{derive_s256_challenge, validate_verifier, verify_pkce, PkceMethod, PkcePair};
 pub use sealed::{SealedBox, SEALED_ENVELOPE_PREFIX};
+pub use service_auth::{
+    decode_multikey, encode_multikey_p256, encode_multikey_secp256k1, extract_bearer_token,
+    is_valid_service_did, parse_service_jwt_claims_unverified, AtprotoVerifyingKey,
+    CachedSigningKey, DidKeyCache, ServiceAuthVerifier, ServiceJwtClaims, ServiceJwtHeader,
+    DID_KEY_CACHE_SHARDS, DID_KEY_CACHE_TTL_SECS, ES256K_SERVICE_AUTH_ALG, ES256_SERVICE_AUTH_ALG,
+    MULTIKEY_P256_VARINT, MULTIKEY_SECP256K1_VARINT, SERVICE_JWT_CLOCK_SKEW_LEEWAY_SECS,
+};
 pub use session::OAuthSession;
 pub use ssrf::{
     is_blocked_hostname, is_restricted_ip, is_restricted_ipv4, is_restricted_ipv6,

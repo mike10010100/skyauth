@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.10] - 2026-11-03
+
+### Added
+
+- **ATProto Service Auth (`com.atproto.server.getServiceAuth`) Verification Engine** (`src/service_auth.rs`, `src/lib.rs`): Added `ServiceAuthVerifier`, `DidKeyCache` (64-shard bounded TTL cache with automatic invalidation on signature failure), `AtprotoVerifyingKey`, `ServiceJwtHeader`, `ServiceJwtClaims`, `is_valid_service_did`, `decode_multikey`, `encode_multikey_secp256k1`, `encode_multikey_p256`, `extract_bearer_token`, and `parse_service_jwt_claims_unverified` supporting both `ES256K` (`secp256k1`, 2-byte unsigned varint `[0xe7, 0x01]` and legacy 1-byte `0xe7`) and `ES256` (`P-256`, 2-byte unsigned varint `[0x80, 0x24]`) `#atproto` verification methods.
+- **Coalesced Shared-Session Refresh (`AtprotoOAuthClient::refresh_shared_session`)** (`src/client.rs`): Added `refresh_shared_session(&tokio::sync::RwLock<OAuthSession>)` with double-checked single-flight rotation coalescing so concurrent tasks sharing an `OAuthSession` adopt the first caller's rotated credentials without replaying the consumed `refresh_token`, and bounded `RefreshSingleFlight` subject tracking to `4,096` entries.
+
 ## [0.3.9] - 2026-10-28
 
 ### Added
