@@ -200,7 +200,7 @@ fn test_inventory_count_is_recorded_for_docs() {
     // the inventory intentionally counts the union.
     assert_eq!(
         inventory.len(),
-        57,
+        63,
         "cover-tag count changed — update README/docs and this pin"
     );
 }

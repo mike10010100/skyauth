@@ -70,6 +70,9 @@ pub struct ExIpAddr(std::net::IpAddr);
 #[path = "../kernels/ip_filter.rs"]
 pub mod ip_filter;
 
+#[path = "../kernels/service_auth_bytes.rs"]
+pub mod service_auth_bytes;
+
 // ---------------------------------------------------------------------------
 // Theorems over the shipped kernels.
 // ---------------------------------------------------------------------------
@@ -307,6 +310,77 @@ pub proof fn theorem_public_ipv6_not_restricted()
     assert(s0 != 0x2001 && s0 != 0x2002 && s0 != 0x0064 && s0 != 0);
     assert(seg[1] != 0x0db8);
     assert(seg[4] != 0xffff && seg[5] != 0xffff);
+}
+
+// ---------------------------------------------------------------------------
+// Theorems over the shipped `service_auth_bytes` kernel.
+// ---------------------------------------------------------------------------
+
+/// 35-byte 2-byte varint `[0xe7, 0x01, 0x02|0x03]` is classified as `secp256k1` (`1`) with offset `2`.
+pub proof fn theorem_multikey_varint_secp256k1_accepted(b2: u8)
+    requires service_auth_bytes::spec_is_compressed_sec1_tag(b2)
+    ensures
+        service_auth_bytes::spec_classify_multikey_header(35, 0xe7, 0x01, b2) == 1u8,
+        service_auth_bytes::spec_multikey_sec1_offset(35, 0xe7, 0x01, b2) == 2usize,
+{
+}
+
+/// 34-byte legacy 1-byte `[0xe7, 0x02|0x03, b2]` is classified as `secp256k1` (`1`) with offset `1`.
+pub proof fn theorem_multikey_legacy_secp256k1_accepted(b1: u8, b2: u8)
+    requires service_auth_bytes::spec_is_compressed_sec1_tag(b1)
+    ensures
+        service_auth_bytes::spec_classify_multikey_header(34, 0xe7, b1, b2) == 1u8,
+        service_auth_bytes::spec_multikey_sec1_offset(34, 0xe7, b1, b2) == 1usize,
+{
+}
+
+/// 35-byte 2-byte varint `[0x80, 0x24, 0x02|0x03]` is classified as `P-256` (`2`) with offset `2`.
+pub proof fn theorem_multikey_varint_p256_accepted(b2: u8)
+    requires service_auth_bytes::spec_is_compressed_sec1_tag(b2)
+    ensures
+        service_auth_bytes::spec_classify_multikey_header(35, 0x80, 0x24, b2) == 2u8,
+        service_auth_bytes::spec_multikey_sec1_offset(35, 0x80, 0x24, b2) == 2usize,
+{
+}
+
+/// Prefix disambiguation theorem: a 34-byte payload starting with `[0xe7, 0x01, ...]` is NEVER
+/// accepted as a legacy 1-byte secp256k1 key because `0x01` is not a valid SEC1 compressed tag (`0x02|0x03`).
+pub proof fn theorem_multikey_prefix_disambiguation_partition(b2: u8)
+    ensures
+        service_auth_bytes::spec_classify_multikey_header(34, 0xe7, 0x01, b2) == 0u8,
+        service_auth_bytes::spec_multikey_sec1_offset(34, 0xe7, 0x01, b2) == 0usize,
+{
+}
+
+/// Any payload whose length is neither 34 nor 35 is unconditionally rejected (`0`).
+pub proof fn theorem_multikey_wrong_len_rejected(len: usize, b0: u8, b1: u8, b2: u8)
+    requires len != 34 && len != 35
+    ensures
+        service_auth_bytes::spec_classify_multikey_header(len, b0, b1, b2) == 0u8,
+        service_auth_bytes::spec_multikey_sec1_offset(len, b0, b1, b2) == 0usize,
+{
+}
+
+/// Cross-curve algorithm confusion is impossible: `ES256K` (`1`) never accepts `P-256` (`2`),
+/// `ES256` (`2`) never accepts `secp256k1` (`1`), and unknown `alg_id` (`!= 1 && != 2`) never accepts any curve.
+pub proof fn theorem_no_cross_curve_alg_confusion(alg_id: u8, curve_id: u8)
+    ensures
+        service_auth_bytes::spec_is_alg_bound_to_curve(1, 1),
+        service_auth_bytes::spec_is_alg_bound_to_curve(2, 2),
+        !service_auth_bytes::spec_is_alg_bound_to_curve(1, 2),
+        !service_auth_bytes::spec_is_alg_bound_to_curve(2, 1),
+        (alg_id != 1 && alg_id != 2) ==> !service_auth_bytes::spec_is_alg_bound_to_curve(alg_id, curve_id),
+        (curve_id != 1 && curve_id != 2) ==> !service_auth_bytes::spec_is_alg_bound_to_curve(alg_id, curve_id),
+{
+}
+
+/// Service Auth JWT expiration check is monotonic in `exp` and exact at the `exp + leeway` boundary.
+pub proof fn theorem_service_jwt_exp_window_monotonic(exp: u64, now_secs: u64, leeway_secs: u64)
+    ensures
+        service_auth_bytes::spec_is_service_jwt_exp_valid(exp, exp, leeway_secs),
+        (now_secs as int) > (exp as int) + (leeway_secs as int)
+            ==> !service_auth_bytes::spec_is_service_jwt_exp_valid(exp, now_secs, leeway_secs),
+{
 }
 
 } // verus!

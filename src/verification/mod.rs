@@ -37,6 +37,7 @@
 //! | **Constant-Time Eq** | XOR/accumulator evaluation $\iff$ element-wise equality (over the symbolic two-octet model) | [`verus_contracts`] | [`formal_models::ConstantTimeEqSpec`] | [`kani_harnesses::proof_constant_time_eq_soundness`] |
 //! | **DPoP HTU Invariants** | Component-level assembly invariants (scheme-aware port rules, no query/fragment) — exhaustive over the concrete domain | — (String heap model makes CBMC cost explode; measured >20 GB, see harness docs)³ | [`formal_models::DPoPHtuFormalSpec`] | [`kani_harnesses::proof_dpop_htu_normalization_invariants`]³ |
 //! | **DPoP `jti` Admission Bound** | Empty reject, >`MAX_JTI_LENGTH` reject, at-cap admit over the shipped bound constant | — | — | [`kani_harnesses::proof_jti_admission_bound`] |
+//! | **Service Auth Multikey & Curve Binding** | Multikey (`[0xe7, 0x01]`, `[0xe7]`, `[0x80, 0x24]`) prefix/length partition, zero cross-curve JOSE `alg` confusion (`ES256K` ↔ `secp256k1`, `ES256` ↔ `P-256`), and overflow-safe `exp + leeway` window over the **shipped kernel** | [`verus_kernels`] (kernel-bound) | — | [`kani_harnesses::proof_service_auth_multikey_and_curve_binding`] |
 //!
 //! ³ The HTU harness runs deterministically through `formal_verification_tests.rs`, exhaustive
 //!   over the concrete decision domain (both schemes × all port classes × boundary paths).
@@ -61,6 +62,6 @@ pub use formal_models::{
 };
 pub use kani_harnesses::{
     proof_constant_time_eq_soundness, proof_dpop_htu_normalization_invariants,
-    proof_pkce_s256_verifier_bounds, proof_single_use_state_consumption,
-    proof_ssrf_restricted_ip_rejection, AntiVacuityCoverage,
+    proof_pkce_s256_verifier_bounds, proof_service_auth_multikey_and_curve_binding,
+    proof_single_use_state_consumption, proof_ssrf_restricted_ip_rejection, AntiVacuityCoverage,
 };

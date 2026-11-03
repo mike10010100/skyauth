@@ -27,8 +27,8 @@ use skyauth::verification::formal_models::{
 };
 use skyauth::verification::kani_harnesses::{
     global_coverage, proof_constant_time_eq_soundness, proof_dpop_htu_normalization_invariants,
-    proof_pkce_s256_verifier_bounds, proof_single_use_state_consumption,
-    proof_ssrf_restricted_ip_rejection,
+    proof_pkce_s256_verifier_bounds, proof_service_auth_multikey_and_curve_binding,
+    proof_single_use_state_consumption, proof_ssrf_restricted_ip_rejection,
 };
 
 #[test]
@@ -295,6 +295,22 @@ fn test_kani_proof_dpop_htu_normalization_invariants_with_reachability() {
         "custom_port_preserved_success",
         "uppercase_host_lowercased_success",
         "invalid_scheme_rejected",
+    ];
+
+    global_coverage().assert_all_covered(&required_tags);
+}
+
+#[test]
+fn test_kani_proof_service_auth_multikey_and_curve_binding_with_reachability() {
+    proof_service_auth_multikey_and_curve_binding();
+
+    let required_tags = [
+        "multikey_secp256k1_varint_valid",
+        "multikey_secp256k1_legacy_valid",
+        "multikey_p256_varint_valid",
+        "multikey_invalid_rejected",
+        "service_auth_curve_alg_bound",
+        "service_auth_cross_curve_rejected",
     ];
 
     global_coverage().assert_all_covered(&required_tags);

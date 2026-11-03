@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.11] - 2026-11-03
+
+### Added
+
+- **Formal Verification of ATProto Service Auth Multikey & Curve-to-JOSE-Alg Binding Kernels** (`src/kernels/service_auth_bytes.rs`, `src/verification/verus_kernels.rs`, `src/verification/kani_harnesses.rs`, `src/service_auth.rs`):
+  - Extracted dual-representation Verus/rustc kernel `kernels::service_auth_bytes` (`is_compressed_sec1_tag`, `classify_multikey_header`, `multikey_sec1_offset`, `is_alg_bound_to_curve`, `is_service_jwt_exp_valid`, `classify_multikey_bytes`, `alg_id_from_str`) and wired `ServiceAuthVerifier` directly through the verified kernel.
+  - Added 7 deductive Verus theorems (`theorem_multikey_varint_secp256k1_accepted`, `theorem_multikey_legacy_secp256k1_accepted`, `theorem_multikey_varint_p256_accepted`, `theorem_multikey_prefix_disambiguation_partition`, `theorem_multikey_wrong_len_rejected`, `theorem_no_cross_curve_alg_confusion`, `theorem_service_jwt_exp_window_monotonic`) verified over the shipped kernel (`60 verified, 0 errors`).
+  - Added Kani bounded model-checking proof harness #9 (`proof_service_auth_multikey_and_curve_binding`) with 6 anti-vacuity reachability cover points (`63` total enforced cover tags).
+- **Expanded Service Auth Test Suite & 90% CI Coverage Gate** (`src/service_auth.rs`, `.github/workflows/ci.yml`): Raised CI `cargo llvm-cov` gate from `80%` to `90%` line coverage and added exhaustive unit tests for `ServiceAuthVerifier`, `DidKeyCache` per-shard eviction, `P-256` (`ES256`) and cross-curve rejection, and `extract_bearer_token` bare-scheme rejection.
+
 ## [0.3.10] - 2026-11-03
 
 ### Added
