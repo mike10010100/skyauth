@@ -1151,3 +1151,164 @@ pub fn proof_jti_admission_bound() {
         anti_vacuity_cover!("jti_empty_rejected", !admissible(0));
     }
 }
+
+/// # Proof 9: ATProto Service Auth Multikey Disambiguation & Curve-to-JOSE-Alg Binding
+///
+/// **Theorem**:
+/// 1. `classify_multikey_header(len, b0, b1, b2)` and `multikey_sec1_offset(len, b0, b1, b2)`
+///    partition the Multikey header space cleanly into:
+///    - 35-byte `[0xe7, 0x01, 0x02|0x03]` -> `(CURVE_SECP256K1, 2)`
+///    - 34-byte `[0xe7, 0x02|0x03, _]` -> `(CURVE_SECP256K1, 1)`
+///    - 35-byte `[0x80, 0x24, 0x02|0x03]` -> `(CURVE_P256, 2)`
+///    - All other lengths/prefixes/uncompressed tags -> `(CURVE_NONE, 0)`
+/// 2. `is_alg_bound_to_curve(curve_id, alg_id)` accepts iff `(curve_id, alg_id)` is
+///    `(CURVE_SECP256K1, ALG_ES256K)` or `(CURVE_P256, ALG_ES256)` — zero cross-curve confusion.
+/// 3. `is_service_jwt_exp_valid(exp, now_secs, leeway_secs)` equals `now_secs <= exp.saturating_add(leeway_secs)`
+///    across all `(u64, u64, u64)` triples without arithmetic overflow.
+///
+/// **Anti-Vacuity Cover Points**:
+/// - `multikey_secp256k1_varint_valid`: 35-byte `[0xe7, 0x01, 0x02|0x03]` classified as `secp256k1` (offset 2).
+/// - `multikey_secp256k1_legacy_valid`: 34-byte `[0xe7, 0x02|0x03, _]` classified as `secp256k1` (offset 1).
+/// - `multikey_p256_varint_valid`: 35-byte `[0x80, 0x24, 0x02|0x03]` classified as `P-256` (offset 2).
+/// - `multikey_invalid_rejected`: Invalid length/prefix/tag rejected as `(CURVE_NONE, 0)`.
+/// - `service_auth_curve_alg_bound`: Matching curve and JOSE `alg` accepted.
+/// - `service_auth_cross_curve_rejected`: Cross-curve `(secp256k1, ES256)` / `(P-256, ES256K)` rejected.
+#[cfg_attr(kani, kani::proof)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+pub fn proof_service_auth_multikey_and_curve_binding() {
+    #[cfg(kani)]
+    {
+        use crate::kernels::service_auth_bytes::{
+            classify_multikey_header, is_alg_bound_to_curve, is_compressed_sec1_tag,
+            is_service_jwt_exp_valid, multikey_sec1_offset, ALG_ES256, ALG_ES256K, CURVE_NONE,
+            CURVE_P256, CURVE_SECP256K1,
+        };
+
+        let len: usize = kani::any();
+        kani::assume(len <= 40);
+        let b0: u8 = kani::any();
+        let b1: u8 = kani::any();
+        let b2: u8 = kani::any();
+
+        let curve = classify_multikey_header(len, b0, b1, b2);
+        let offset = multikey_sec1_offset(len, b0, b1, b2);
+
+        assert!(curve == CURVE_NONE || curve == CURVE_SECP256K1 || curve == CURVE_P256);
+        assert_eq!(curve != CURVE_NONE, offset == 1 || offset == 2);
+
+        if offset == 2 {
+            assert_eq!(len, 35);
+            assert!(is_compressed_sec1_tag(b2));
+            assert!(
+                (b0 == 0xe7 && b1 == 0x01 && curve == CURVE_SECP256K1)
+                    || (b0 == 0x80 && b1 == 0x24 && curve == CURVE_P256)
+            );
+        } else if offset == 1 {
+            assert_eq!(len, 34);
+            assert_eq!(b0, 0xe7);
+            assert!(is_compressed_sec1_tag(b1));
+            assert_eq!(curve, CURVE_SECP256K1);
+        } else {
+            assert_eq!(offset, 0);
+            assert_eq!(curve, CURVE_NONE);
+        }
+
+        let curve_id: u8 = kani::any();
+        let alg_id: u8 = kani::any();
+        let bound = is_alg_bound_to_curve(curve_id, alg_id);
+        assert_eq!(
+            bound,
+            (curve_id == CURVE_SECP256K1 && alg_id == ALG_ES256K)
+                || (curve_id == CURVE_P256 && alg_id == ALG_ES256)
+        );
+
+        let exp: u64 = kani::any();
+        let now_secs: u64 = kani::any();
+        let leeway_secs: u64 = kani::any();
+        assert_eq!(
+            is_service_jwt_exp_valid(exp, now_secs, leeway_secs),
+            now_secs <= exp.saturating_add(leeway_secs)
+        );
+
+        kani::cover!(
+            curve == CURVE_SECP256K1 && offset == 2,
+            "multikey_secp256k1_varint_valid"
+        );
+        kani::cover!(
+            curve == CURVE_SECP256K1 && offset == 1,
+            "multikey_secp256k1_legacy_valid"
+        );
+        kani::cover!(
+            curve == CURVE_P256 && offset == 2,
+            "multikey_p256_varint_valid"
+        );
+        kani::cover!(
+            curve == CURVE_NONE && offset == 0,
+            "multikey_invalid_rejected"
+        );
+        kani::cover!(bound, "service_auth_curve_alg_bound");
+        kani::cover!(
+            (curve_id == CURVE_SECP256K1 && alg_id == ALG_ES256 && !bound)
+                || (curve_id == CURVE_P256 && alg_id == ALG_ES256K && !bound),
+            "service_auth_cross_curve_rejected"
+        );
+    }
+
+    #[cfg(not(kani))]
+    {
+        use crate::kernels::service_auth_bytes::{
+            classify_multikey_header, is_alg_bound_to_curve, is_service_jwt_exp_valid,
+            multikey_sec1_offset, ALG_ES256, ALG_ES256K, ALG_NONE, CURVE_NONE, CURVE_P256,
+            CURVE_SECP256K1,
+        };
+
+        let k256_varint = (
+            classify_multikey_header(35, 0xe7, 0x01, 0x02),
+            multikey_sec1_offset(35, 0xe7, 0x01, 0x02),
+        );
+        assert_eq!(k256_varint, (CURVE_SECP256K1, 2));
+        anti_vacuity_cover!(
+            "multikey_secp256k1_varint_valid",
+            k256_varint == (CURVE_SECP256K1, 2)
+        );
+
+        let k256_legacy = (
+            classify_multikey_header(34, 0xe7, 0x03, 0xaa),
+            multikey_sec1_offset(34, 0xe7, 0x03, 0xaa),
+        );
+        assert_eq!(k256_legacy, (CURVE_SECP256K1, 1));
+        anti_vacuity_cover!(
+            "multikey_secp256k1_legacy_valid",
+            k256_legacy == (CURVE_SECP256K1, 1)
+        );
+
+        let p256_varint = (
+            classify_multikey_header(35, 0x80, 0x24, 0x02),
+            multikey_sec1_offset(35, 0x80, 0x24, 0x02),
+        );
+        assert_eq!(p256_varint, (CURVE_P256, 2));
+        anti_vacuity_cover!("multikey_p256_varint_valid", p256_varint == (CURVE_P256, 2));
+
+        let invalid = (
+            classify_multikey_header(34, 0xe7, 0x01, 0x02),
+            multikey_sec1_offset(34, 0xe7, 0x01, 0x02),
+        );
+        assert_eq!(invalid, (CURVE_NONE, 0));
+        anti_vacuity_cover!("multikey_invalid_rejected", invalid == (CURVE_NONE, 0));
+
+        let bound_ok = is_alg_bound_to_curve(CURVE_SECP256K1, ALG_ES256K)
+            && is_alg_bound_to_curve(CURVE_P256, ALG_ES256);
+        assert!(bound_ok);
+        anti_vacuity_cover!("service_auth_curve_alg_bound", bound_ok);
+
+        let cross_rejected = !is_alg_bound_to_curve(CURVE_SECP256K1, ALG_ES256)
+            && !is_alg_bound_to_curve(CURVE_P256, ALG_ES256K)
+            && !is_alg_bound_to_curve(CURVE_SECP256K1, ALG_NONE);
+        assert!(cross_rejected);
+        anti_vacuity_cover!("service_auth_cross_curve_rejected", cross_rejected);
+
+        assert!(is_service_jwt_exp_valid(1_000, 1_060, 60));
+        assert!(!is_service_jwt_exp_valid(1_000, 1_061, 60));
+        assert!(is_service_jwt_exp_valid(u64::MAX, u64::MAX, 60));
+    }
+}

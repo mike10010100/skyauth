@@ -30,3 +30,4 @@ pub mod htu_components;
 pub mod ip_filter;
 pub mod nsid_bytes;
 pub mod pkce_bytes;
+pub mod service_auth_bytes;

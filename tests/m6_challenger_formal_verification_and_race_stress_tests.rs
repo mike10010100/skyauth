@@ -43,8 +43,8 @@ use skyauth::verification::formal_models::{
 use skyauth::verification::kani_harnesses::{
     global_coverage, proof_constant_time_eq_soundness, proof_dpop_htu_normalization_invariants,
     proof_ipv6_adapter_refinement, proof_jti_admission_bound, proof_pkce_s256_verifier_bounds,
-    proof_pkce_validator_refinement, proof_single_use_state_consumption,
-    proof_ssrf_restricted_ip_rejection,
+    proof_pkce_validator_refinement, proof_service_auth_multikey_and_curve_binding,
+    proof_single_use_state_consumption, proof_ssrf_restricted_ip_rejection,
 };
 
 fn mock_stored_entry(state: &str) -> StoredStateEntry {
@@ -430,6 +430,7 @@ fn test_challenge_anti_vacuity_gate_coverage_verification() {
     proof_pkce_validator_refinement();
     proof_ipv6_adapter_refinement();
     proof_jti_admission_bound();
+    proof_service_auth_multikey_and_curve_binding();
 
     let all_required_tags = [
         "uninitialized_state_rejected",
@@ -489,6 +490,12 @@ fn test_challenge_anti_vacuity_gate_coverage_verification() {
         "jti_at_cap_admitted",
         "jti_over_cap_rejected",
         "jti_empty_rejected",
+        "multikey_secp256k1_varint_valid",
+        "multikey_secp256k1_legacy_valid",
+        "multikey_p256_varint_valid",
+        "multikey_invalid_rejected",
+        "service_auth_curve_alg_bound",
+        "service_auth_cross_curve_rejected",
     ];
 
     global_coverage().assert_all_covered(&all_required_tags);
