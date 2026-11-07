@@ -7,6 +7,10 @@ updates:
     groups:
       rust-dependencies:
         patterns: ["*"]
+    ignore:
+      # parking_lot 0.13+ requires rustc 1.95, exceeding skyauth's MSRV (1.89) and Kani toolchain
+      - dependency-name: "parking_lot"
+        versions: [">= 0.13.0"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
