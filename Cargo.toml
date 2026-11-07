@@ -42,7 +42,7 @@ webpki-roots = "1.0.10"
 # Concurrency & Async
 tokio = { version = "1.40", default-features = false, features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
 tokio-util = "0.7"
-parking_lot = "0.13"
+parking_lot = "0.12"
 ahash = "0.8"
 
 # Errors & Observability
