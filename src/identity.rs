@@ -349,18 +349,17 @@ pub fn validate_did_syntax(did: &str) -> Result<DidMethod, IdentityError> {
     // implicitly by the match arms below; unknown methods are rejected).
     match parts[1] {
         "plc" => {
-            // ATProto DID PLC grammar: exactly 24 lowercase alphanumeric chars
-            // (base32-sorted suffix; see did:plc registry). Previously only a
-            // minimum length was checked (review L2/#4), allowing traversal
-            // payloads like `did:plc:x/../../admin` through URL construction.
+            // ATProto DID PLC grammar: exactly 3 colon-separated parts and a
+            // 24-character lowercase alphanumeric identifier (base32-sorted suffix).
             let hash = parts[2];
-            let valid = hash.len() == 24
+            let valid = parts.len() == 3
+                && hash.len() == 24
                 && hash
                     .chars()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
             if !valid {
                 return Err(IdentityError::InvalidDidSyntax(format!(
-                    "did:plc identifier must be exactly 24 lowercase alphanumeric characters, got '{hash}'"
+                    "did:plc identifier must be exactly 24 lowercase alphanumeric characters with no extra colon segments, got '{trimmed}'"
                 )));
             }
             Ok(DidMethod::Plc)
@@ -368,24 +367,23 @@ pub fn validate_did_syntax(did: &str) -> Result<DidMethod, IdentityError> {
         "web" => {
             // did:web: the identifier is a domain optionally followed by
             // ':'-separated path segments. It must NOT contain userinfo ('@'),
-            // ports, empty segments, or characters that URL parsing would
-            // reinterpret (review L2: `trusted.example@evil.example` previously
-            // passed and re-targeted the host during URL construction).
+            // ports, empty segments, '.' / '..' traversal segments, or characters
+            // that URL parsing would reinterpret.
             let domain = parts[2];
-            // did:web grammar (W3C did:web): first segment is a domain; any
-            // further ':'-separated segments are URL path components. Every
-            // segment must be non-empty, free of '@' (userinfo re-parsing —
-            // review L2), raw ':' or '/' (structural characters), and only
-            // alphanumeric/'.'/'-'/'%' characters.
             let segments: Vec<&str> = trimmed
                 .strip_prefix("did:web:")
                 .unwrap_or(domain)
                 .split(':')
                 .collect();
             let valid = !domain.is_empty()
+                && !domain.starts_with('.')
+                && !domain.ends_with('.')
                 && !domain.contains('@')
                 && segments.iter().all(|seg| {
                     !seg.is_empty()
+                        && *seg != "."
+                        && *seg != ".."
+                        && !seg.contains("..")
                         && !seg.contains('@')
                         && seg
                             .chars()
@@ -393,7 +391,7 @@ pub fn validate_did_syntax(did: &str) -> Result<DidMethod, IdentityError> {
                 });
             if !valid {
                 return Err(IdentityError::InvalidDidSyntax(format!(
-                    "did:web identifier '{domain}' is not a valid domain (no userinfo, ports, empty segments, or non-domain characters)"
+                    "did:web identifier '{domain}' is not a valid domain (no userinfo, ports, empty segments, path traversal, or non-domain characters)"
                 )));
             }
             Ok(DidMethod::Web)
@@ -684,6 +682,7 @@ impl IdentityResolver {
 
     /// Resolves a `did:plc` Decentralized Identifier via the PLC Directory.
     pub async fn resolve_did_plc(&self, did: &str) -> Result<DidDocument, IdentityError> {
+        let did = did.trim();
         validate_did_syntax(did)?;
         let url = format!("{}/{}", self.plc_directory_url.trim_end_matches('/'), did);
 
@@ -703,6 +702,7 @@ impl IdentityResolver {
 
     /// Resolves a `did:web` Decentralized Identifier via HTTPS `/.well-known/did.json`.
     pub async fn resolve_did_web(&self, did: &str) -> Result<DidDocument, IdentityError> {
+        let did = did.trim();
         validate_did_syntax(did)?;
 
         let stripped = did
@@ -960,5 +960,10 @@ mod tests {
             doc.extract_pds_endpoint().unwrap(),
             "https://pds.example.com"
         );
+
+        assert!(validate_did_syntax("did:plc:z72i7hdynmk6r22z27h6tvur:extra").is_err());
+        assert!(validate_did_syntax("did:web:example.com:..:admin").is_err());
+        assert!(validate_did_syntax("did:web:example.com:.:admin").is_err());
+        assert!(validate_did_syntax("did:web:.example.com").is_err());
     }
 }

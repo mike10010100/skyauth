@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.13] - 2026-11-10
+
+### Fixed
+
+- **Formal Verification & Clock-Skew Leeway Direction in Access JWT Validation** (`src/kernels/service_auth_bytes.rs`, `src/verification/verus_kernels.rs`, `src/integrations/validator.rs`):
+  - Added dual-representation Verus/rustc kernel `is_access_jwt_exp_valid`, specification `spec_is_access_jwt_exp_valid`, and deductive proof `theorem_access_jwt_exp_window_strict`.
+  - Fixed inverted clock-skew leeway arithmetic in `OAuthRequestValidator::verify_access_jwt_parts` (`now_secs >= exp + leeway` instead of `now_secs - leeway >= exp`).
+- **Service Auth Claim & DID Syntax Enforcement** (`src/service_auth.rs`, `src/identity.rs`):
+  - Required `iss`, `exp`, and `aud` (when `expected_audiences` is non-empty) in `verify_service_jwt_claims`.
+  - Tightened `is_valid_service_did` and `IdentityResolver::validate_did_syntax` to reject extra colons in `did:plc:`, allow `%3A`/`%3a` ports in `did:web:`, reject `"."`/`".."` and empty path segments, and trim whitespace in `resolve_did_plc` and `resolve_did_web`.
+- **IPv6 Literal SSRF Enforcement** (`src/ssrf.rs`):
+  - Matched `url::Host::Ipv4` and `url::Host::Ipv6` in `SsrfFilter::validate_url`, `resolve_and_pin`, and `build_pinned_client` so bracketed IPv6 literals (`[::1]`, `[::ffff:169.254.169.254]`, `[fc00::1]`) are validated directly.
+- **DPoP Clock Override, Canonical Base64url JWK Decoding, Pruner Lifecycle & Single-Flight Locks** (`src/dpop.rs`, `src/client.rs`):
+  - Respected `now_override` when computing `expires_at` for replay cache admission in `DPoPVerifier::verify_proof` and `verify_proof_deferred`, and enforced canonical base64url encoding in `JwkEc::to_verifying_key`.
+  - Used `Arc::downgrade` (`Weak`) in `AtprotoOAuthClientBuilder::build` so the background state-store pruner task terminates when the client drops, and pruned only idle entries (`Arc::strong_count == 1`) in `RefreshSingleFlight::lock_for`.
+
 ## [0.3.12] - 2026-11-03
 
 ### Added

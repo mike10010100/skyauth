@@ -72,6 +72,12 @@ pub open spec fn spec_is_service_jwt_exp_valid(exp: u64, now_secs: u64, leeway_s
     (now_secs as int) <= (exp as int) + (leeway_secs as int)
 }
 
+/// Verus spec: overflow-safe RFC 9068 § 4 access-token expiration check (`now_secs < exp + leeway_secs`).
+/// At the exact boundary `now_secs == exp + leeway_secs`, the token is expired.
+pub open spec fn spec_is_access_jwt_exp_valid(exp: u64, now_secs: u64, leeway_secs: u64) -> bool {
+    (now_secs as int) < (exp as int) + (leeway_secs as int)
+}
+
 /// Returns `true` iff `tag` is a valid SEC1 compressed public key prefix (`0x02` or `0x03`).
 #[must_use]
 #[inline]
@@ -137,6 +143,19 @@ pub const fn is_service_jwt_exp_valid(exp: u64, now_secs: u64, leeway_secs: u64)
         true
     } else {
         now_secs <= exp + leeway_secs
+    }
+}
+
+/// Returns `true` iff `now_secs` is strictly before `exp + leeway_secs` (RFC 9068 § 4 / RFC 7519 § 4.1.4, overflow-safe).
+#[must_use]
+#[inline]
+pub const fn is_access_jwt_exp_valid(exp: u64, now_secs: u64, leeway_secs: u64) -> (r: bool)
+    ensures r == spec_is_access_jwt_exp_valid(exp, now_secs, leeway_secs)
+{
+    if exp > u64::MAX - leeway_secs {
+        true
+    } else {
+        now_secs < exp + leeway_secs
     }
 }
 
@@ -218,6 +237,17 @@ mod plain {
         }
     }
 
+    /// Returns `true` iff `now_secs` is strictly before `exp + leeway_secs` (RFC 9068 § 4 / RFC 7519 § 4.1.4, overflow-safe).
+    #[must_use]
+    #[inline]
+    pub const fn is_access_jwt_exp_valid(exp: u64, now_secs: u64, leeway_secs: u64) -> bool {
+        if exp > u64::MAX - leeway_secs {
+            true
+        } else {
+            now_secs < exp + leeway_secs
+        }
+    }
+
     /// Adapter over [`classify_multikey_header`] and [`multikey_sec1_offset`] for a raw Multikey byte slice.
     ///
     /// Returns `Some((curve_id, sec1_33_byte_slice))` where `curve_id` is [`CURVE_SECP256K1`] or [`CURVE_P256`],
@@ -255,9 +285,9 @@ mod plain {
 
 #[cfg(not(any(verus, verus_keep_ghost)))]
 pub use plain::{
-    alg_id_from_str, classify_multikey_bytes, classify_multikey_header, is_alg_bound_to_curve,
-    is_compressed_sec1_tag, is_service_jwt_exp_valid, multikey_sec1_offset, ALG_ES256, ALG_ES256K,
-    ALG_NONE, ALG_UNKNOWN, CURVE_NONE, CURVE_P256, CURVE_SECP256K1,
+    alg_id_from_str, classify_multikey_bytes, classify_multikey_header, is_access_jwt_exp_valid,
+    is_alg_bound_to_curve, is_compressed_sec1_tag, is_service_jwt_exp_valid, multikey_sec1_offset,
+    ALG_ES256, ALG_ES256K, ALG_NONE, ALG_UNKNOWN, CURVE_NONE, CURVE_P256, CURVE_SECP256K1,
 };
 
 #[cfg(test)]

@@ -404,8 +404,12 @@ impl JwtAccessTokenValidator {
         // RFC 9068 § 4 / RFC 7519 § 4.1.4: `exp` is the instant AFTER which the
         // token must not be accepted — a token at exactly `now == exp` (plus
         // configured leeway) is expired (review M5; previously `now > exp` accepted
-        // the boundary instant).
-        if now_secs.saturating_add(leeway_secs) >= claims.exp {
+        // the boundary instant). Delegates to the Verus-proven kernel.
+        if !crate::kernels::service_auth_bytes::is_access_jwt_exp_valid(
+            claims.exp,
+            now_secs,
+            leeway_secs,
+        ) {
             return Err(IntegrationError::Token(TokenError::Expired {
                 exp: claims.exp,
                 now: now_secs,
@@ -1092,7 +1096,8 @@ mod m5_enforcement_tests {
         let validator = JwtAccessTokenValidator::new()
             .with_verifying_key(*key.verifying_key())
             .with_expected_issuer("https://auth.example.com")
-            .with_expected_audience("https://pds.example.com");
+            .with_expected_audience("https://pds.example.com")
+            .with_clock_skew(Duration::ZERO);
         let res = validator.verify_token_sync(&token, "dpop_jkt");
         assert!(
             matches!(
@@ -1100,6 +1105,55 @@ mod m5_enforcement_tests {
                 Err(IntegrationError::Token(TokenError::Expired { .. }))
             ),
             "token at the exp boundary must be expired"
+        );
+
+        // With 60s clock skew leeway, a token expiring in 30s (or that expired 30s ago)
+        // must be accepted, while a token that expired 60s ago must be rejected.
+        let validator_with_leeway = JwtAccessTokenValidator::new()
+            .with_verifying_key(*key.verifying_key())
+            .with_expected_issuer("https://auth.example.com")
+            .with_expected_audience("https://pds.example.com")
+            .with_clock_skew(Duration::from_secs(60));
+        let soon_claims = JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now + 30,
+            "dpop_jkt",
+        )
+        .with_audience("https://pds.example.com");
+        assert!(
+            validator_with_leeway
+                .verify_token_sync(&signed_token(&soon_claims, &key), "dpop_jkt")
+                .is_ok(),
+            "unexpired token within leeway window must be accepted"
+        );
+        let recent_exp_claims = JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now.saturating_sub(30),
+            "dpop_jkt",
+        )
+        .with_audience("https://pds.example.com");
+        assert!(
+            validator_with_leeway
+                .verify_token_sync(&signed_token(&recent_exp_claims, &key), "dpop_jkt")
+                .is_ok(),
+            "token expired 30s ago must be accepted under 60s clock-skew leeway"
+        );
+        let past_leeway_claims = JwtAccessTokenClaims::new(
+            "https://auth.example.com",
+            "did:plc:alice123",
+            now.saturating_sub(60),
+            "dpop_jkt",
+        )
+        .with_audience("https://pds.example.com");
+        assert!(
+            matches!(
+                validator_with_leeway
+                    .verify_token_sync(&signed_token(&past_leeway_claims, &key), "dpop_jkt"),
+                Err(IntegrationError::Token(TokenError::Expired { .. }))
+            ),
+            "token at exp + leeway == now must be rejected"
         );
     }
 
