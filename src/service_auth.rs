@@ -144,21 +144,35 @@ pub fn is_valid_service_did(did: &str) -> bool {
     if let Some(id) = did.strip_prefix("did:plc:") {
         return !id.is_empty()
             && id.len() <= 64
+            && !id.contains(':')
             && id
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
     }
     if let Some(rest) = did.strip_prefix("did:web:") {
-        let host = rest.split(':').next().unwrap_or("");
-        return !host.is_empty()
-            && host.len() <= 253
-            && host.split('.').all(|l| {
+        let mut segments = rest.split(':');
+        let host_raw = segments.next().unwrap_or("");
+        let host = host_raw.replace("%3A", ":").replace("%3a", ":");
+        let host_name = host.split(':').next().unwrap_or("");
+        let host_ok = !host_name.is_empty()
+            && host_name.len() <= 253
+            && host_name.split('.').all(|l| {
                 !l.is_empty()
                     && l.len() <= 63
                     && !l.starts_with('-')
                     && !l.ends_with('-')
                     && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
             });
+        let path_ok = segments.all(|seg| {
+            !seg.is_empty()
+                && seg != "."
+                && seg != ".."
+                && !seg.contains("..")
+                && seg.bytes().all(|b| {
+                    b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_' || b == b'%'
+                })
+        });
+        return host_ok && path_ok;
     }
     false
 }
@@ -557,7 +571,6 @@ impl ServiceAuthVerifier {
         let issuer = claims
             .iss
             .as_deref()
-            .or(claims.sub.as_deref())
             .ok_or(TokenError::MissingIssuer)?
             .to_string();
 
@@ -604,21 +617,21 @@ impl ServiceAuthVerifier {
             return Err(TokenError::InvalidSignature.into());
         }
 
-        if let Some(exp) = claims.exp {
-            if !is_service_jwt_exp_valid(exp, now_secs, leeway_secs) {
-                return Err(TokenError::Expired { exp, now: now_secs }.into());
-            }
+        let exp = claims.exp.ok_or_else(|| {
+            TokenError::MalformedToken("Missing mandatory 'exp' claim in Service Auth JWT".into())
+        })?;
+        if !is_service_jwt_exp_valid(exp, now_secs, leeway_secs) {
+            return Err(TokenError::Expired { exp, now: now_secs }.into());
         }
 
         if !expected_audiences.is_empty() {
-            if let Some(ref aud) = claims.aud {
-                if !expected_audiences.iter().any(|expected| *expected == aud) {
-                    return Err(TokenError::AudienceMismatch {
-                        expected: expected_audiences.join(" | "),
-                        actual: aud.clone(),
-                    }
-                    .into());
+            let aud = claims.aud.as_ref().ok_or(TokenError::MissingAudience)?;
+            if !expected_audiences.iter().any(|expected| *expected == aud) {
+                return Err(TokenError::AudienceMismatch {
+                    expected: expected_audiences.join(" | "),
+                    actual: aud.clone(),
                 }
+                .into());
             }
         }
 
@@ -939,6 +952,58 @@ mod tests {
             .verify_service_jwt(&token, Some("did:web:wrong.example.com"), 1_999_999_950)
             .await
             .is_err());
+
+        // Missing exp claim rejected
+        let no_exp_payload_b64 = URL_SAFE_NO_PAD.encode(
+            serde_json::json!({
+                "iss": did,
+                "aud": "did:web:feed.example.com",
+                "iat": 1_999_999_900u64
+            })
+            .to_string(),
+        );
+        let no_exp_input = format!("{header_b64}.{no_exp_payload_b64}");
+        let no_exp_sig: Secp256k1Signature = k256_sk.sign(no_exp_input.as_bytes());
+        let no_exp_token = format!(
+            "Bearer {no_exp_input}.{}",
+            URL_SAFE_NO_PAD.encode(no_exp_sig.to_bytes())
+        );
+        assert!(matches!(
+            verifier
+                .verify_service_jwt(
+                    &no_exp_token,
+                    Some("did:web:feed.example.com"),
+                    1_999_999_950
+                )
+                .await,
+            Err(AtprotoOAuthError::Token(TokenError::MalformedToken(_)))
+        ));
+
+        // Missing aud claim rejected when expected_audience is required
+        let no_aud_payload_b64 = URL_SAFE_NO_PAD.encode(
+            serde_json::json!({
+                "iss": did,
+                "exp": 2_000_000_000u64,
+                "iat": 1_999_999_900u64
+            })
+            .to_string(),
+        );
+        let no_aud_input = format!("{header_b64}.{no_aud_payload_b64}");
+        let no_aud_sig: Secp256k1Signature = k256_sk.sign(no_aud_input.as_bytes());
+        let no_aud_token = format!(
+            "Bearer {no_aud_input}.{}",
+            URL_SAFE_NO_PAD.encode(no_aud_sig.to_bytes())
+        );
+        assert!(matches!(
+            verifier
+                .verify_service_jwt(
+                    &no_aud_token,
+                    Some("did:web:feed.example.com"),
+                    1_999_999_950
+                )
+                .await,
+            Err(AtprotoOAuthError::Token(TokenError::MissingAudience))
+        ));
 
         // Expired token rejected
         assert!(verifier

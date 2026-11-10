@@ -383,4 +383,14 @@ pub proof fn theorem_service_jwt_exp_window_monotonic(exp: u64, now_secs: u64, l
 {
 }
 
+/// Access-token JWT expiration check (RFC 9068 § 4) is strict at `exp + leeway` and never rejects
+/// an unexpired token (`now_secs < exp`) for any non-negative `leeway_secs`.
+pub proof fn theorem_access_jwt_exp_window_strict(exp: u64, now_secs: u64, leeway_secs: u64)
+    ensures
+        (now_secs < exp) ==> service_auth_bytes::spec_is_access_jwt_exp_valid(exp, now_secs, leeway_secs),
+        (now_secs as int) >= (exp as int) + (leeway_secs as int)
+            ==> !service_auth_bytes::spec_is_access_jwt_exp_valid(exp, now_secs, leeway_secs),
+{
+}
+
 } // verus!

@@ -536,16 +536,18 @@ impl AtprotoOAuthClientBuilder {
         // provided stores keep caller-owned lifecycle (they may be shared).
         if default_store_created {
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                let pruner_store = Arc::clone(&state_store);
+                let weak_store = Arc::downgrade(&state_store);
                 let prune_interval = self.state_ttl.max(Duration::from_secs(60));
                 handle.spawn(async move {
                     let mut interval = tokio::time::interval(prune_interval);
                     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                    // Prune ~once per interval for the life of the client. The task
-                    // is a daemon: it ends when the runtime (and thus the client)
-                    // is dropped. Bounded by the admission cap in the worst case.
+                    // Prune ~once per interval for the life of the client. Holds a Weak
+                    // reference so dropping the client stops the task and frees the store.
                     loop {
                         interval.tick().await;
+                        let Some(pruner_store) = weak_store.upgrade() else {
+                            break;
+                        };
                         let pruned = pruner_store.prune_expired_sync();
                         if pruned > 0 {
                             tracing::trace!("default state store pruned {pruned} expired states");
@@ -608,11 +610,6 @@ impl RefreshSingleFlight {
         }
         if guard.len() >= MAX_TRACKED_REFRESH_SUBJECTS {
             guard.retain(|_, arc_mutex| Arc::strong_count(arc_mutex) > 1);
-            if guard.len() >= MAX_TRACKED_REFRESH_SUBJECTS {
-                if let Some(victim_key) = guard.keys().next().cloned() {
-                    guard.remove(&victim_key);
-                }
-            }
         }
         let fresh = Arc::new(tokio::sync::Mutex::new(()));
         guard.insert(sub.to_string(), Arc::clone(&fresh));

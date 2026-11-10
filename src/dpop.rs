@@ -86,6 +86,11 @@ impl JwkEc {
     pub fn to_verifying_key(&self) -> Result<VerifyingKey, CryptoError> {
         let x_bytes: [u8; 32] = base64url_decode_fixed(&self.x)?;
         let y_bytes: [u8; 32] = base64url_decode_fixed(&self.y)?;
+        if self.x != base64url_encode(&x_bytes) || self.y != base64url_encode(&y_bytes) {
+            return Err(CryptoError::Base64Decode(
+                "Non-canonical base64url JWK coordinate".to_string(),
+            ));
+        }
         verifying_key_from_coordinates(&x_bytes, &y_bytes)
     }
 }
@@ -572,13 +577,20 @@ impl DPoPVerifier {
         // Immediate single-phase admission (default path; servers needing two-phase
         // admission use `verify_proof_deferred` + `commit_replay_admission`).
         let jkt = jwk.thumbprint();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| DPoPError::ClockSkew(e.to_string()))?
-            .as_secs();
+        let now = match now_override {
+            Some(time) => time
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| DPoPError::ClockSkew(e.to_string()))?
+                .as_secs(),
+            None => SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| DPoPError::ClockSkew(e.to_string()))?
+                .as_secs(),
+        };
         let expires_at = now
             .saturating_add(self.max_proof_age.as_secs())
-            .saturating_add(self.max_clock_skew.as_secs());
+            .saturating_add(self.max_clock_skew.as_secs())
+            .max(now.saturating_add(1));
         if let Some(ref cache) = self.replay_cache {
             cache.check_and_record(&jkt, &claims.jti, expires_at, now)?;
         }
@@ -823,13 +835,20 @@ impl DPoPVerifier {
             now_override,
         )?;
         let jkt = jwk.thumbprint();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| DPoPError::ClockSkew(e.to_string()))?
-            .as_secs();
+        let now = match now_override {
+            Some(time) => time
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| DPoPError::ClockSkew(e.to_string()))?
+                .as_secs(),
+            None => SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| DPoPError::ClockSkew(e.to_string()))?
+                .as_secs(),
+        };
         let expires_at = now
             .saturating_add(self.max_proof_age.as_secs())
-            .saturating_add(self.max_clock_skew.as_secs());
+            .saturating_add(self.max_clock_skew.as_secs())
+            .max(now.saturating_add(1));
         let admission = ReplayAdmission {
             jkt,
             jti: claims.jti.clone(),

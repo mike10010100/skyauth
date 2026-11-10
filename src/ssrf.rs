@@ -299,7 +299,14 @@ impl SsrfFilter {
             }
         }
 
-        if let Ok(ip) = host.parse::<IpAddr>() {
+        if let Some(ip) = match url.host() {
+            Some(url::Host::Ipv4(v4)) => Some(IpAddr::V4(v4)),
+            Some(url::Host::Ipv6(v6)) => Some(IpAddr::V6(v6)),
+            _ => host
+                .trim_matches(|c| c == '[' || c == ']')
+                .parse::<IpAddr>()
+                .ok(),
+        } {
             self.validate_ip(ip)?;
         }
 
@@ -326,7 +333,14 @@ impl SsrfFilter {
             host.to_string()
         };
 
-        if let Ok(ip) = host.parse::<IpAddr>() {
+        if let Some(ip) = match url.host() {
+            Some(url::Host::Ipv4(v4)) => Some(IpAddr::V4(v4)),
+            Some(url::Host::Ipv6(v6)) => Some(IpAddr::V6(v6)),
+            _ => host
+                .trim_matches(|c| c == '[' || c == ']')
+                .parse::<IpAddr>()
+                .ok(),
+        } {
             self.validate_ip(ip)?;
             return Ok((SocketAddr::new(ip, port), host_header));
         }
@@ -412,7 +426,7 @@ impl SsrfFilter {
         let host_only = url.host_str().unwrap_or("localhost");
 
         let (client, resolver) = self.shared_client_and_resolver();
-        if host_only.parse::<IpAddr>().is_err() {
+        if matches!(url.host(), Some(url::Host::Domain(_))) {
             resolver.pin_host(host_only, pinned_addr.ip());
         }
 
@@ -774,5 +788,22 @@ mod tests {
         let filter_local = SsrfFilter::new(true);
         let _c2 = filter_local.pooled_client();
         let _r2 = filter_local.dns_resolver();
+
+        // Bracketed IPv6 literals must be validated against restricted IP ranges in validate_url
+        assert!(filter_strict
+            .validate_url(&Url::parse("https://[::1]/").unwrap())
+            .is_err());
+        assert!(filter_strict
+            .validate_url(&Url::parse("https://[::ffff:169.254.169.254]/").unwrap())
+            .is_err());
+        assert!(filter_strict
+            .validate_url(&Url::parse("https://[fc00::1]/").unwrap())
+            .is_err());
+        assert!(filter_local
+            .validate_url(&Url::parse("http://[::1]:8080/").unwrap())
+            .is_ok());
+        assert!(filter_local
+            .validate_url(&Url::parse("https://[::ffff:169.254.169.254]/").unwrap())
+            .is_err());
     }
 }
