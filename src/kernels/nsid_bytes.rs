@@ -59,10 +59,7 @@ pub fn is_valid_nsid(nsid: &str) -> bool {
     let name = segments[segments.len() - 1];
     let name_chars: Vec<char> = name.chars().collect();
     let starts_with_letter = name_chars.first().is_some_and(|c| c.is_ascii_alphabetic());
-    if !starts_with_letter || name_chars.iter().any(|c| !c.is_ascii_alphanumeric()) {
-        return false;
-    }
-    true
+    starts_with_letter && name_chars.iter().all(|c| c.is_ascii_alphanumeric())
 }
 
 #[cfg(test)]

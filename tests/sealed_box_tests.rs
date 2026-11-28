@@ -130,3 +130,118 @@ fn test_cross_box_equivalence() {
     let sealed = a.seal(b"same-key").expect("seal");
     assert_eq!(b.open_string(&sealed).expect("open"), "same-key");
 }
+
+#[test]
+fn test_open_strict_rejects_unsealed_plaintext() {
+    let cipher = SealedBox::from_secret_passphrase("strict-plaintext-test");
+
+    assert!(matches!(
+        cipher.open_strict_with_aad(r#"{"access_token":"plain123"}"#, b"did:plc:alice"),
+        Err(CryptoError::InvalidEnvelope(_))
+    ));
+    assert!(matches!(
+        cipher.open_strict_with_aad("   plain   ", &[]),
+        Err(CryptoError::InvalidEnvelope(_))
+    ));
+    assert!(matches!(
+        cipher.open_string_strict_with_aad("plain", b"did:plc:alice"),
+        Err(CryptoError::InvalidEnvelope(_))
+    ));
+    assert!(matches!(
+        cipher.open_strict_with_aad("enc:v1:!!!", b"did:plc:alice"),
+        Err(CryptoError::Base64Decode(_))
+    ));
+    assert!(matches!(
+        cipher.open_strict_with_aad("enc:v1:AAAA", b"did:plc:alice"),
+        Err(CryptoError::InvalidEnvelope(_))
+    ));
+}
+
+#[test]
+fn test_open_strict_rejects_empty_aad_downgrade_and_mismatched_aad(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cipher = SealedBox::from_secret_passphrase("strict-aad-test");
+    let other_cipher = SealedBox::generate();
+
+    // Legacy empty-AAD envelope succeeds via open_with_aad migration helper,
+    // but must fail strict verification with non-empty AAD.
+    let empty_aad_sealed = cipher.seal(b"legacy-empty-aad")?;
+    assert_eq!(
+        cipher.open_with_aad(&empty_aad_sealed, b"did:plc:alice")?,
+        b"legacy-empty-aad"
+    );
+    assert!(matches!(
+        cipher.open_strict_with_aad(&empty_aad_sealed, b"did:plc:alice"),
+        Err(CryptoError::Open(_))
+    ));
+    assert!(matches!(
+        cipher.open_string_strict_with_aad(&empty_aad_sealed, b"did:plc:alice"),
+        Err(CryptoError::Open(_))
+    ));
+
+    // Envelope sealed with AAD must reject wrong AAD, empty AAD, and wrong key.
+    let sealed = cipher.seal_with_aad(b"bound-secret", b"did:plc:alice")?;
+    assert!(matches!(
+        cipher.open_strict_with_aad(&sealed, b"did:plc:mallory"),
+        Err(CryptoError::Open(_))
+    ));
+    assert!(matches!(
+        cipher.open_strict_with_aad(&sealed, &[]),
+        Err(CryptoError::Open(_))
+    ));
+    assert!(matches!(
+        other_cipher.open_strict_with_aad(&sealed, b"did:plc:alice"),
+        Err(CryptoError::Open(_))
+    ));
+
+    let opened: zeroize::Zeroizing<String> =
+        cipher.open_string_strict_with_aad(&sealed, b"did:plc:alice")?;
+    assert_eq!(opened.as_str(), "bound-secret");
+    Ok(())
+}
+
+#[test]
+fn test_generate_and_to_hex_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+    let a = SealedBox::generate();
+    let b = SealedBox::generate();
+    let a_hex: zeroize::Zeroizing<String> = a.to_hex();
+    let b_hex: zeroize::Zeroizing<String> = b.to_hex();
+
+    assert_ne!(a_hex.as_str(), b_hex.as_str());
+    assert_ne!(a_hex.as_str(), "00".repeat(32));
+    assert_eq!(a_hex.len(), 64);
+    assert!(a_hex
+        .chars()
+        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+
+    let restored = SealedBox::from_hex(&a_hex)?;
+    let sealed = a.seal_with_aad(b"roundtrip-secret", b"did:plc:alice")?;
+    assert_eq!(
+        restored
+            .open_string_strict_with_aad(&sealed, b"did:plc:alice")?
+            .as_str(),
+        "roundtrip-secret"
+    );
+
+    assert_eq!(
+        SealedBox::new([0x0f; 32]).to_hex().as_str(),
+        "0f".repeat(32)
+    );
+    Ok(())
+}
+
+#[test]
+fn test_open_string_strict_rejects_invalid_utf8() -> Result<(), Box<dyn std::error::Error>> {
+    let cipher = SealedBox::generate();
+    let raw_bytes = [0xff_u8, 0xfe, 0x00, 0x80];
+    let sealed = cipher.seal_with_aad(&raw_bytes, b"did:plc:alice")?;
+
+    let opened = cipher.open_strict_with_aad(&sealed, b"did:plc:alice")?;
+    assert_eq!(opened.as_slice(), &raw_bytes);
+
+    assert!(matches!(
+        cipher.open_string_strict_with_aad(&sealed, b"did:plc:alice"),
+        Err(CryptoError::Utf8(_))
+    ));
+    Ok(())
+}

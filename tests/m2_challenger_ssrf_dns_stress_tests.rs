@@ -19,6 +19,7 @@
 
 use proptest::prelude::*;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::Duration;
 use url::Url;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -921,4 +922,124 @@ async fn test_token_endpoint_ssrf_and_redirect_blocked() {
         }
         other => panic!("Token refresh 308 must be rejected as a redirect, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn test_build_http_client_loopback_hostname_blocked_in_strict_mode_and_allowed_in_local_mode()
+{
+    let mock_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/ping"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("pong"))
+        .mount(&mock_server)
+        .await;
+
+    let server_url = Url::parse(&mock_server.uri()).unwrap();
+    let port = server_url.port().unwrap();
+    let localhost_url = format!("http://localhost:{port}/ping");
+
+    // Strict mode blocks localhost inside SsrfDnsResolver (0 mock hits) and blocks IP literals via validate_url.
+    let strict_filter = SsrfFilter::new(false);
+    assert!(strict_filter
+        .validate_url(&Url::parse(&format!("{}/ping", mock_server.uri())).unwrap())
+        .is_err());
+    let strict_client = strict_filter
+        .build_http_client(Duration::from_secs(2), Duration::from_secs(5))
+        .unwrap();
+    assert!(strict_client.get(&localhost_url).send().await.is_err());
+    assert!(mock_server.received_requests().await.unwrap().is_empty());
+
+    // Localhost mode allows localhost via SsrfDnsResolver and reaches the mock server.
+    let local_filter = SsrfFilter::new(true);
+    let local_client = local_filter
+        .build_http_client(Duration::from_secs(2), Duration::from_secs(5))
+        .unwrap();
+    let resp = local_client.get(&localhost_url).send().await.unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "pong");
+}
+
+#[tokio::test]
+async fn test_build_http_client_blocks_metadata_host_and_ip() {
+    let strict_filter = SsrfFilter::new(false);
+    let local_filter = SsrfFilter::new(true);
+
+    // IP-literal metadata addresses are rejected upfront by validate_url in both modes.
+    for url_str in [
+        "http://169.254.169.254/latest/meta-data",
+        "https://169.254.169.254/latest/meta-data",
+    ] {
+        let parsed = Url::parse(url_str).unwrap();
+        assert!(strict_filter.validate_url(&parsed).is_err());
+        assert!(local_filter.validate_url(&parsed).is_err());
+    }
+
+    // Hostname metadata endpoints are blocked by SsrfDnsResolver in both strict and local modes.
+    let strict_client = strict_filter
+        .build_http_client(Duration::from_secs(2), Duration::from_secs(5))
+        .unwrap();
+    let local_client = local_filter
+        .build_http_client(Duration::from_secs(2), Duration::from_secs(5))
+        .unwrap();
+
+    assert!(strict_client
+        .get("https://metadata.google.internal/computeMetadata/v1/")
+        .send()
+        .await
+        .is_err());
+    assert!(local_client
+        .get("https://metadata.google.internal/computeMetadata/v1/")
+        .send()
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn test_build_http_client_disables_redirects() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/redirect"))
+        .respond_with(ResponseTemplate::new(302).insert_header("Location", "/destination"))
+        .mount(&mock_server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/destination"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("secret"))
+        .expect(0)
+        .mount(&mock_server)
+        .await;
+
+    let port = Url::parse(&mock_server.uri()).unwrap().port().unwrap();
+    let client = SsrfFilter::new(true)
+        .build_http_client(Duration::from_secs(2), Duration::from_secs(5))
+        .unwrap();
+
+    let resp = client
+        .get(format!("http://localhost:{port}/redirect"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FOUND);
+}
+
+#[tokio::test]
+async fn test_build_http_client_enforces_request_timeout() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/slow"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(500)))
+        .mount(&mock_server)
+        .await;
+
+    let port = Url::parse(&mock_server.uri()).unwrap().port().unwrap();
+    let client = SsrfFilter::new(true)
+        .build_http_client(Duration::from_secs(2), Duration::from_millis(50))
+        .unwrap();
+
+    let err = client
+        .get(format!("http://localhost:{port}/slow"))
+        .send()
+        .await
+        .expect_err("delayed response must exceed 50ms client timeout");
+    assert!(err.is_timeout(), "expected timeout error, got {err:?}");
 }
