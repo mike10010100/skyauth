@@ -5,14 +5,18 @@
 //! authenticated data (AAD). It is designed for persisting OAuth session tokens,
 //! refresh tokens, and private DPoP keys in embedded databases.
 //!
-//! Plaintext values that do not carry the envelope prefix are passed through
-//! unchanged, allowing transparent migration from legacy unencrypted records.
+//! Legacy migration helpers ([`SealedBox::open`] and [`SealedBox::open_with_aad`])
+//! pass through unprefixed plaintext values and fall back to empty AAD for records
+//! sealed prior to AAD binding, whereas [`SealedBox::open_strict_with_aad`] and
+//! [`SealedBox::open_string_strict_with_aad`] require the envelope prefix and
+//! exact AAD match.
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use rand::Rng;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::crypto::sha256_digest;
 use crate::error::CryptoError;
@@ -21,7 +25,11 @@ use crate::error::CryptoError;
 pub const SEALED_ENVELOPE_PREFIX: &str = "enc:v1:";
 
 /// AES-256-GCM key plus versioned envelope helpers for encrypting data at rest.
-#[derive(Clone)]
+///
+/// # Memory Zeroization
+/// [`SealedBox`] derives [`Zeroize`] and [`ZeroizeOnDrop`], wiping the 256-bit
+/// key material from memory when dropped or explicitly zeroized.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct SealedBox {
     key: [u8; 32],
 }
@@ -41,12 +49,60 @@ impl SealedBox {
         Self { key }
     }
 
+    /// Generates a fresh [`SealedBox`] with a cryptographically random 256-bit key.
+    ///
+    /// # Examples
+    /// ```
+    /// use skyauth::sealed::SealedBox;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let cipher = SealedBox::generate();
+    /// let sealed = cipher.seal_with_aad(b"secret", b"did:plc:alice")?;
+    /// let opened = cipher.open_string_strict_with_aad(&sealed, b"did:plc:alice")?;
+    /// assert_eq!(opened.as_str(), "secret");
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn generate() -> Self {
+        let mut sealed = Self { key: [0u8; 32] };
+        rand::rng().fill_bytes(&mut sealed.key);
+        sealed
+    }
+
     /// Derives a 256-bit key from an arbitrary secret passphrase using SHA-256.
     #[must_use]
     pub fn from_secret_passphrase(secret: &str) -> Self {
         Self {
             key: sha256_digest(secret.as_bytes()),
         }
+    }
+
+    /// Exports the 256-bit key as a 64-character lowercase hex string wrapped in [`Zeroizing`].
+    ///
+    /// # Examples
+    /// ```
+    /// use skyauth::sealed::SealedBox;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let cipher = SealedBox::generate();
+    /// let hex_key = cipher.to_hex();
+    /// assert_eq!(hex_key.len(), 64);
+    /// let restored = SealedBox::from_hex(&hex_key)?;
+    /// let sealed = cipher.seal_with_aad(b"payload", b"aad")?;
+    /// assert_eq!(restored.open_string_strict_with_aad(&sealed, b"aad")?.as_str(), "payload");
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn to_hex(&self) -> Zeroizing<String> {
+        const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
+        let mut out = Zeroizing::new(String::with_capacity(64));
+        for &byte in &self.key {
+            out.push(HEX_LOWER[(byte >> 4) as usize] as char);
+            out.push(HEX_LOWER[(byte & 0x0f) as usize] as char);
+        }
+        out
     }
 
     /// Parses a 64-character hex-encoded 256-bit key.
@@ -121,6 +177,55 @@ impl SealedBox {
         ))
     }
 
+    fn decrypt_envelope(
+        &self,
+        encoded: &str,
+        aad: &[u8],
+        allow_empty_aad_fallback: bool,
+    ) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
+        let combined = STANDARD
+            .decode(encoded)
+            .map_err(|e| CryptoError::Base64Decode(format!("Sealed payload Base64 decode: {e}")))?;
+
+        // 12-byte nonce + 16-byte tag minimum.
+        if combined.len() < 28 {
+            return Err(CryptoError::InvalidEnvelope(
+                "Sealed payload is truncated".to_string(),
+            ));
+        }
+
+        let (nonce_bytes, ciphertext) = combined.split_at(12);
+        let mut nonce_arr = [0u8; 12];
+        nonce_arr.copy_from_slice(nonce_bytes);
+        let nonce = Nonce::from(nonce_arr);
+        let cipher = Aes256Gcm::new_from_slice(&self.key)
+            .map_err(|e| CryptoError::InvalidKey(format!("Invalid AES-256-GCM key: {e}")))?;
+
+        let decrypt = |associated: &[u8]| -> Result<Zeroizing<Vec<u8>>, CryptoError> {
+            cipher
+                .decrypt(
+                    &nonce,
+                    Payload {
+                        msg: ciphertext,
+                        aad: associated,
+                    },
+                )
+                .map(Zeroizing::new)
+                .map_err(|_| {
+                    CryptoError::Open(
+                        "Authentication tag mismatch or invalid key while opening sealed payload"
+                            .to_string(),
+                    )
+                })
+        };
+
+        match decrypt(aad) {
+            Ok(plaintext) => Ok(plaintext),
+            Err(err) if allow_empty_aad_fallback && !aad.is_empty() => decrypt(&[]).or(Err(err)),
+            Err(err) => Err(err),
+        }
+    }
+
     /// Opens a sealed envelope, or passes through a legacy plaintext value unchanged.
     ///
     /// # Errors
@@ -148,46 +253,48 @@ impl SealedBox {
             return Ok(raw.as_bytes().to_vec());
         };
 
-        let combined = STANDARD
-            .decode(encoded)
-            .map_err(|e| CryptoError::Base64Decode(format!("Sealed payload Base64 decode: {e}")))?;
+        let mut plaintext = self.decrypt_envelope(encoded, aad, true)?;
+        Ok(std::mem::take(&mut *plaintext))
+    }
 
-        // 12-byte nonce + 16-byte tag minimum.
-        if combined.len() < 28 {
-            return Err(CryptoError::InvalidEnvelope(
-                "Sealed payload is truncated".to_string(),
-            ));
-        }
-
-        let (nonce_bytes, ciphertext) = combined.split_at(12);
-        let mut nonce_arr = [0u8; 12];
-        nonce_arr.copy_from_slice(nonce_bytes);
-        let nonce = Nonce::from(nonce_arr);
-        let cipher = Aes256Gcm::new_from_slice(&self.key)
-            .map_err(|e| CryptoError::InvalidKey(format!("Invalid AES-256-GCM key: {e}")))?;
-
-        let decrypt = |associated: &[u8]| -> Result<Vec<u8>, CryptoError> {
-            cipher
-                .decrypt(
-                    &nonce,
-                    Payload {
-                        msg: ciphertext,
-                        aad: associated,
-                    },
-                )
-                .map_err(|_| {
-                    CryptoError::Open(
-                        "Authentication tag mismatch or invalid key while opening sealed payload"
-                            .to_string(),
-                    )
-                })
-        };
-
-        match decrypt(aad) {
-            Ok(plaintext) => Ok(plaintext),
-            Err(err) if !aad.is_empty() => decrypt(&[]).or(Err(err)),
-            Err(err) => Err(err),
-        }
+    /// Strictly opens a sealed envelope with exact AAD verification and returns the
+    /// plaintext wrapped in [`Zeroizing`].
+    ///
+    /// Unlike [`Self::open_with_aad`], this method:
+    /// 1. Rejects payloads missing [`SEALED_ENVELOPE_PREFIX`] with [`CryptoError::InvalidEnvelope`]
+    ///    instead of passing unsealed plaintext through.
+    /// 2. Does **not** fall back to empty AAD when `aad` authentication fails.
+    ///
+    /// # Errors
+    /// Returns [`CryptoError::InvalidEnvelope`] if the [`SEALED_ENVELOPE_PREFIX`] is
+    /// missing or the payload is truncated, [`CryptoError::Base64Decode`] for
+    /// malformed Base64, or [`CryptoError::Open`] if authentication fails for `aad`.
+    ///
+    /// # Examples
+    /// ```
+    /// use skyauth::sealed::SealedBox;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let cipher = SealedBox::generate();
+    /// let sealed = cipher.seal_with_aad(b"token-bytes", b"did:plc:alice")?;
+    /// let plain = cipher.open_strict_with_aad(&sealed, b"did:plc:alice")?;
+    /// assert_eq!(plain.as_slice(), b"token-bytes");
+    /// assert!(cipher.open_strict_with_aad("unsealed-plaintext", b"did:plc:alice").is_err());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn open_strict_with_aad(
+        &self,
+        raw: &str,
+        aad: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
+        let raw = raw.trim();
+        let encoded = raw.strip_prefix(SEALED_ENVELOPE_PREFIX).ok_or_else(|| {
+            CryptoError::InvalidEnvelope(format!(
+                "Missing required sealed envelope prefix '{SEALED_ENVELOPE_PREFIX}'"
+            ))
+        })?;
+        self.decrypt_envelope(encoded, aad, false)
     }
 
     /// Opens a sealed envelope and decodes the plaintext as UTF-8, or passes
@@ -208,5 +315,41 @@ impl SealedBox {
     pub fn open_string_with_aad(&self, raw: &str, aad: &[u8]) -> Result<String, CryptoError> {
         let bytes = self.open_with_aad(raw, aad)?;
         String::from_utf8(bytes).map_err(|e| CryptoError::Utf8(e.to_string()))
+    }
+
+    /// Strictly opens a sealed envelope with exact AAD verification and decodes
+    /// the plaintext as UTF-8 wrapped in [`Zeroizing`].
+    ///
+    /// Rejects unsealed plaintext and empty-AAD fallback identically to
+    /// [`Self::open_strict_with_aad`]. UTF-8 validation runs over the borrowed
+    /// [`Zeroizing`] byte buffer before copying into a preallocated
+    /// [`Zeroizing<String>`] so error paths also zeroize decrypted bytes.
+    ///
+    /// # Errors
+    /// Propagates [`Self::open_strict_with_aad`] failures, or returns
+    /// [`CryptoError::Utf8`] if the decrypted bytes are not valid UTF-8.
+    ///
+    /// # Examples
+    /// ```
+    /// use skyauth::sealed::SealedBox;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let cipher = SealedBox::generate();
+    /// let sealed = cipher.seal_with_aad(b"refresh-token", b"did:plc:alice")?;
+    /// let text = cipher.open_string_strict_with_aad(&sealed, b"did:plc:alice")?;
+    /// assert_eq!(text.as_str(), "refresh-token");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn open_string_strict_with_aad(
+        &self,
+        raw: &str,
+        aad: &[u8],
+    ) -> Result<Zeroizing<String>, CryptoError> {
+        let bytes = self.open_strict_with_aad(raw, aad)?;
+        let text = std::str::from_utf8(&bytes).map_err(|e| CryptoError::Utf8(e.to_string()))?;
+        let mut out = Zeroizing::new(String::with_capacity(text.len()));
+        out.push_str(text);
+        Ok(out)
     }
 }

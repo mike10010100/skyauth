@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.14] - 2026-11-28
+
+### Added
+
+- **`SealedBox` Key Generation, Hex Export & Strict AAD Decryption** (`src/sealed.rs`):
+  - Added `SealedBox::generate` (fills a fresh 256-bit AES-GCM key using `rand::rng().fill_bytes`) and `SealedBox::to_hex` (exports the key as a 64-character lowercase hex string wrapped in `zeroize::Zeroizing<String>`).
+  - Added `SealedBox::open_strict_with_aad` and `SealedBox::open_string_strict_with_aad`, returning `zeroize::Zeroizing` plaintexts while keeping `open_with_aad` and `open_string_with_aad` intact for legacy migration callers.
+- **Dedicated SSRF-Safe HTTP Client Builder** (`src/ssrf.rs`):
+  - Added `SsrfFilter::build_http_client(&self, connect_timeout, timeout) -> Result<reqwest::Client, SsrfError>`, constructing a `reqwest::Client` pinned to `SsrfDnsResolver` with `Policy::none()`, `.no_proxy()`, `.use_rustls_tls()`, and explicit connect and request timeouts.
+
+### Fixed
+
+- **Clippy Lint Compatibility on Newer Rust Toolchains** (`src/kernels/nsid_bytes.rs`):
+  - Simplified the trailing boolean return in `is_valid_nsid` to satisfy `clippy::needless_bool` on `rustc 1.100.0`.
+
+### Security
+
+- **`SealedBox` Memory Zeroization & Strict Envelope Enforcement** (`src/sealed.rs`):
+  - Derived `zeroize::Zeroize` and `zeroize::ZeroizeOnDrop` on `SealedBox` so key material is wiped on drop and on explicit zeroization.
+  - Enforced the `enc:v1:` envelope prefix (`CryptoError::InvalidEnvelope` on missing prefix) and exact AAD verification without empty-AAD fallback in `open_strict_with_aad` and `open_string_strict_with_aad`, preventing unsealed plaintext passthrough and AAD downgrade attacks.
+- **Dependency Security Advisories & Minimum Floors** (`Cargo.toml`, `Cargo.lock`):
+  - Bumped minimum dependency floors in `Cargo.toml` for `tokio` to `1.53.3` (`RUSTSEC-2026-0386`) and `url` to `2.5.9` (`RUSTSEC-2026-0592`), and updated `Cargo.lock` (`url`, `actix-http`, `quinn-udp`) to remediate `RUSTSEC-2026-0552`, `RUSTSEC-2026-0553`, `RUSTSEC-2026-0554`, and `RUSTSEC-2026-0538`.
+
 ## [0.3.13] - 2026-11-10
 
 ### Fixed

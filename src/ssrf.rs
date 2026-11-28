@@ -21,6 +21,7 @@ use std::net::{IpAddr, SocketAddr};
 #[cfg(test)]
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 use url::Url;
 
 use crate::error::SsrfError;
@@ -404,6 +405,49 @@ impl SsrfFilter {
     #[must_use]
     pub fn dns_resolver(&self) -> Arc<SsrfDnsResolver> {
         self.shared_client_and_resolver().1
+    }
+
+    /// Builds a dedicated [`reqwest::Client`] pinned to [`SsrfDnsResolver`], with
+    /// automatic redirects disabled (`Policy::none()`), environment proxies disabled
+    /// (`.no_proxy()`), pure-Rust TLS (`.use_rustls_tls()`), and explicit connect
+    /// and request timeouts.
+    ///
+    /// # Security Note on IP-Literal URLs
+    /// The underlying `hyper-util` HTTP connector invokes [`SsrfDnsResolver`] for
+    /// domain hostnames, but bypasses custom DNS resolution when the URL host is
+    /// already an IPv4 or IPv6 literal (`127.0.0.1`, `169.254.169.254`, `[::1]`).
+    /// Callers must call [`SsrfFilter::validate_url`] before issuing every request
+    /// so restricted IP literals and disallowed URL schemes are rejected upfront.
+    ///
+    /// # Errors
+    /// Returns [`SsrfError::Http`] if [`reqwest::ClientBuilder::build`] fails.
+    ///
+    /// # Example
+    /// ```
+    /// use std::time::Duration;
+    /// use skyauth::SsrfFilter;
+    ///
+    /// # fn main() -> Result<(), skyauth::SsrfError> {
+    /// let filter = SsrfFilter::new(false);
+    /// let _client = filter.build_http_client(Duration::from_secs(5), Duration::from_secs(15))?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn build_http_client(
+        &self,
+        connect_timeout: Duration,
+        timeout: Duration,
+    ) -> Result<reqwest::Client, SsrfError> {
+        let resolver = Arc::new(SsrfDnsResolver::new(self.allow_insecure_localhost));
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .use_rustls_tls()
+            .connect_timeout(connect_timeout)
+            .timeout(timeout)
+            .dns_resolver(resolver)
+            .build()
+            .map_err(|e| SsrfError::Http(e.to_string()))
     }
 
     /// Returns a pooled, SSRF-safe, DNS-pinned [`reqwest::Client`] configured with disabled automatic redirects

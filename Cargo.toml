@@ -1,6 +1,6 @@
 [package]
 name = "skyauth"
-version = "0.3.13"
+version = "0.3.14"
 edition = "2021"
 rust-version = "1.89"
 authors = ["Mike <mike@example.com>"]
@@ -34,13 +34,13 @@ serde_json = "1.0"
 serde_urlencoded = "0.7"
 
 # Networking & URLs
-url = { version = "2.5", features = ["serde"] }
+url = { version = "2.5.9", features = ["serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rustls-webpki = { version = "0.103.16", default-features = false, features = ["std", "ring"] }
 webpki-roots = "1.0.10"
 
 # Concurrency & Async
-tokio = { version = "1.40", default-features = false, features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
+tokio = { version = "1.53.3", default-features = false, features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
 tokio-util = "0.7"
 parking_lot = "0.12"
 ahash = "0.8"

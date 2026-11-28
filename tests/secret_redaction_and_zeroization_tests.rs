@@ -2,9 +2,10 @@
 use skyauth::client::{OAuthClientMetadata, StoredStateEntry};
 use skyauth::dpop::DPoPKey;
 use skyauth::integrations::AuthenticatedUser;
+use skyauth::sealed::SealedBox;
 use skyauth::session::OAuthSession;
 use std::time::SystemTime;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 #[test]
 fn test_oauth_session_debug_redacts_tokens() -> Result<(), Box<dyn std::error::Error>> {
@@ -158,5 +159,37 @@ fn test_zeroize_clears_session_and_state_tokens() -> Result<(), Box<dyn std::err
     if let Some(ref rt) = session.refresh_token {
         assert!(rt.is_empty() || rt.chars().all(|c| c == '\0'));
     }
+    Ok(())
+}
+
+#[test]
+fn test_sealed_box_zeroize_and_debug_redaction() -> Result<(), Box<dyn std::error::Error>> {
+    fn assert_zeroize_on_drop<T: Zeroize + ZeroizeOnDrop>() {}
+    assert_zeroize_on_drop::<SealedBox>();
+
+    let mut sealed = SealedBox::generate();
+    let hex_before: Zeroizing<String> = sealed.to_hex();
+
+    let debug_output = format!("{sealed:?}");
+    assert!(debug_output.contains("[REDACTED]"));
+    assert!(!debug_output.contains(hex_before.as_str()));
+
+    let clone = sealed.clone();
+    let ciphertext = clone.seal_with_aad(b"clone-independent", b"did:plc:alice")?;
+
+    sealed.zeroize();
+    assert_eq!(sealed.to_hex().as_str(), "00".repeat(32));
+
+    let opened_bytes: Zeroizing<Vec<u8>> =
+        clone.open_strict_with_aad(&ciphertext, b"did:plc:alice")?;
+    assert_eq!(opened_bytes.as_slice(), b"clone-independent");
+
+    let opened_str: Zeroizing<String> =
+        clone.open_string_strict_with_aad(&ciphertext, b"did:plc:alice")?;
+    assert_eq!(opened_str.as_str(), "clone-independent");
+
+    assert!(sealed
+        .open_strict_with_aad(&ciphertext, b"did:plc:alice")
+        .is_err());
     Ok(())
 }
