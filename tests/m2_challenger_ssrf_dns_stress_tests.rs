@@ -983,12 +983,12 @@ async fn test_build_http_client_blocks_metadata_host_and_ip() {
         .unwrap();
 
     assert!(strict_client
-        .get("http://metadata.google.internal/computeMetadata/v1/")
+        .get("https://metadata.google.internal/computeMetadata/v1/")
         .send()
         .await
         .is_err());
     assert!(local_client
-        .get("http://metadata.google.internal/computeMetadata/v1/")
+        .get("https://metadata.google.internal/computeMetadata/v1/")
         .send()
         .await
         .is_err());

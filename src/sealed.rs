@@ -15,7 +15,7 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use rand::Rng;
+use rand::{Rng, RngExt};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::crypto::sha256_digest;
@@ -65,9 +65,9 @@ impl SealedBox {
     /// ```
     #[must_use]
     pub fn generate() -> Self {
-        let mut sealed = Self { key: [0u8; 32] };
-        rand::rng().fill_bytes(&mut sealed.key);
-        sealed
+        Self {
+            key: rand::rng().random(),
+        }
     }
 
     /// Derives a 256-bit key from an arbitrary secret passphrase using SHA-256.

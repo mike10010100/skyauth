@@ -208,6 +208,7 @@ fn test_generate_and_to_hex_roundtrip() -> Result<(), Box<dyn std::error::Error>
     let b_hex: zeroize::Zeroizing<String> = b.to_hex();
 
     assert_ne!(a_hex.as_str(), b_hex.as_str());
+    assert_ne!(a_hex.as_str(), "00".repeat(32));
     assert_eq!(a_hex.len(), 64);
     assert!(a_hex
         .chars()
